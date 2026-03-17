@@ -3,6 +3,8 @@
 // Downloads 1-min ETH/USDT candles from Binance Futures (free)
 // ============================================================
 
+import { logger } from '../logger';
+
 const BINANCE_API = 'https://fapi.binance.com/fapi/v1/klines';
 const SYMBOL = 'ETHUSDT';
 const INTERVAL = '1m';
@@ -36,7 +38,7 @@ export async function fetchKlines(
   let endTime = now;
 
   const totalMinutes = daysBack * 24 * 60;
-  console.log(`[Fetcher] Downloading ~${totalMinutes} candles (${daysBack} days)...`);
+  logger.info(`[Fetcher] Downloading ~${totalMinutes} candles (${daysBack} days)...`);
 
   while (endTime > startTime) {
     const url = `${BINANCE_API}?symbol=${SYMBOL}&interval=${INTERVAL}&limit=${BATCH_SIZE}&endTime=${endTime}`;
@@ -70,7 +72,7 @@ export async function fetchKlines(
       await sleep(RATE_DELAY);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[Fetcher] Error at ${new Date(endTime).toISOString()}: ${message}`);
+      logger.error(`[Fetcher] Error at ${new Date(endTime).toISOString()}: ${message}`);
       await sleep(2000);
     }
   }
@@ -84,6 +86,6 @@ export async function fetchKlines(
     return true;
   });
 
-  console.log(`[Fetcher] Downloaded ${deduped.length} unique candles`);
+  logger.info(`[Fetcher] Downloaded ${deduped.length} unique candles`);
   return deduped;
 }

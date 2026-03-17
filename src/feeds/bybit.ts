@@ -3,6 +3,7 @@ import { EventEmitter } from 'events';
 import type {
   BybitTradeMsg, BybitOrderbookMsg, BybitLiquidationMsg, BybitControlMsg,
 } from '../types';
+import { logger } from '../logger';
 
 const BYBIT_WS = 'wss://stream.bybit.com/v5/public/linear';
 
@@ -45,7 +46,7 @@ export class BybitFeed extends EventEmitter {
     this.ws.on('open', () => {
       this.alive = true;
       this.reconnectAttempt = 0;
-      console.log('[Bybit] Connected');
+      logger.info('Bybit connected');
       this.emit('status', true);
 
       // Subscribe
@@ -77,12 +78,12 @@ export class BybitFeed extends EventEmitter {
       if (this.pingTimer) clearInterval(this.pingTimer);
       const delay = this.getReconnectDelay();
       this.reconnectAttempt++;
-      console.log(`[Bybit] Disconnected, reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${this.reconnectAttempt})...`);
+      logger.warn({ delay: (delay / 1000).toFixed(1), attempt: this.reconnectAttempt }, 'Bybit disconnected, reconnecting');
       this.reconnectTimer = setTimeout(() => this.connect(), delay);
     });
 
     this.ws.on('error', (err) => {
-      console.error('[Bybit] WS error:', err.message);
+      logger.error({ err: err.message }, 'Bybit WS error');
     });
   }
 

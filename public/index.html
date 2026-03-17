@@ -569,6 +569,28 @@
 let ws = null;
 let reconnectTimer = null;
 const alerts = [];
+let currentState = null;
+
+// Deep merge: apply partial delta onto existing state
+function deepMerge(target, source) {
+  if (!source || typeof source !== 'object') return source;
+  if (Array.isArray(source)) return source;
+  const result = Object.assign({}, target);
+  for (const key of Object.keys(source)) {
+    if (
+      source[key] !== null &&
+      typeof source[key] === 'object' &&
+      !Array.isArray(source[key]) &&
+      target && typeof target[key] === 'object' &&
+      !Array.isArray(target[key])
+    ) {
+      result[key] = deepMerge(target[key], source[key]);
+    } else {
+      result[key] = source[key];
+    }
+  }
+  return result;
+}
 
 function getServerUrl() {
   const input = document.getElementById('serverUrl');
@@ -582,29 +604,42 @@ function getServerUrl() {
 
 function connect() {
   const url = getServerUrl();
-  console.log('[WS] Connecting to', url);
-  
+
   ws = new WebSocket(url);
-  
+
   ws.onopen = () => {
-    console.log('[WS] Connected');
     setServerStatus(true);
   };
-  
+
   ws.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'state') render(msg.data);
-      else if (msg.type === 'alert') addAlert(msg.data);
+      if (msg.type === 'full') {
+        // Full state replacement
+        currentState = msg.data;
+        render(currentState);
+      } else if (msg.type === 'delta') {
+        // Merge partial update into current state
+        if (currentState) {
+          currentState = deepMerge(currentState, msg.data);
+          render(currentState);
+        }
+      } else if (msg.type === 'state') {
+        // Backwards compatibility with older server
+        currentState = msg.data;
+        render(currentState);
+      } else if (msg.type === 'alert') {
+        addAlert(msg.data);
+      }
     } catch {}
   };
-  
+
   ws.onclose = () => {
     setServerStatus(false);
-    console.log('[WS] Disconnected, retrying in 3s...');
+    currentState = null;
     reconnectTimer = setTimeout(connect, 3000);
   };
-  
+
   ws.onerror = () => {};
 }
 

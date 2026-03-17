@@ -37,4 +37,10 @@ export const config = {
   cgPollInterval: 60_000,
   indicatorStoreInterval: 30_000,
   cleanupInterval: 3600_000, // hourly
+
+  // Logging
+  logLevel: process.env.LOG_LEVEL || 'info',
+
+  // Student-t distribution degrees of freedom
+  studentTDf: parseInt(process.env.STUDENT_T_DF || '4'),
 };

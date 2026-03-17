@@ -6,6 +6,7 @@ import type {
 } from '../types';
 import { config } from '../config';
 import { calibrateProb, getHourlyRiskLevel, getSuggestedOp } from './calibration';
+import { logger } from '../logger';
 
 // Operation thresholds and windows from config (with ms conversion for windows)
 const THRESHOLDS = config.thresholds;
@@ -38,6 +39,10 @@ class TimeBuffer<T extends { t: number }> {
   clear() { this.items = []; }
 }
 
+// ============================================================
+// Mathematical functions
+// ============================================================
+
 // Normal CDF approximation
 export function normCdf(x: number): number {
   const t = 1 / (1 + 0.2316419 * Math.abs(x));
@@ -45,6 +50,94 @@ export function normCdf(x: number): number {
   const p = d * Math.exp(-x * x / 2) * t *
     (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
   return x > 0 ? 1 - p : p;
+}
+
+// ============================================================
+// Student-t CDF implementation (Improvement 8)
+// ============================================================
+
+// Log-Gamma via Lanczos approximation
+export function logGamma(z: number): number {
+  if (z < 0.5) {
+    // Reflection formula: Gamma(z) * Gamma(1-z) = pi / sin(pi*z)
+    return Math.log(Math.PI / Math.sin(Math.PI * z)) - logGamma(1 - z);
+  }
+  z -= 1;
+  const g = 7;
+  const coef = [
+    0.99999999999980993,
+    676.5203681218851,
+    -1259.1392167224028,
+    771.32342877765313,
+    -176.61502916214059,
+    12.507343278686905,
+    -0.13857109526572012,
+    9.9843695780195716e-6,
+    1.5056327351493116e-7,
+  ];
+  let x = coef[0];
+  for (let i = 1; i < g + 2; i++) {
+    x += coef[i] / (z + i);
+  }
+  const t = z + g + 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
+}
+
+// Regularized incomplete beta function via Lentz continued fraction
+export function regularizedBeta(x: number, a: number, b: number): number {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+
+  // For better convergence, use the identity I_x(a,b) = 1 - I_{1-x}(b,a)
+  // when x > (a+1)/(a+b+2)
+  if (x > (a + 1) / (a + b + 2)) {
+    return 1 - regularizedBeta(1 - x, b, a);
+  }
+
+  // Compute the prefix: x^a * (1-x)^b / (a * Beta(a,b))
+  const lnPrefix = a * Math.log(x) + b * Math.log(1 - x) - Math.log(a)
+    - (logGamma(a) + logGamma(b) - logGamma(a + b));
+  const prefix = Math.exp(lnPrefix);
+
+  // Lentz's continued fraction for I_x(a,b)
+  const maxIter = 200;
+  const eps = 1e-14;
+  const tiny = 1e-30;
+
+  let c = 1;
+  let d = 1 / Math.max(Math.abs(1 - (a + b) * x / (a + 1)), tiny);
+  let h = d;
+
+  for (let m = 1; m <= maxIter; m++) {
+    // Even step: d_{2m}
+    let numerator = m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m));
+    d = 1 / Math.max(Math.abs(1 + numerator * d), tiny);
+    c = Math.max(Math.abs(1 + numerator / c), tiny);
+    h *= d * c;
+
+    // Odd step: d_{2m+1}
+    numerator = -((a + m) * (a + b + m) * x) / ((a + 2 * m) * (a + 2 * m + 1));
+    d = 1 / Math.max(Math.abs(1 + numerator * d), tiny);
+    c = Math.max(Math.abs(1 + numerator / c), tiny);
+    const delta = d * c;
+    h *= delta;
+
+    if (Math.abs(delta - 1) < eps) break;
+  }
+
+  return prefix * h;
+}
+
+// Student-t CDF using regularized incomplete beta function
+export function studentTCdf(t: number, df: number): number {
+  if (df <= 0) return normCdf(t); // fallback
+  const x = df / (df + t * t);
+  const ibeta = regularizedBeta(x, df / 2, 0.5);
+  if (t >= 0) {
+    return 1 - 0.5 * ibeta;
+  } else {
+    return 0.5 * ibeta;
+  }
 }
 
 // Standalone functions exported for testing
@@ -63,6 +156,23 @@ export function calcDropProb(volAnnualized: number | null, windowMinutes: number
   const threshold = thresholdPct / 100;
   const z = threshold / windowVol;
   return 1 - normCdf(z);
+}
+
+// Student-t based drop probability (primary distribution)
+export function calcDropProbStudentT(
+  volAnnualized: number | null,
+  windowMinutes: number,
+  thresholdPct: number,
+  df: number = config.studentTDf,
+): number {
+  if (volAnnualized === null) return 0.5;
+  const volPerMin = (volAnnualized / 100) / Math.sqrt(525600);
+  const windowVol = volPerMin * Math.sqrt(windowMinutes);
+  const threshold = thresholdPct / 100;
+  // Scale threshold by sqrt((df-2)/df) to match variance of t-distribution
+  const scale = df > 2 ? Math.sqrt((df - 2) / df) : 1;
+  const t = (threshold / windowVol) * scale;
+  return 1 - studentTCdf(t, df);
 }
 
 export class VolatilityEngine extends EventEmitter {
@@ -173,6 +283,7 @@ export class VolatilityEngine extends EventEmitter {
     return stdDev * Math.sqrt(525600) * 100; // annualized %
   }
 
+  // Student-t based drop probability (primary)
   private calcDropProb(windowMinutes: number, thresholdPct: number): number {
     const vol = this.calcVol(windowMinutes);
     if (vol === null) return 0.5;
@@ -180,11 +291,12 @@ export class VolatilityEngine extends EventEmitter {
     const volPerMin = (vol / 100) / Math.sqrt(525600);
     const windowVol = volPerMin * Math.sqrt(windowMinutes);
     const threshold = thresholdPct / 100;
+    const df = config.studentTDf;
 
-    // P(drop > threshold) using one-sided normal CDF
-    // We want P(min return < -threshold) which is approximately P(Z < -threshold/windowVol)
-    const z = threshold / windowVol;
-    return 1 - normCdf(z);
+    // Primary: Student-t distribution (fatter tails)
+    const scale = df > 2 ? Math.sqrt((df - 2) / df) : 1;
+    const t = (threshold / windowVol) * scale;
+    return 1 - studentTCdf(t, df);
   }
 
   private getVolatility(): VolatilityData {
@@ -197,7 +309,7 @@ export class VolatilityEngine extends EventEmitter {
                    refVol < 40 ? 'low' as const :
                    refVol < 80 ? 'medium' as const : 'high' as const;
 
-    // Raw model probabilities
+    // Raw model probabilities (Student-t primary)
     const rawExtortion = this.calcDropProb(config.windows.extortion, THRESHOLDS.extortion);
     const rawArms = this.calcDropProb(config.windows.arms, THRESHOLDS.arms);
     const rawDrug = this.calcDropProb(config.windows.drug, THRESHOLDS.drug);
@@ -254,7 +366,7 @@ export class VolatilityEngine extends EventEmitter {
 
     let longUsd5m = 0, shortUsd5m = 0;
     const liqsPerMinute: number[] = [];
-    
+
     // Count liqs per minute over last 5 minutes
     for (let i = 0; i < 5; i++) {
       const start = now - (i + 1) * 60_000;
@@ -313,14 +425,12 @@ export class VolatilityEngine extends EventEmitter {
     // IV/RV spread from Polymarket
     let ivrvSpread = 0;
     if (this.polyData && vol.probExtortion > 0) {
-      // Poly probability is P(ETH drops > 0.25% in 5 min)
-      // Compare to our realized vol model's probability
       ivrvSpread = Math.max(0, this.polyData.probability - vol.probExtortion);
     }
 
     // Funding heat
     const fundingHeat = this.hlCtx
-      ? Math.min(1, Math.abs(this.hlCtx.funding) / 0.001) // 0.1% funding = max heat
+      ? Math.min(1, Math.abs(this.hlCtx.funding) / 0.001)
       : 0;
 
     // --- Composite danger score (0-100) ---
@@ -364,25 +474,17 @@ export class VolatilityEngine extends EventEmitter {
     const calcSafety = (baseProb: number, sensitivities: { cvd: number; ob: number; liq: number; div: number; iv: number }) => {
       let score = (1 - baseProb) * 100;
 
-      // CVD penalty
       if (cvd5m < 0) score -= Math.min(15, Math.abs(cvd5m) / 1_000_000 * 10) * sensitivities.cvd;
-
-      // OB penalty
       if (obImbalance < -0.1) score -= Math.abs(obImbalance) * 15 * sensitivities.ob;
 
-      // Liq penalty
       const liqPenalty = { LOW: 0, ELEVATED: 5, HIGH: 12, CRITICAL: 25 };
       score -= liqPenalty[liq.cascadeRisk] * sensitivities.liq;
 
-      // Funding penalty (extreme funding = mean reversion risk)
       if (this.hlCtx && Math.abs(this.hlCtx.funding) > 0.0005) {
         score -= fundingHeat * 8;
       }
 
-      // CVD divergence penalty
       score -= cvdDivergence * 10 * sensitivities.div;
-
-      // IV/RV spread penalty
       score -= Math.min(12, ivrvSpread * 60) * sensitivities.iv;
 
       return Math.round(Math.min(100, Math.max(0, score)));

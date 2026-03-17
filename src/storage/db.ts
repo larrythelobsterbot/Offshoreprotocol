@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { config } from '../config';
 import type { StoredTick, StoredIndicator, DbStats } from '../types';
+import { logger } from '../logger';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 
@@ -188,7 +189,7 @@ export class Storage {
     });
     txn();
     this.db.pragma('optimize');
-    console.log(`[Storage] Cleaned data older than ${config.dataRetentionDays} days`);
+    logger.info({ retentionDays: config.dataRetentionDays }, 'Storage cleanup completed');
   }
 
   close() {

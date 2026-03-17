@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { config } from '../config';
 import type { HyperliquidContext, HyperliquidMetaAndCtxResponse } from '../types';
+import { logger } from '../logger';
 
 const HL_API = 'https://api.hyperliquid.xyz/info';
 
@@ -55,7 +56,7 @@ export class HyperliquidFeed extends EventEmitter {
       this.alive = false;
       this.emit('status', false);
       const message = err instanceof Error ? err.message : String(err);
-      console.error('[Hyperliquid] Poll error:', message);
+      logger.error({ err: message }, 'Hyperliquid poll error');
     }
   }
 }

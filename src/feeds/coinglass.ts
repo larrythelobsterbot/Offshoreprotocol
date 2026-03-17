@@ -4,6 +4,7 @@ import type {
   CoinglassHeatmapLevel, CoinglassApiResponse,
   CoinglassHeatmapEntry, CoinglassHeatmapSeparated,
 } from '../types';
+import { logger } from '../logger';
 
 const CG_API = 'https://open-api-v3.coinglass.com/api';
 
@@ -15,7 +16,7 @@ export class CoinglassFeed extends EventEmitter {
 
   start() {
     if (!config.coinglassApiKey) {
-      console.log('[Coinglass] No API key configured, skipping');
+      logger.info('Coinglass: no API key configured, skipping');
       return;
     }
     this.poll();
@@ -93,7 +94,7 @@ export class CoinglassFeed extends EventEmitter {
       this.alive = false;
       this.emit('status', false);
       const message = err instanceof Error ? err.message : String(err);
-      console.error('[Coinglass] Poll error:', message);
+      logger.error({ err: message }, 'Coinglass poll error');
     }
   }
 }

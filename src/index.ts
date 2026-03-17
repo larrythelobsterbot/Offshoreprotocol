@@ -8,12 +8,12 @@ import { sendTelegramAlert } from './engine/telegram';
 import { Storage } from './storage/db';
 import { ApiServer } from './api/server';
 import { config } from './config';
+import { logger } from './logger';
 
 async function main() {
-  console.log('='.repeat(50));
-  console.log('  OFFSHORE OPS TERMINAL v3.0');
-  console.log('  ETH Volatility Regime Monitor');
-  console.log('='.repeat(50));
+  logger.info('='.repeat(50));
+  logger.info('OFFSHORE OPS TERMINAL v3.0 — ETH Volatility Regime Monitor');
+  logger.info('='.repeat(50));
 
   // Initialize components
   const storage = new Storage();
@@ -73,7 +73,7 @@ async function main() {
 
   // Alerts → Telegram + storage
   engine.on('alert', async (alert) => {
-    console.log(`[ALERT] ${alert.message}`);
+    logger.warn({ alert: alert.type, dangerScore: alert.dangerScore }, alert.message);
     storage.insertAlert(alert);
     await sendTelegramAlert(alert);
     server.broadcastAlert(alert);
@@ -128,18 +128,20 @@ async function main() {
     const conns = Object.entries(state.connections)
       .map(([k, v]) => `${k}:${v ? '✓' : '✗'}`)
       .join(' ');
-    console.log(
-      `[Status] ETH: $${state.ethPrice?.toFixed(2) ?? '---'} | ` +
-      `Danger: ${state.scores.dangerScore}/100 | ` +
-      `Vol: ${state.volatility.regime} | ` +
-      `Trades/min: ${state.meta.tradeRate} | ` +
-      `${conns}`
+    logger.info(
+      {
+        ethPrice: state.ethPrice?.toFixed(2) ?? '---',
+        dangerScore: state.scores.dangerScore,
+        regime: state.volatility.regime,
+        tradeRate: state.meta.tradeRate,
+      },
+      `Status: ${conns}`
     );
   }, 60_000);
 
   // Graceful shutdown
   const shutdown = () => {
-    console.log('\n[Shutdown] Cleaning up...');
+    logger.info('Shutting down...');
     binance.stop();
     bybit.stop();
     hl.stop();
@@ -156,10 +158,10 @@ async function main() {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  console.log('\n[Ready] All feeds started. Waiting for data...\n');
+  logger.info('All feeds started. Waiting for data...');
 }
 
 main().catch((err) => {
-  console.error('Fatal error:', err);
+  logger.fatal({ err }, 'Fatal error');
   process.exit(1);
 });

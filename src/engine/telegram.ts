@@ -1,5 +1,6 @@
 import { config } from '../config';
 import type { AlertEvent } from '../types';
+import { logger } from '../logger';
 
 const TG_API = 'https://api.telegram.org';
 
@@ -17,9 +18,9 @@ export async function sendTelegramAlert(alert: AlertEvent) {
         parse_mode: 'HTML',
       }),
     });
-    console.log(`[Telegram] Alert sent: ${alert.type}`);
+    logger.info({ alertType: alert.type }, 'Telegram alert sent');
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error('[Telegram] Send failed:', message);
+    logger.error({ err: message }, 'Telegram send failed');
   }
 }

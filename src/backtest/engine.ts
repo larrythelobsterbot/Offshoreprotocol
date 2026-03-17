@@ -5,6 +5,7 @@
 // ============================================================
 
 import type { Kline } from './fetcher';
+import { logger } from '../logger';
 
 // Same thresholds as live engine
 const THRESHOLDS = {
@@ -114,7 +115,7 @@ export function runBacktest(
   const startIdx = cfg.volWindow + 1;
   const endIdx = klines.length - windowMin;
 
-  console.log(`[Backtest] ${opType}: simulating from candle ${startIdx} to ${endIdx}, step ${cfg.sampleEvery}`);
+  logger.info(`[Backtest] ${opType}: simulating from candle ${startIdx} to ${endIdx}, step ${cfg.sampleEvery}`);
 
   for (let i = startIdx; i < endIdx; i += cfg.sampleEvery) {
     // Get trailing vol
@@ -222,20 +223,20 @@ export function runBacktest(
 
 // Pretty print results
 export function printResults(r: BacktestResults) {
-  console.log('\n' + '='.repeat(60));
-  console.log(`  BACKTEST: ${r.operation.toUpperCase()}`);
-  console.log('='.repeat(60));
-  console.log(`  Simulations: ${r.totalSimulations.toLocaleString()}`);
-  console.log(`  Failures:    ${r.totalFailures.toLocaleString()} (${(r.overallFailRate * 100).toFixed(2)}%)`);
-  console.log(`  Avg Predicted P(fail): ${(r.overallAvgPredicted * 100).toFixed(2)}%`);
-  console.log(`  Brier Score: ${r.brierScore.toFixed(4)} (lower = better, <0.1 = good)`);
+  logger.info('\n' + '='.repeat(60));
+  logger.info(`  BACKTEST: ${r.operation.toUpperCase()}`);
+  logger.info('='.repeat(60));
+  logger.info(`  Simulations: ${r.totalSimulations.toLocaleString()}`);
+  logger.info(`  Failures:    ${r.totalFailures.toLocaleString()} (${(r.overallFailRate * 100).toFixed(2)}%)`);
+  logger.info(`  Avg Predicted P(fail): ${(r.overallAvgPredicted * 100).toFixed(2)}%`);
+  logger.info(`  Brier Score: ${r.brierScore.toFixed(4)} (lower = better, <0.1 = good)`);
 
-  console.log('\n  CALIBRATION (predicted vs actual failure rate):');
-  console.log('  ' + '-'.repeat(56));
-  console.log('  Pred Range   | Count   | Actual   | Predicted | Error');
-  console.log('  ' + '-'.repeat(56));
+  logger.info('\n  CALIBRATION (predicted vs actual failure rate):');
+  logger.info('  ' + '-'.repeat(56));
+  logger.info('  Pred Range   | Count   | Actual   | Predicted | Error');
+  logger.info('  ' + '-'.repeat(56));
   for (const b of r.calibration) {
-    console.log(
+    logger.info(
       `  ${b.bucketLabel.padEnd(12)} | ${String(b.count).padStart(6)} | ` +
       `${(b.actualRate * 100).toFixed(1).padStart(6)}%  | ` +
       `${(b.avgPredicted * 100).toFixed(1).padStart(6)}%   | ` +
@@ -243,24 +244,24 @@ export function printResults(r: BacktestResults) {
     );
   }
 
-  console.log('\n  BY VOLATILITY REGIME:');
-  console.log('  ' + '-'.repeat(50));
+  logger.info('\n  BY VOLATILITY REGIME:');
+  logger.info('  ' + '-'.repeat(50));
   for (const rg of r.byRegime) {
     if (rg.count === 0) continue;
-    console.log(
+    logger.info(
       `  ${rg.regime.toUpperCase().padEnd(8)} | ${String(rg.count).padStart(6)} ops | ` +
       `Fail: ${(rg.failRate * 100).toFixed(1)}% | Pred: ${(rg.avgPredicted * 100).toFixed(1)}%`
     );
   }
 
-  console.log('\n  HOURLY FAILURE PATTERN (UTC):');
-  console.log('  ' + '-'.repeat(50));
+  logger.info('\n  HOURLY FAILURE PATTERN (UTC):');
+  logger.info('  ' + '-'.repeat(50));
   const maxRate = Math.max(...r.hourlyPattern.map(h => h.failRate));
   for (const h of r.hourlyPattern) {
     if (h.count === 0) continue;
     const barLen = maxRate > 0 ? Math.round((h.failRate / maxRate) * 20) : 0;
     const bar = '█'.repeat(barLen) + '░'.repeat(20 - barLen);
-    console.log(
+    logger.info(
       `  ${String(h.hour).padStart(2)}:00 | ${bar} | ${(h.failRate * 100).toFixed(1)}% (n=${h.count})`
     );
   }

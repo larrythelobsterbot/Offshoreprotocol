@@ -3,6 +3,7 @@ import { EventEmitter } from 'events';
 import type {
   BinanceAggTradeMsg, BinanceDepthMsg, BinanceForceOrderMsg, BinanceKlineMsg,
 } from '../types';
+import { logger } from '../logger';
 
 const BINANCE_WS = 'wss://fstream.binance.com/ws';
 const STREAMS = [
@@ -50,7 +51,7 @@ export class BinanceFeed extends EventEmitter {
     this.ws.on('open', () => {
       this.alive = true;
       this.reconnectAttempt = 0;
-      console.log('[Binance] Connected');
+      logger.info('Binance connected');
       this.emit('status', true);
       this.pingTimer = setInterval(() => this.ws?.ping(), 30_000);
     });
@@ -69,12 +70,12 @@ export class BinanceFeed extends EventEmitter {
       if (this.pingTimer) clearInterval(this.pingTimer);
       const delay = this.getReconnectDelay();
       this.reconnectAttempt++;
-      console.log(`[Binance] Disconnected, reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${this.reconnectAttempt})...`);
+      logger.warn({ delay: (delay / 1000).toFixed(1), attempt: this.reconnectAttempt }, 'Binance disconnected, reconnecting');
       this.reconnectTimer = setTimeout(() => this.connect(), delay);
     });
 
     this.ws.on('error', (err) => {
-      console.error('[Binance] WS error:', err.message);
+      logger.error({ err: err.message }, 'Binance WS error');
     });
   }
 

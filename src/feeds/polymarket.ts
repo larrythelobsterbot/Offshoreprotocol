@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { config } from '../config';
 import type { PolymarketData, PolymarketPriceResponse } from '../types';
+import { logger } from '../logger';
 
 const POLY_CLOB = 'https://clob.polymarket.com';
 
@@ -12,7 +13,7 @@ export class PolymarketFeed extends EventEmitter {
 
   start() {
     if (!config.polymarketTokenId) {
-      console.log('[Polymarket] No token ID configured, skipping');
+      logger.info('Polymarket: no token ID configured, skipping');
       return;
     }
     this.poll();
@@ -55,7 +56,7 @@ export class PolymarketFeed extends EventEmitter {
       // Don't spam errors if token not configured or API unreachable
       if (this.alive) {
         const message = err instanceof Error ? err.message : String(err);
-        console.error('[Polymarket] Poll error:', message);
+        logger.error({ err: message }, 'Polymarket poll error');
       }
     }
   }
