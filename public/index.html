@@ -181,6 +181,7 @@
     font-size: 36px;
     font-weight: 700;
     line-height: 1;
+    transition: color 0.3s;
   }
   .op-score-label {
     font-size: 10px;
@@ -194,6 +195,12 @@
     font-size: 12px;
     margin-top: 8px;
     color: var(--dim);
+    transition: color 0.3s;
+  }
+  .op-sparkline {
+    width: 100%;
+    height: 40px;
+    margin-top: 8px;
   }
 
   /* Danger gauge */
@@ -203,6 +210,7 @@
     font-size: 48px;
     font-weight: 700;
     line-height: 1;
+    transition: color 0.3s;
   }
   .danger-bar {
     height: 6px;
@@ -221,6 +229,11 @@
     font-size: 11px;
     font-family: 'JetBrains Mono', monospace;
     color: var(--dim);
+  }
+  .danger-history-chart {
+    width: 100%;
+    height: 80px;
+    margin-top: 10px;
   }
 
   /* CVD & Liq */
@@ -283,8 +296,33 @@
   /* Chart */
   .mini-chart {
     width: 100%;
-    height: 60px;
+    height: 120px;
     margin-top: 8px;
+    position: relative;
+  }
+  .cvd-chart-wrap {
+    position: relative;
+    width: 100%;
+    height: 120px;
+    margin-top: 8px;
+  }
+  .cvd-chart-wrap canvas {
+    width: 100%;
+    height: 100%;
+  }
+  .cvd-tooltip {
+    display: none;
+    position: absolute;
+    background: rgba(15,18,24,0.95);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text);
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 10;
   }
 
   /* Meta bar */
@@ -328,6 +366,41 @@
     font-size: 12px;
     width: 200px;
   }
+
+  /* ========== Upgrade #3: Responsive Layout ========== */
+  @media (max-width: 768px) {
+    .grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .span2 { grid-column: span 2; }
+    .span4 { grid-column: span 2; }
+    .ops-grid { grid-template-columns: repeat(2, 1fr); }
+    .header {
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 12px 16px;
+    }
+    .header-left { flex-wrap: wrap; }
+    .grid { padding: 12px 16px; }
+    .ops-grid { padding: 0 16px 12px; }
+    .meta-bar { flex-wrap: wrap; gap: 10px; padding: 8px 16px; }
+  }
+  @media (max-width: 480px) {
+    .grid {
+      grid-template-columns: 1fr;
+    }
+    .span2 { grid-column: span 1; }
+    .span4 { grid-column: span 1; }
+    .ops-grid { grid-template-columns: 1fr; }
+    .header-left { flex-wrap: wrap; gap: 8px; }
+    .header h1 { font-size: 13px; letter-spacing: 1px; }
+    .conn-bar { flex-wrap: wrap; gap: 6px; }
+    .price-big { font-size: 24px; }
+    .danger-score { font-size: 36px; }
+    .meta-bar { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+    .grid { padding: 8px 12px; }
+    .ops-grid { padding: 0 12px 8px; }
+  }
 </style>
 </head>
 <body>
@@ -355,7 +428,7 @@
 
 <!-- Calibration context bar -->
 <div style="padding: 8px 24px;">
-  <div class="card" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;">
+  <div class="card" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;flex-wrap:wrap;gap:8px;">
     <div style="display:flex;align-items:center;gap:12px;">
       <span class="card-title" style="margin:0">SUGGESTION</span>
       <span id="suggestion" style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:var(--cyan)">--</span>
@@ -380,6 +453,7 @@
     <div class="op-score" id="scoreExt">--</div>
     <div class="op-score-label">SAFETY SCORE</div>
     <div class="op-prob" id="probExt">P(fail): --</div>
+    <canvas class="op-sparkline" id="sparkExt"></canvas>
   </div>
   <div class="op-card" id="opArms">
     <div class="op-name">ARMS DEAL</div>
@@ -387,6 +461,7 @@
     <div class="op-score" id="scoreArms">--</div>
     <div class="op-score-label">SAFETY SCORE</div>
     <div class="op-prob" id="probArms">P(fail): --</div>
+    <canvas class="op-sparkline" id="sparkArms"></canvas>
   </div>
   <div class="op-card" id="opDrug">
     <div class="op-name">DRUG DEAL</div>
@@ -394,6 +469,7 @@
     <div class="op-score" id="scoreDrug">--</div>
     <div class="op-score-label">SAFETY SCORE</div>
     <div class="op-prob" id="probDrug">P(fail): --</div>
+    <canvas class="op-sparkline" id="sparkDrug"></canvas>
   </div>
 </div>
 
@@ -405,14 +481,15 @@
     <div class="price-change" id="ethChange">--</div>
   </div>
 
-  <!-- Danger Score -->
-  <div class="card">
+  <!-- Danger Score — spans 2 columns -->
+  <div class="card span2">
     <div class="card-title">COMPOSITE DANGER</div>
     <div class="danger-wrap">
       <div class="danger-score" id="dangerScore">--</div>
       <div class="danger-bar">
         <div class="danger-fill" id="dangerFill" style="width:0%"></div>
       </div>
+      <canvas class="danger-history-chart" id="dangerHistoryChart"></canvas>
     </div>
   </div>
 
@@ -480,7 +557,10 @@
       <span class="metric-label">Taker Buy Ratio</span>
       <span class="metric-val" id="takerRatio">--</span>
     </div>
-    <canvas class="mini-chart" id="cvdChart"></canvas>
+    <div class="cvd-chart-wrap">
+      <canvas class="mini-chart" id="cvdChart"></canvas>
+      <div class="cvd-tooltip" id="cvdTooltip"></div>
+    </div>
   </div>
 
   <!-- Orderbook Imbalance -->
@@ -571,6 +651,69 @@ let reconnectTimer = null;
 const alerts = [];
 let currentState = null;
 
+// ============================================================
+// Upgrade #1: Sparkline history buffers (30 min @ 5s = 360 pts)
+// ============================================================
+const SPARKLINE_MAX = 360;
+const sparkHistory = {
+  extortion: [],
+  arms: [],
+  drug: []
+};
+let lastSparkSample = 0;
+const SPARK_INTERVAL = 5000; // 5 seconds
+
+// ============================================================
+// Upgrade #2: Danger score history (2 hours @ 5s = 1440 pts)
+// ============================================================
+const DANGER_HISTORY_MAX = 1440;
+const dangerHistory = []; // { t: timestamp, v: dangerScore }
+let lastDangerSample = 0;
+
+// ============================================================
+// Upgrade #4: Animated value transitions
+// ============================================================
+const activeAnimations = {};
+
+function animateValue(elementId, newValue, duration, formatFn) {
+  if (activeAnimations[elementId]) {
+    cancelAnimationFrame(activeAnimations[elementId].raf);
+  }
+
+  const el = document.getElementById(elementId);
+  if (!el) return;
+
+  const currentText = el.textContent || el.innerText;
+  const startValue = parseFloat(currentText.replace(/[^0-9.\-]/g, ''));
+
+  if (isNaN(startValue) || startValue === newValue) {
+    el.textContent = formatFn ? formatFn(newValue) : newValue;
+    return;
+  }
+
+  const startTime = performance.now();
+  const diff = newValue - startValue;
+
+  function step(timestamp) {
+    const elapsed = timestamp - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    // ease-out cubic
+    const eased = 1 - Math.pow(1 - progress, 3);
+    const current = startValue + diff * eased;
+
+    el.textContent = formatFn ? formatFn(current) : Math.round(current);
+
+    if (progress < 1) {
+      activeAnimations[elementId] = { raf: requestAnimationFrame(step) };
+    } else {
+      delete activeAnimations[elementId];
+    }
+  }
+
+  activeAnimations[elementId] = { raf: requestAnimationFrame(step) };
+}
+
+
 // Deep merge: apply partial delta onto existing state
 function deepMerge(target, source) {
   if (!source || typeof source !== 'object') return source;
@@ -615,18 +758,20 @@ function connect() {
     try {
       const msg = JSON.parse(e.data);
       if (msg.type === 'full') {
-        // Full state replacement
         currentState = msg.data;
         render(currentState);
       } else if (msg.type === 'delta') {
-        // Merge partial update into current state
         if (currentState) {
           currentState = deepMerge(currentState, msg.data);
           render(currentState);
         }
       } else if (msg.type === 'state') {
-        // Backwards compatibility with older server
-        currentState = msg.data;
+        // Backwards compatibility: {type:'state', full:true/false, data:...}
+        if (msg.full === false && currentState) {
+          currentState = deepMerge(currentState, msg.data);
+        } else {
+          currentState = msg.data;
+        }
         render(currentState);
       } else if (msg.type === 'alert') {
         addAlert(msg.data);
@@ -669,28 +814,52 @@ function toggleSettings() {
 function render(s) {
   if (!s) return;
 
+  const now = Date.now();
+
+  // Sample sparkline data every 5 seconds
+  if (now - lastSparkSample >= SPARK_INTERVAL) {
+    lastSparkSample = now;
+    sparkHistory.extortion.push(s.scores.extortion);
+    sparkHistory.arms.push(s.scores.arms);
+    sparkHistory.drug.push(s.scores.drug);
+    if (sparkHistory.extortion.length > SPARKLINE_MAX) sparkHistory.extortion.shift();
+    if (sparkHistory.arms.length > SPARKLINE_MAX) sparkHistory.arms.shift();
+    if (sparkHistory.drug.length > SPARKLINE_MAX) sparkHistory.drug.shift();
+  }
+
+  // Sample danger history every 5 seconds
+  if (now - lastDangerSample >= SPARK_INTERVAL) {
+    lastDangerSample = now;
+    dangerHistory.push({ t: now, v: s.scores.dangerScore });
+    if (dangerHistory.length > DANGER_HISTORY_MAX) dangerHistory.shift();
+  }
+
   // Connections
   renderConnections(s.connections);
 
-  // ETH Price
+  // ETH Price (animated)
   if (s.ethPrice) {
-    document.getElementById('ethPrice').textContent = '$' + s.ethPrice.toFixed(2);
+    animateValue('ethPrice', s.ethPrice, 300, function(v) { return '$' + v.toFixed(2); });
     if (s.ethPriceStart) {
       const pct = ((s.ethPrice - s.ethPriceStart) / s.ethPriceStart * 100);
       const el = document.getElementById('ethChange');
-      el.textContent = `${pct >= 0 ? '+' : ''}${pct.toFixed(3)}% since start`;
+      el.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(3) + '% since start';
       el.style.color = pct >= 0 ? 'var(--green)' : 'var(--red)';
     }
   }
 
-  // Danger
+  // Danger (animated)
   const ds = s.scores.dangerScore;
+  const dangerColor = ds < 25 ? 'var(--green)' : ds < 50 ? 'var(--yellow)' : ds < 75 ? 'var(--orange)' : 'var(--red)';
+  animateValue('dangerScore', ds, 300, function(v) { return Math.round(v); });
   const dangerEl = document.getElementById('dangerScore');
-  dangerEl.textContent = ds;
-  dangerEl.style.color = ds < 25 ? 'var(--green)' : ds < 50 ? 'var(--yellow)' : ds < 75 ? 'var(--orange)' : 'var(--red)';
+  dangerEl.style.color = dangerColor;
   const fill = document.getElementById('dangerFill');
   fill.style.width = ds + '%';
-  fill.style.background = ds < 25 ? 'var(--green)' : ds < 50 ? 'var(--yellow)' : ds < 75 ? 'var(--orange)' : 'var(--red)';
+  fill.style.background = dangerColor;
+
+  // Danger history chart
+  drawDangerHistoryChart();
 
   // Volatility
   const vr = document.getElementById('volRegime');
@@ -700,10 +869,10 @@ function render(s) {
   document.getElementById('vol30m').textContent = s.volatility.vol30m != null ? s.volatility.vol30m.toFixed(1) + '%' : '--';
   document.getElementById('vol90m').textContent = s.volatility.vol90m != null ? s.volatility.vol90m.toFixed(1) + '%' : '--';
 
-  // Operation cards
-  renderOp('Ext', 'opExtortion', s.scores.extortion, s.scores.probExtortion);
-  renderOp('Arms', 'opArms', s.scores.arms, s.scores.probArms);
-  renderOp('Drug', 'opDrug', s.scores.drug, s.scores.probDrug);
+  // Operation cards (animated scores + sparklines)
+  renderOp('Ext', 'opExtortion', s.scores.extortion, s.scores.probExtortion, 'sparkExt', sparkHistory.extortion);
+  renderOp('Arms', 'opArms', s.scores.arms, s.scores.probArms, 'sparkArms', sparkHistory.arms);
+  renderOp('Drug', 'opDrug', s.scores.drug, s.scores.probDrug, 'sparkDrug', sparkHistory.drug);
 
   // CVD
   const fmtUsd = (v) => {
@@ -712,17 +881,17 @@ function render(s) {
     return v.toFixed(0);
   };
   const colorVal = (v, invert) => {
-    const c = invert ? (v < 0 ? 'var(--green)' : v > 0 ? 'var(--red)' : 'var(--text)') 
+    const c = invert ? (v < 0 ? 'var(--green)' : v > 0 ? 'var(--red)' : 'var(--text)')
                      : (v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--text)');
-    return `<span style="color:${c}">${fmtUsd(v)}</span>`;
+    return '<span style="color:' + c + '">' + fmtUsd(v) + '</span>';
   };
   document.getElementById('cvdCombined').innerHTML = colorVal(s.cvd.combined);
   document.getElementById('cvdBin').innerHTML = colorVal(s.cvd.binance);
   document.getElementById('cvdByb').innerHTML = colorVal(s.cvd.bybit);
   document.getElementById('cvdDiv').textContent = s.scores.cvdDivergence.toFixed(2);
-  document.getElementById('takerRatio').innerHTML = `<span style="color:${s.scores.takerRatio < 0.4 ? 'var(--red)' : s.scores.takerRatio > 0.6 ? 'var(--green)' : 'var(--text)'}">${(s.scores.takerRatio * 100).toFixed(1)}%</span>`;
+  document.getElementById('takerRatio').innerHTML = '<span style="color:' + (s.scores.takerRatio < 0.4 ? 'var(--red)' : s.scores.takerRatio > 0.6 ? 'var(--green)' : 'var(--text)') + '">' + (s.scores.takerRatio * 100).toFixed(1) + '%</span>';
 
-  // CVD mini chart
+  // CVD chart (upgraded)
   drawCvdChart(s.cvd.history);
 
   // Orderbook
@@ -731,13 +900,13 @@ function render(s) {
   document.getElementById('obBin').innerHTML = fmtImbalance(obBin.imbalance);
   document.getElementById('obBinSpread').textContent = obBin.spreadPct ? obBin.spreadPct.toFixed(4) + '%' : '--';
   document.getElementById('obByb').innerHTML = fmtImbalance(obByb.imbalance);
-  document.getElementById('obBidWall').textContent = obBin.bidWall ? `$${obBin.bidWall.price.toFixed(0)} (${fmtUsd(obBin.bidWall.size)})` : '--';
-  document.getElementById('obAskWall').textContent = obBin.askWall ? `$${obBin.askWall.price.toFixed(0)} (${fmtUsd(obBin.askWall.size)})` : '--';
+  document.getElementById('obBidWall').textContent = obBin.bidWall ? '$' + obBin.bidWall.price.toFixed(0) + ' (' + fmtUsd(obBin.bidWall.size) + ')' : '--';
+  document.getElementById('obAskWall').textContent = obBin.askWall ? '$' + obBin.askWall.price.toFixed(0) + ' (' + fmtUsd(obBin.askWall.size) + ')' : '--';
 
   // Liquidations
-  document.getElementById('cascadeRisk').innerHTML = `<span class="cascade-badge ${s.scores.cascadeRisk}">${s.scores.cascadeRisk}</span>`;
-  document.getElementById('liqLong').innerHTML = `<span style="color:var(--green)">${fmtUsd(s.scores.liqLong5m)}</span>`;
-  document.getElementById('liqShort').innerHTML = `<span style="color:var(--red)">${fmtUsd(s.scores.liqShort5m)}</span>`;
+  document.getElementById('cascadeRisk').innerHTML = '<span class="cascade-badge ' + s.scores.cascadeRisk + '">' + s.scores.cascadeRisk + '</span>';
+  document.getElementById('liqLong').innerHTML = '<span style="color:var(--green)">' + fmtUsd(s.scores.liqLong5m) + '</span>';
+  document.getElementById('liqShort').innerHTML = '<span style="color:var(--red)">' + fmtUsd(s.scores.liqShort5m) + '</span>';
   document.getElementById('liqVelocity').textContent = fmtUsd(s.scores.liqVelocity) + '/min';
   document.getElementById('ivrvSpread').textContent = (s.scores.ivrvSpread * 100).toFixed(2) + '%';
 
@@ -746,7 +915,7 @@ function render(s) {
     const hl = s.hyperliquid;
     const fr = document.getElementById('hlFunding');
     const fundingPct = (hl.funding * 100).toFixed(4);
-    fr.innerHTML = `<span style="color:${hl.funding > 0.0005 ? 'var(--red)' : hl.funding < -0.0005 ? 'var(--green)' : 'var(--text)'}">${fundingPct}%</span>`;
+    fr.innerHTML = '<span style="color:' + (hl.funding > 0.0005 ? 'var(--red)' : hl.funding < -0.0005 ? 'var(--green)' : 'var(--text)') + '">' + fundingPct + '%</span>';
     document.getElementById('hlOI').textContent = '$' + fmtUsd(hl.openInterest);
     document.getElementById('hlPremium').textContent = (hl.premium * 100).toFixed(4) + '%';
     document.getElementById('hlVolume').textContent = '$' + fmtUsd(hl.dayVolume);
@@ -782,96 +951,356 @@ function render(s) {
   }
 }
 
-function renderOp(prefix, cardId, score, prob) {
+// ============================================================
+// Upgrade #1: Sparklines in operation cards
+// ============================================================
+function renderOp(prefix, cardId, score, prob, sparkCanvasId, history) {
   const card = document.getElementById(cardId);
   card.className = 'op-card ' + (score >= 70 ? 'safe' : score >= 40 ? 'caution' : 'danger');
-  
-  const scoreEl = document.getElementById('score' + prefix);
-  scoreEl.textContent = score;
-  scoreEl.style.color = score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow)' : 'var(--red)';
-  
-  document.getElementById('prob' + prefix).textContent = `P(fail): ${(prob * 100).toFixed(1)}% [cal]`;
+
+  const scoreColor = score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow)' : 'var(--red)';
+
+  // Animate the safety score
+  animateValue('score' + prefix, score, 300, function(v) { return Math.round(v); });
+  document.getElementById('score' + prefix).style.color = scoreColor;
+
+  // Animate P(fail)
+  animateValue('prob' + prefix, prob * 100, 300, function(v) { return 'P(fail): ' + v.toFixed(1) + '% [cal]'; });
+
+  // Draw sparkline
+  drawSparkline(sparkCanvasId, history);
 }
 
-function fmtImbalance(v) {
-  const pct = (v * 100).toFixed(1);
-  const label = v > 0 ? 'BID' : 'ASK';
-  const color = v > 0.1 ? 'var(--green)' : v < -0.1 ? 'var(--red)' : 'var(--text)';
-  return `<span style="color:${color}">${pct}% ${label}</span>`;
-}
-
-function renderConnections(conns) {
-  const bar = document.getElementById('connBar');
-  const names = { binance: 'BIN', bybit: 'BYB', hyperliquid: 'HL', polymarket: 'POLY', coinglass: 'CG' };
-  bar.innerHTML = Object.entries(conns).map(([k, v]) =>
-    `<div class="conn-pill"><span class="conn-dot${v ? ' on' : ''}"></span>${names[k]}</div>`
-  ).join('');
-}
-
-function renderHeatmap(levels, currentPrice) {
-  const container = document.getElementById('heatmapContainer');
-  const maxVal = Math.max(...levels.map(l => l.totalValue));
-  container.innerHTML = levels.slice(0, 6).map(l => {
-    const pct = (l.totalValue / maxVal * 100).toFixed(0);
-    const dist = ((l.price - currentPrice) / currentPrice * 100).toFixed(2);
-    const color = l.side === 'long' ? 'var(--green)' : 'var(--red)';
-    const fmtVal = l.totalValue >= 1e6 ? (l.totalValue / 1e6).toFixed(1) + 'M' : (l.totalValue / 1e3).toFixed(0) + 'K';
-    return `<div class="heatmap-row">
-      <span style="width:60px;color:${color}">$${l.price.toFixed(0)}</span>
-      <div class="heatmap-bar" style="width:${pct}%;background:${color};opacity:0.5"></div>
-      <span style="width:50px;text-align:right">${fmtVal}</span>
-      <span style="width:50px;text-align:right;color:var(--dim)">${dist}%</span>
-    </div>`;
-  }).join('');
-}
-
-function drawCvdChart(history) {
-  const canvas = document.getElementById('cvdChart');
-  if (!canvas || history.length < 2) return;
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width = canvas.offsetWidth;
-  const h = canvas.height = 60;
+function drawSparkline(canvasId, data) {
+  var canvas = document.getElementById(canvasId);
+  if (!canvas || data.length < 2) return;
+  var ctx = canvas.getContext('2d');
+  var w = canvas.width = canvas.offsetWidth;
+  var h = canvas.height = 40;
   ctx.clearRect(0, 0, w, h);
 
-  const vals = history.map(p => p.v);
-  const min = Math.min(...vals);
-  const max = Math.max(...vals);
-  const range = max - min || 1;
+  var min = Math.min.apply(null, data);
+  var max = Math.max.apply(null, data);
+  var range = max - min || 1;
+
+  // Determine trend: compare first half avg to second half avg
+  var mid = Math.floor(data.length / 2);
+  var firstHalf = 0, secondHalf = 0;
+  for (var i = 0; i < mid; i++) firstHalf += data[i];
+  for (var i = mid; i < data.length; i++) secondHalf += data[i];
+  firstHalf /= mid || 1;
+  secondHalf /= (data.length - mid) || 1;
+  var trendUp = secondHalf >= firstHalf;
+
+  var color = trendUp ? '#00e676' : '#ff1744';
 
   ctx.beginPath();
-  ctx.strokeStyle = vals[vals.length - 1] >= 0 ? '#00e676' : '#ff1744';
+  ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
-  
-  for (let i = 0; i < vals.length; i++) {
-    const x = (i / (vals.length - 1)) * w;
-    const y = h - ((vals[i] - min) / range) * (h - 4) - 2;
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+
+  for (var i = 0; i < data.length; i++) {
+    var x = (i / (data.length - 1)) * w;
+    var y = h - ((data[i] - min) / range) * (h - 4) - 2;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Subtle fill
+  var lastX = ((data.length - 1) / (data.length - 1)) * w;
+  var lastY = h - ((data[data.length - 1] - min) / range) * (h - 4) - 2;
+  ctx.lineTo(lastX, h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  ctx.fillStyle = trendUp ? 'rgba(0,230,118,0.08)' : 'rgba(255,23,68,0.08)';
+  ctx.fill();
+}
+
+// ============================================================
+// Upgrade #2: Danger Score History Area Chart
+// ============================================================
+function drawDangerHistoryChart() {
+  var canvas = document.getElementById('dangerHistoryChart');
+  if (!canvas || dangerHistory.length < 2) return;
+  var ctx = canvas.getContext('2d');
+  var w = canvas.width = canvas.offsetWidth;
+  var h = canvas.height = 80;
+  ctx.clearRect(0, 0, w, h);
+
+  var data = dangerHistory;
+  var minT = data[0].t;
+  var maxT = data[data.length - 1].t;
+  var timeRange = maxT - minT || 1;
+
+  // Draw subtle horizontal grid lines at 25, 50, 75
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  for (var level = 25; level <= 75; level += 25) {
+    var gy = h - (level / 100) * (h - 4) - 2;
+    ctx.beginPath();
+    ctx.moveTo(0, gy);
+    ctx.lineTo(w, gy);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Build path
+  var points = [];
+  for (var i = 0; i < data.length; i++) {
+    var x = ((data[i].t - minT) / timeRange) * w;
+    var y = h - (Math.min(data[i].v, 100) / 100) * (h - 4) - 2;
+    points.push({ x: x, y: y, v: data[i].v });
+  }
+
+  // Gradient fill (green -> yellow -> red)
+  var gradient = ctx.createLinearGradient(0, h, 0, 0);
+  gradient.addColorStop(0, 'rgba(0,230,118,0.25)');
+  gradient.addColorStop(0.35, 'rgba(255,214,0,0.25)');
+  gradient.addColorStop(0.7, 'rgba(255,145,0,0.25)');
+  gradient.addColorStop(1, 'rgba(255,23,68,0.25)');
+
+  // Fill area
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (var i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  ctx.lineTo(points[points.length - 1].x, h);
+  ctx.lineTo(points[0].x, h);
+  ctx.closePath();
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  // Stroke line
+  ctx.beginPath();
+  for (var i = 0; i < points.length; i++) {
+    var v = data[i].v;
+    if (i === 0) ctx.moveTo(points[i].x, points[i].y);
+    else ctx.lineTo(points[i].x, points[i].y);
+  }
+  // Color the line based on last value
+  var lastVal = data[data.length - 1].v;
+  ctx.strokeStyle = lastVal < 25 ? '#00e676' : lastVal < 50 ? '#ffd600' : lastVal < 75 ? '#ff9100' : '#ff1744';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Time labels every 15 min
+  ctx.font = '9px "JetBrains Mono", monospace';
+  ctx.fillStyle = 'rgba(200,205,216,0.4)';
+  ctx.textAlign = 'center';
+
+  var interval15m = 15 * 60 * 1000;
+  var firstLabel = Math.ceil(minT / interval15m) * interval15m;
+  for (var t = firstLabel; t <= maxT; t += interval15m) {
+    var lx = ((t - minT) / timeRange) * w;
+    if (lx < 25 || lx > w - 25) continue;
+    var d = new Date(t);
+    var label = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    ctx.fillText(label, lx, h - 1);
+  }
+}
+
+// ============================================================
+// Upgrade #5: Richer CVD Chart with gradient, tooltip, grid
+// ============================================================
+function drawCvdChart(history) {
+  var canvas = document.getElementById('cvdChart');
+  if (!canvas || history.length < 2) return;
+  var ctx = canvas.getContext('2d');
+  var w = canvas.width = canvas.offsetWidth;
+  var h = canvas.height = 120;
+  ctx.clearRect(0, 0, w, h);
+
+  var vals = history.map(function(p) { return p.v; });
+  var times = history.map(function(p) { return p.t; });
+  var min = Math.min.apply(null, vals);
+  var max = Math.max.apply(null, vals);
+  var range = max - min || 1;
+
+  // Subtle horizontal grid lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  for (var g = 0.25; g <= 0.75; g += 0.25) {
+    var gy = h - g * (h - 20) - 10;
+    ctx.beginPath();
+    ctx.moveTo(0, gy);
+    ctx.lineTo(w, gy);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Build points
+  var points = [];
+  for (var i = 0; i < vals.length; i++) {
+    var x = (i / (vals.length - 1)) * w;
+    var y = (h - 20) - ((vals[i] - min) / range) * (h - 24) + 2;
+    points.push({ x: x, y: y });
+  }
+
+  // Gradient fill
+  var lastV = vals[vals.length - 1];
+  var lineColor = lastV >= 0 ? '#00e676' : '#ff1744';
+  var fillGradient = ctx.createLinearGradient(0, 0, 0, h);
+  if (lastV >= 0) {
+    fillGradient.addColorStop(0, 'rgba(0,230,118,0.2)');
+    fillGradient.addColorStop(1, 'rgba(0,230,118,0.01)');
+  } else {
+    fillGradient.addColorStop(0, 'rgba(255,23,68,0.2)');
+    fillGradient.addColorStop(1, 'rgba(255,23,68,0.01)');
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (var i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  ctx.lineTo(points[points.length - 1].x, h - 10);
+  ctx.lineTo(points[0].x, h - 10);
+  ctx.closePath();
+  ctx.fillStyle = fillGradient;
+  ctx.fill();
+
+  // Stroke line
+  ctx.beginPath();
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 1.5;
+  for (var i = 0; i < points.length; i++) {
+    if (i === 0) ctx.moveTo(points[i].x, points[i].y);
+    else ctx.lineTo(points[i].x, points[i].y);
   }
   ctx.stroke();
 
   // Zero line
-  const zeroY = h - ((0 - min) / range) * (h - 4) - 2;
+  var zeroY = (h - 20) - ((0 - min) / range) * (h - 24) + 2;
   if (zeroY > 0 && zeroY < h) {
     ctx.beginPath();
-    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.setLineDash([4, 4]);
     ctx.moveTo(0, zeroY);
     ctx.lineTo(w, zeroY);
     ctx.stroke();
     ctx.setLineDash([]);
   }
+
+  // Time labels: start and end
+  if (times.length >= 2) {
+    ctx.font = '9px "JetBrains Mono", monospace';
+    ctx.fillStyle = 'rgba(200,205,216,0.4)';
+    var fmtTime = function(t) {
+      var d = new Date(t);
+      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    };
+    ctx.textAlign = 'left';
+    ctx.fillText(fmtTime(times[0]), 2, h - 1);
+    ctx.textAlign = 'right';
+    ctx.fillText(fmtTime(times[times.length - 1]), w - 2, h - 1);
+  }
+
+  // Store chart data for tooltip
+  canvas._cvdData = { points: points, vals: vals, times: times, min: min, max: max, range: range, w: w, h: h };
+}
+
+// CVD chart tooltip handler
+(function() {
+  var chartWrap = null;
+  var tooltip = null;
+  var canvas = null;
+
+  function initTooltip() {
+    chartWrap = document.querySelector('.cvd-chart-wrap');
+    tooltip = document.getElementById('cvdTooltip');
+    canvas = document.getElementById('cvdChart');
+    if (!chartWrap || !tooltip || !canvas) return;
+
+    chartWrap.addEventListener('mousemove', function(e) {
+      var data = canvas._cvdData;
+      if (!data || data.points.length < 2) { tooltip.style.display = 'none'; return; }
+
+      var rect = canvas.getBoundingClientRect();
+      var mx = e.clientX - rect.left;
+      var ratio = mx / rect.width;
+      var idx = Math.round(ratio * (data.vals.length - 1));
+      idx = Math.max(0, Math.min(idx, data.vals.length - 1));
+
+      var val = data.vals[idx];
+      var t = data.times[idx];
+      var d = new Date(t);
+      var timeStr = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' + String(d.getSeconds()).padStart(2, '0');
+
+      var fmtVal;
+      if (Math.abs(val) >= 1e6) fmtVal = (val / 1e6).toFixed(2) + 'M';
+      else if (Math.abs(val) >= 1e3) fmtVal = (val / 1e3).toFixed(0) + 'K';
+      else fmtVal = val.toFixed(0);
+
+      tooltip.textContent = fmtVal + ' @ ' + timeStr;
+      tooltip.style.display = 'block';
+
+      // Position tooltip
+      var tx = e.clientX - rect.left + 10;
+      var ty = e.clientY - rect.top - 20;
+      if (tx + 120 > rect.width) tx = tx - 130;
+      if (ty < 0) ty = 5;
+      tooltip.style.left = tx + 'px';
+      tooltip.style.top = ty + 'px';
+    });
+
+    chartWrap.addEventListener('mouseleave', function() {
+      tooltip.style.display = 'none';
+    });
+  }
+
+  // Init after DOM ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initTooltip);
+  } else {
+    initTooltip();
+  }
+})();
+
+function fmtImbalance(v) {
+  const pct = (v * 100).toFixed(1);
+  const label = v > 0 ? 'BID' : 'ASK';
+  const color = v > 0.1 ? 'var(--green)' : v < -0.1 ? 'var(--red)' : 'var(--text)';
+  return '<span style="color:' + color + '">' + pct + '% ' + label + '</span>';
+}
+
+function renderConnections(conns) {
+  const bar = document.getElementById('connBar');
+  const names = { binance: 'BIN', bybit: 'BYB', hyperliquid: 'HL', polymarket: 'POLY', coinglass: 'CG' };
+  bar.innerHTML = Object.entries(conns).map(function(entry) {
+    return '<div class="conn-pill"><span class="conn-dot' + (entry[1] ? ' on' : '') + '"></span>' + names[entry[0]] + '</div>';
+  }).join('');
+}
+
+function renderHeatmap(levels, currentPrice) {
+  const container = document.getElementById('heatmapContainer');
+  const maxVal = Math.max.apply(null, levels.map(function(l) { return l.totalValue; }));
+  container.innerHTML = levels.slice(0, 6).map(function(l) {
+    const pct = (l.totalValue / maxVal * 100).toFixed(0);
+    const dist = ((l.price - currentPrice) / currentPrice * 100).toFixed(2);
+    const color = l.side === 'long' ? 'var(--green)' : 'var(--red)';
+    const fmtVal = l.totalValue >= 1e6 ? (l.totalValue / 1e6).toFixed(1) + 'M' : (l.totalValue / 1e3).toFixed(0) + 'K';
+    return '<div class="heatmap-row">' +
+      '<span style="width:60px;color:' + color + '">$' + l.price.toFixed(0) + '</span>' +
+      '<div class="heatmap-bar" style="width:' + pct + '%;background:' + color + ';opacity:0.5"></div>' +
+      '<span style="width:50px;text-align:right">' + fmtVal + '</span>' +
+      '<span style="width:50px;text-align:right;color:var(--dim)">' + dist + '%</span>' +
+    '</div>';
+  }).join('');
 }
 
 function addAlert(alert) {
   alerts.unshift(alert);
   if (alerts.length > 20) alerts.pop();
-  
+
   const feed = document.getElementById('alertFeed');
-  feed.innerHTML = alerts.map(a => {
+  feed.innerHTML = alerts.map(function(a) {
     const time = new Date(a.timestamp).toLocaleTimeString();
-    return `<div class="alert-item ${a.type}">
-      <span class="alert-time">${time}</span> ${a.message}
-    </div>`;
+    return '<div class="alert-item ' + a.type + '">' +
+      '<span class="alert-time">' + time + '</span> ' + a.message +
+    '</div>';
   }).join('');
 
   // Browser notification
