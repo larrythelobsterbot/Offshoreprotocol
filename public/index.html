@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OFFSHORE OPS TERMINAL v3</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Outfit:wght@300;400;600;700&display=swap');
+
+  :root {
+    --bg: #0a0c10;
+    --card: #0f1218;
+    --border: #1a1f2e;
+    --text: #c8cdd8;
+    --dim: #5a6270;
+    --cyan: #00e5ff;
+    --green: #00e676;
+    --yellow: #ffd600;
+    --red: #ff1744;
+    --orange: #ff9100;
+    --purple: #b388ff;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Outfit', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #0f1218 0%, var(--bg) 100%);
+  }
+  .header-left { display: flex; align-items: center; gap: 16px; }
+  .header h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--cyan);
+    letter-spacing: 2px;
+  }
+  .header .version {
+    font-size: 11px;
+    color: var(--dim);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .conn-bar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .conn-pill {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+  }
+  .conn-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--red);
+  }
+  .conn-dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+  .server-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    border: 1px solid var(--border);
+  }
+  .server-status.connected { border-color: var(--green); color: var(--green); }
+  .server-status.disconnected { border-color: var(--red); color: var(--red); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    padding: 16px 24px;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .card-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--dim);
+    margin-bottom: 10px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .price-big {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 32px;
+    font-weight: 700;
+    color: var(--cyan);
+    line-height: 1;
+  }
+  .price-change {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    margin-top: 4px;
+  }
+
+  .vol-regime {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    text-transform: uppercase;
+  }
+  .vol-regime.low { background: rgba(0,230,118,0.15); color: var(--green); }
+  .vol-regime.medium { background: rgba(255,214,0,0.15); color: var(--yellow); }
+  .vol-regime.high { background: rgba(255,23,68,0.15); color: var(--red); }
+  .vol-regime.unknown { background: rgba(90,98,112,0.15); color: var(--dim); }
+
+  .vol-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+  .vol-label { font-size: 12px; color: var(--dim); }
+  .vol-val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  /* Operation cards */
+  .ops-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 0 24px 16px; }
+  .op-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+    transition: border-color 0.3s;
+  }
+  .op-card.safe { border-color: var(--green); }
+  .op-card.caution { border-color: var(--yellow); }
+  .op-card.danger { border-color: var(--red); }
+
+  .op-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .op-meta { font-size: 11px; color: var(--dim); margin-bottom: 10px; }
+  .op-score {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 36px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .op-score-label {
+    font-size: 10px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 4px;
+  }
+  .op-prob {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    margin-top: 8px;
+    color: var(--dim);
+  }
+
+  /* Danger gauge */
+  .danger-wrap { text-align: center; }
+  .danger-score {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 48px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .danger-bar {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    margin-top: 10px;
+    overflow: hidden;
+  }
+  .danger-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.5s, background 0.5s;
+  }
+  .danger-breakdown {
+    margin-top: 10px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--dim);
+  }
+
+  /* CVD & Liq */
+  .metric-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 0;
+    font-size: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+  .metric-label { color: var(--dim); }
+  .metric-val { font-family: 'JetBrains Mono', monospace; font-weight: 500; }
+
+  .cascade-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .cascade-badge.LOW { background: rgba(0,230,118,0.15); color: var(--green); }
+  .cascade-badge.ELEVATED { background: rgba(255,214,0,0.15); color: var(--yellow); }
+  .cascade-badge.HIGH { background: rgba(255,145,0,0.15); color: var(--orange); }
+  .cascade-badge.CRITICAL { background: rgba(255,23,68,0.25); color: var(--red); animation: pulse 1s infinite; }
+
+  @keyframes pulse { 50% { opacity: 0.6; } }
+
+  .heatmap-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .heatmap-bar {
+    height: 4px;
+    border-radius: 2px;
+    flex: 1;
+  }
+
+  /* Alerts feed */
+  .alert-item {
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    border-left: 3px solid;
+  }
+  .alert-item.danger_high { background: rgba(255,23,68,0.08); border-color: var(--red); }
+  .alert-item.danger_low { background: rgba(0,230,118,0.08); border-color: var(--green); }
+  .alert-item.cascade { background: rgba(255,23,68,0.12); border-color: var(--red); }
+  .alert-time { font-size: 10px; color: var(--dim); }
+
+  .span2 { grid-column: span 2; }
+  .span4 { grid-column: span 4; }
+
+  /* Chart */
+  .mini-chart {
+    width: 100%;
+    height: 60px;
+    margin-top: 8px;
+  }
+
+  /* Meta bar */
+  .meta-bar {
+    display: flex;
+    gap: 20px;
+    padding: 8px 24px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--dim);
+  }
+
+  /* Settings */
+  .settings-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--dim);
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+  }
+  .settings-toggle:hover { border-color: var(--cyan); color: var(--cyan); }
+  .settings-panel {
+    display: none;
+    padding: 12px 24px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+  }
+  .settings-panel.open { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  .settings-panel label { font-size: 11px; color: var(--dim); }
+  .settings-panel input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    width: 200px;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <h1>OFFSHORE OPS TERMINAL</h1>
+    <span class="version">v3.1 — CALIBRATED</span>
+    <div id="serverStatus" class="server-status disconnected">
+      <span class="conn-dot" id="serverDot"></span>
+      <span id="serverLabel">DISCONNECTED</span>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;">
+    <div class="conn-bar" id="connBar"></div>
+    <button class="settings-toggle" onclick="toggleSettings()">⚙ CONFIG</button>
+  </div>
+</div>
+
+<div class="settings-panel" id="settingsPanel">
+  <label>Server URL:
+    <input id="serverUrl" value="ws://localhost:3000/ws" onchange="reconnect()">
+  </label>
+</div>
+
+<!-- Calibration context bar -->
+<div style="padding: 8px 24px;">
+  <div class="card" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span class="card-title" style="margin:0">SUGGESTION</span>
+      <span id="suggestion" style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:var(--cyan)">--</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span class="card-title" style="margin:0">HOUR RISK</span>
+      <span id="hourlyRisk" class="vol-regime unknown" style="font-size:11px">--</span>
+      <span id="utcHour" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim)">--:00 UTC</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span style="font-size:10px;color:var(--dim);font-family:'JetBrains Mono',monospace;">CALIBRATED</span>
+      <span style="font-size:10px;color:var(--green);font-family:'JetBrains Mono',monospace;">● 90d backtest</span>
+    </div>
+  </div>
+</div>
+
+<!-- Operation safety cards -->
+<div class="ops-grid">
+  <div class="op-card" id="opExtortion">
+    <div class="op-name">EXTORTION</div>
+    <div class="op-meta">5 min • 600x • 0.17% threshold</div>
+    <div class="op-score" id="scoreExt">--</div>
+    <div class="op-score-label">SAFETY SCORE</div>
+    <div class="op-prob" id="probExt">P(fail): --</div>
+  </div>
+  <div class="op-card" id="opArms">
+    <div class="op-name">ARMS DEAL</div>
+    <div class="op-meta">30 min • 140x • 0.71% threshold</div>
+    <div class="op-score" id="scoreArms">--</div>
+    <div class="op-score-label">SAFETY SCORE</div>
+    <div class="op-prob" id="probArms">P(fail): --</div>
+  </div>
+  <div class="op-card" id="opDrug">
+    <div class="op-name">DRUG DEAL</div>
+    <div class="op-meta">90 min • 50x • 2.0% threshold</div>
+    <div class="op-score" id="scoreDrug">--</div>
+    <div class="op-score-label">SAFETY SCORE</div>
+    <div class="op-prob" id="probDrug">P(fail): --</div>
+  </div>
+</div>
+
+<div class="grid">
+  <!-- ETH Price -->
+  <div class="card">
+    <div class="card-title">ETH PRICE</div>
+    <div class="price-big" id="ethPrice">---</div>
+    <div class="price-change" id="ethChange">--</div>
+  </div>
+
+  <!-- Danger Score -->
+  <div class="card">
+    <div class="card-title">COMPOSITE DANGER</div>
+    <div class="danger-wrap">
+      <div class="danger-score" id="dangerScore">--</div>
+      <div class="danger-bar">
+        <div class="danger-fill" id="dangerFill" style="width:0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Volatility Regime -->
+  <div class="card">
+    <div class="card-title">VOLATILITY REGIME</div>
+    <div style="margin-bottom:10px">
+      <span class="vol-regime unknown" id="volRegime">UNKNOWN</span>
+    </div>
+    <div class="vol-row">
+      <span class="vol-label">5m realized</span>
+      <span class="vol-val" id="vol5m">--</span>
+    </div>
+    <div class="vol-row">
+      <span class="vol-label">30m realized</span>
+      <span class="vol-val" id="vol30m">--</span>
+    </div>
+    <div class="vol-row">
+      <span class="vol-label">90m realized</span>
+      <span class="vol-val" id="vol90m">--</span>
+    </div>
+  </div>
+
+  <!-- HL Context -->
+  <div class="card">
+    <div class="card-title">HYPERLIQUID</div>
+    <div class="vol-row">
+      <span class="vol-label">Funding Rate</span>
+      <span class="vol-val" id="hlFunding">--</span>
+    </div>
+    <div class="vol-row">
+      <span class="vol-label">Open Interest</span>
+      <span class="vol-val" id="hlOI">--</span>
+    </div>
+    <div class="vol-row">
+      <span class="vol-label">Premium</span>
+      <span class="vol-val" id="hlPremium">--</span>
+    </div>
+    <div class="vol-row">
+      <span class="vol-label">24h Volume</span>
+      <span class="vol-val" id="hlVolume">--</span>
+    </div>
+  </div>
+
+  <!-- CVD -->
+  <div class="card">
+    <div class="card-title">CUMULATIVE VOLUME DELTA</div>
+    <div class="metric-row">
+      <span class="metric-label">Combined 5m</span>
+      <span class="metric-val" id="cvdCombined">--</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Binance 5m</span>
+      <span class="metric-val" id="cvdBin">--</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Bybit 5m</span>
+      <span class="metric-val" id="cvdByb">--</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Divergence</span>
+      <span class="metric-val" id="cvdDiv">--</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Taker Buy Ratio</span>
+      <span class="metric-val" id="takerRatio">--</span>
+    </div>
+    <canvas class="mini-chart" id="cvdChart"></canvas>
+  </div>
+
+  <!-- Orderbook Imbalance -->
+  <div class="card">
+    <div class="card-title">ORDERBOOK IMBALANCE</div>
+    <div class="metric-row">
+      <span class="metric-label">Binance</span>
+      <span class="metric-val" id="obBin">--</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Binance Spread</span>
+      <span class="metric-val" id="obBinSpread">--</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Bybit</span>
+      <span class="metric-val" id="obByb">--</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Bid Wall</span>
+      <span class="metric-val" id="obBidWall">--</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Ask Wall</span>
+      <span class="metric-val" id="obAskWall">--</span>
+    </div>
+  </div>
+
+  <!-- Liquidations -->
+  <div class="card">
+    <div class="card-title">LIQUIDATIONS</div>
+    <div class="metric-row">
+      <span class="metric-label">Cascade Risk</span>
+      <span id="cascadeRisk"><span class="cascade-badge LOW">LOW</span></span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Long Liqs 5m</span>
+      <span class="metric-val" id="liqLong">--</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Short Liqs 5m</span>
+      <span class="metric-val" id="liqShort">--</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">Velocity</span>
+      <span class="metric-val" id="liqVelocity">--</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">IV/RV Spread</span>
+      <span class="metric-val" id="ivrvSpread">--</span>
+    </div>
+  </div>
+
+  <!-- Coinglass Heatmap -->
+  <div class="card">
+    <div class="card-title">LIQUIDATION HEATMAP</div>
+    <div id="heatmapContainer">
+      <div style="color:var(--dim);font-size:12px;">Waiting for Coinglass data...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Alerts -->
+<div style="padding: 0 24px 12px;">
+  <div class="card">
+    <div class="card-title">ALERT FEED</div>
+    <div id="alertFeed" style="max-height:150px;overflow-y:auto;">
+      <div style="color:var(--dim);font-size:12px;">No alerts yet</div>
+    </div>
+  </div>
+</div>
+
+<!-- Meta bar -->
+<div class="meta-bar" id="metaBar">
+  <span>Ticks: <span id="metaTicks">0</span></span>
+  <span>Trades/min: <span id="metaRate">0</span></span>
+  <span>Sources: <span id="metaSources">0</span>/5</span>
+  <span>Uptime: <span id="metaUptime">0s</span></span>
+  <span id="metaTime"></span>
+</div>
+
+<script>
+// ============================================================
+// OFFSHORE OPS TERMINAL v3 — CLIENT
+// ============================================================
+
+let ws = null;
+let reconnectTimer = null;
+const alerts = [];
+let currentState = null;
+
+// Deep merge: apply partial delta onto existing state
+function deepMerge(target, source) {
+  if (!source || typeof source !== 'object') return source;
+  if (Array.isArray(source)) return source;
+  const result = Object.assign({}, target);
+  for (const key of Object.keys(source)) {
+    if (
+      source[key] !== null &&
+      typeof source[key] === 'object' &&
+      !Array.isArray(source[key]) &&
+      target && typeof target[key] === 'object' &&
+      !Array.isArray(target[key])
+    ) {
+      result[key] = deepMerge(target[key], source[key]);
+    } else {
+      result[key] = source[key];
+    }
+  }
+  return result;
+}
+
+function getServerUrl() {
+  const input = document.getElementById('serverUrl');
+  // Auto-detect: if page loaded from VPS, use same host
+  if (input.value === 'ws://localhost:3000/ws' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    input.value = `${proto}//${location.host}/ws`;
+  }
+  return input.value;
+}
+
+function connect() {
+  const url = getServerUrl();
+
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    setServerStatus(true);
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'full') {
+        // Full state replacement
+        currentState = msg.data;
+        render(currentState);
+      } else if (msg.type === 'delta') {
+        // Merge partial update into current state
+        if (currentState) {
+          currentState = deepMerge(currentState, msg.data);
+          render(currentState);
+        }
+      } else if (msg.type === 'state') {
+        // Backwards compatibility with older server
+        currentState = msg.data;
+        render(currentState);
+      } else if (msg.type === 'alert') {
+        addAlert(msg.data);
+      }
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    setServerStatus(false);
+    currentState = null;
+    reconnectTimer = setTimeout(connect, 3000);
+  };
+
+  ws.onerror = () => {};
+}
+
+function reconnect() {
+  if (ws) ws.close();
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  setTimeout(connect, 100);
+}
+
+function setServerStatus(on) {
+  const el = document.getElementById('serverStatus');
+  const dot = document.getElementById('serverDot');
+  const label = document.getElementById('serverLabel');
+  el.className = 'server-status ' + (on ? 'connected' : 'disconnected');
+  dot.className = 'conn-dot' + (on ? ' on' : '');
+  label.textContent = on ? 'CONNECTED' : 'DISCONNECTED';
+}
+
+function toggleSettings() {
+  document.getElementById('settingsPanel').classList.toggle('open');
+}
+
+// ============================================================
+// RENDER
+// ============================================================
+
+function render(s) {
+  if (!s) return;
+
+  // Connections
+  renderConnections(s.connections);
+
+  // ETH Price
+  if (s.ethPrice) {
+    document.getElementById('ethPrice').textContent = '$' + s.ethPrice.toFixed(2);
+    if (s.ethPriceStart) {
+      const pct = ((s.ethPrice - s.ethPriceStart) / s.ethPriceStart * 100);
+      const el = document.getElementById('ethChange');
+      el.textContent = `${pct >= 0 ? '+' : ''}${pct.toFixed(3)}% since start`;
+      el.style.color = pct >= 0 ? 'var(--green)' : 'var(--red)';
+    }
+  }
+
+  // Danger
+  const ds = s.scores.dangerScore;
+  const dangerEl = document.getElementById('dangerScore');
+  dangerEl.textContent = ds;
+  dangerEl.style.color = ds < 25 ? 'var(--green)' : ds < 50 ? 'var(--yellow)' : ds < 75 ? 'var(--orange)' : 'var(--red)';
+  const fill = document.getElementById('dangerFill');
+  fill.style.width = ds + '%';
+  fill.style.background = ds < 25 ? 'var(--green)' : ds < 50 ? 'var(--yellow)' : ds < 75 ? 'var(--orange)' : 'var(--red)';
+
+  // Volatility
+  const vr = document.getElementById('volRegime');
+  vr.textContent = s.volatility.regime.toUpperCase();
+  vr.className = 'vol-regime ' + s.volatility.regime;
+  document.getElementById('vol5m').textContent = s.volatility.vol5m != null ? s.volatility.vol5m.toFixed(1) + '%' : '--';
+  document.getElementById('vol30m').textContent = s.volatility.vol30m != null ? s.volatility.vol30m.toFixed(1) + '%' : '--';
+  document.getElementById('vol90m').textContent = s.volatility.vol90m != null ? s.volatility.vol90m.toFixed(1) + '%' : '--';
+
+  // Operation cards
+  renderOp('Ext', 'opExtortion', s.scores.extortion, s.scores.probExtortion);
+  renderOp('Arms', 'opArms', s.scores.arms, s.scores.probArms);
+  renderOp('Drug', 'opDrug', s.scores.drug, s.scores.probDrug);
+
+  // CVD
+  const fmtUsd = (v) => {
+    if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+    if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(0) + 'K';
+    return v.toFixed(0);
+  };
+  const colorVal = (v, invert) => {
+    const c = invert ? (v < 0 ? 'var(--green)' : v > 0 ? 'var(--red)' : 'var(--text)') 
+                     : (v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--text)');
+    return `<span style="color:${c}">${fmtUsd(v)}</span>`;
+  };
+  document.getElementById('cvdCombined').innerHTML = colorVal(s.cvd.combined);
+  document.getElementById('cvdBin').innerHTML = colorVal(s.cvd.binance);
+  document.getElementById('cvdByb').innerHTML = colorVal(s.cvd.bybit);
+  document.getElementById('cvdDiv').textContent = s.scores.cvdDivergence.toFixed(2);
+  document.getElementById('takerRatio').innerHTML = `<span style="color:${s.scores.takerRatio < 0.4 ? 'var(--red)' : s.scores.takerRatio > 0.6 ? 'var(--green)' : 'var(--text)'}">${(s.scores.takerRatio * 100).toFixed(1)}%</span>`;
+
+  // CVD mini chart
+  drawCvdChart(s.cvd.history);
+
+  // Orderbook
+  const obBin = s.orderbook.binance;
+  const obByb = s.orderbook.bybit;
+  document.getElementById('obBin').innerHTML = fmtImbalance(obBin.imbalance);
+  document.getElementById('obBinSpread').textContent = obBin.spreadPct ? obBin.spreadPct.toFixed(4) + '%' : '--';
+  document.getElementById('obByb').innerHTML = fmtImbalance(obByb.imbalance);
+  document.getElementById('obBidWall').textContent = obBin.bidWall ? `$${obBin.bidWall.price.toFixed(0)} (${fmtUsd(obBin.bidWall.size)})` : '--';
+  document.getElementById('obAskWall').textContent = obBin.askWall ? `$${obBin.askWall.price.toFixed(0)} (${fmtUsd(obBin.askWall.size)})` : '--';
+
+  // Liquidations
+  document.getElementById('cascadeRisk').innerHTML = `<span class="cascade-badge ${s.scores.cascadeRisk}">${s.scores.cascadeRisk}</span>`;
+  document.getElementById('liqLong').innerHTML = `<span style="color:var(--green)">${fmtUsd(s.scores.liqLong5m)}</span>`;
+  document.getElementById('liqShort').innerHTML = `<span style="color:var(--red)">${fmtUsd(s.scores.liqShort5m)}</span>`;
+  document.getElementById('liqVelocity').textContent = fmtUsd(s.scores.liqVelocity) + '/min';
+  document.getElementById('ivrvSpread').textContent = (s.scores.ivrvSpread * 100).toFixed(2) + '%';
+
+  // Hyperliquid
+  if (s.hyperliquid) {
+    const hl = s.hyperliquid;
+    const fr = document.getElementById('hlFunding');
+    const fundingPct = (hl.funding * 100).toFixed(4);
+    fr.innerHTML = `<span style="color:${hl.funding > 0.0005 ? 'var(--red)' : hl.funding < -0.0005 ? 'var(--green)' : 'var(--text)'}">${fundingPct}%</span>`;
+    document.getElementById('hlOI').textContent = '$' + fmtUsd(hl.openInterest);
+    document.getElementById('hlPremium').textContent = (hl.premium * 100).toFixed(4) + '%';
+    document.getElementById('hlVolume').textContent = '$' + fmtUsd(hl.dayVolume);
+  }
+
+  // Heatmap
+  if (s.heatmap && s.heatmap.length > 0 && s.ethPrice) {
+    renderHeatmap(s.heatmap, s.ethPrice);
+  }
+
+  // Meta
+  document.getElementById('metaTicks').textContent = s.meta.tickCount.toLocaleString();
+  document.getElementById('metaRate').textContent = s.meta.tradeRate;
+  document.getElementById('metaSources').textContent = s.meta.sources;
+  document.getElementById('metaUptime').textContent = formatUptime(s.meta.uptime);
+  document.getElementById('metaTime').textContent = new Date().toLocaleTimeString();
+
+  // Calibration context
+  if (s.calibration) {
+    document.getElementById('suggestion').textContent = s.calibration.suggestion;
+    const hr = document.getElementById('hourlyRisk');
+    const risk = s.calibration.hourlyRisk;
+    hr.textContent = risk.toUpperCase();
+    hr.className = 'vol-regime ' + (risk === 'safe' ? 'low' : risk === 'danger' ? 'high' : 'medium');
+    document.getElementById('utcHour').textContent = String(s.calibration.utcHour).padStart(2, '0') + ':00 UTC';
+
+    // Color the suggestion
+    const sg = document.getElementById('suggestion');
+    if (s.calibration.suggestion.includes('AVOID')) sg.style.color = 'var(--red)';
+    else if (s.calibration.suggestion.includes('CAUTION')) sg.style.color = 'var(--yellow)';
+    else if (s.calibration.suggestion.includes('excellent')) sg.style.color = 'var(--green)';
+    else sg.style.color = 'var(--cyan)';
+  }
+}
+
+function renderOp(prefix, cardId, score, prob) {
+  const card = document.getElementById(cardId);
+  card.className = 'op-card ' + (score >= 70 ? 'safe' : score >= 40 ? 'caution' : 'danger');
+  
+  const scoreEl = document.getElementById('score' + prefix);
+  scoreEl.textContent = score;
+  scoreEl.style.color = score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow)' : 'var(--red)';
+  
+  document.getElementById('prob' + prefix).textContent = `P(fail): ${(prob * 100).toFixed(1)}% [cal]`;
+}
+
+function fmtImbalance(v) {
+  const pct = (v * 100).toFixed(1);
+  const label = v > 0 ? 'BID' : 'ASK';
+  const color = v > 0.1 ? 'var(--green)' : v < -0.1 ? 'var(--red)' : 'var(--text)';
+  return `<span style="color:${color}">${pct}% ${label}</span>`;
+}
+
+function renderConnections(conns) {
+  const bar = document.getElementById('connBar');
+  const names = { binance: 'BIN', bybit: 'BYB', hyperliquid: 'HL', polymarket: 'POLY', coinglass: 'CG' };
+  bar.innerHTML = Object.entries(conns).map(([k, v]) =>
+    `<div class="conn-pill"><span class="conn-dot${v ? ' on' : ''}"></span>${names[k]}</div>`
+  ).join('');
+}
+
+function renderHeatmap(levels, currentPrice) {
+  const container = document.getElementById('heatmapContainer');
+  const maxVal = Math.max(...levels.map(l => l.totalValue));
+  container.innerHTML = levels.slice(0, 6).map(l => {
+    const pct = (l.totalValue / maxVal * 100).toFixed(0);
+    const dist = ((l.price - currentPrice) / currentPrice * 100).toFixed(2);
+    const color = l.side === 'long' ? 'var(--green)' : 'var(--red)';
+    const fmtVal = l.totalValue >= 1e6 ? (l.totalValue / 1e6).toFixed(1) + 'M' : (l.totalValue / 1e3).toFixed(0) + 'K';
+    return `<div class="heatmap-row">
+      <span style="width:60px;color:${color}">$${l.price.toFixed(0)}</span>
+      <div class="heatmap-bar" style="width:${pct}%;background:${color};opacity:0.5"></div>
+      <span style="width:50px;text-align:right">${fmtVal}</span>
+      <span style="width:50px;text-align:right;color:var(--dim)">${dist}%</span>
+    </div>`;
+  }).join('');
+}
+
+function drawCvdChart(history) {
+  const canvas = document.getElementById('cvdChart');
+  if (!canvas || history.length < 2) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width = canvas.offsetWidth;
+  const h = canvas.height = 60;
+  ctx.clearRect(0, 0, w, h);
+
+  const vals = history.map(p => p.v);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const range = max - min || 1;
+
+  ctx.beginPath();
+  ctx.strokeStyle = vals[vals.length - 1] >= 0 ? '#00e676' : '#ff1744';
+  ctx.lineWidth = 1.5;
+  
+  for (let i = 0; i < vals.length; i++) {
+    const x = (i / (vals.length - 1)) * w;
+    const y = h - ((vals[i] - min) / range) * (h - 4) - 2;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Zero line
+  const zeroY = h - ((0 - min) / range) * (h - 4) - 2;
+  if (zeroY > 0 && zeroY < h) {
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.setLineDash([3, 3]);
+    ctx.moveTo(0, zeroY);
+    ctx.lineTo(w, zeroY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function addAlert(alert) {
+  alerts.unshift(alert);
+  if (alerts.length > 20) alerts.pop();
+  
+  const feed = document.getElementById('alertFeed');
+  feed.innerHTML = alerts.map(a => {
+    const time = new Date(a.timestamp).toLocaleTimeString();
+    return `<div class="alert-item ${a.type}">
+      <span class="alert-time">${time}</span> ${a.message}
+    </div>`;
+  }).join('');
+
+  // Browser notification
+  if (Notification.permission === 'granted') {
+    new Notification('Offshore Terminal', { body: alert.message });
+  }
+}
+
+function formatUptime(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h + 'h ' + m + 'm';
+}
+
+// Request notification permission
+if ('Notification' in window && Notification.permission === 'default') {
+  Notification.requestPermission();
+}
+
+// Start
+connect();
+</script>
+</body>
+</html>
