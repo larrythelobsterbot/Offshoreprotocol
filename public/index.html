@@ -21,6 +21,15 @@
     --purple: #b388ff;
   }
 
+  /* Dim mode */
+  body.dim-mode {
+    --bg: #060709;
+    --card: #0a0c10;
+    --border: #12151e;
+    --text: #8a8f9a;
+    --dim: #3e4450;
+  }
+
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     background: var(--bg);
@@ -114,7 +123,7 @@
 
   .price-big {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 32px;
+    font-size: 38px;
     font-weight: 700;
     color: var(--cyan);
     line-height: 1;
@@ -159,7 +168,7 @@
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 16px;
+    padding: 20px 16px;
     text-align: center;
     transition: border-color 0.3s;
   }
@@ -178,7 +187,7 @@
   .op-meta { font-size: 11px; color: var(--dim); margin-bottom: 10px; }
   .op-score {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 36px;
+    font-size: 48px;
     font-weight: 700;
     line-height: 1;
     transition: color 0.3s;
@@ -195,7 +204,6 @@
     font-size: 12px;
     margin-top: 8px;
     color: var(--dim);
-    transition: color 0.3s;
   }
   .op-sparkline {
     width: 100%;
@@ -210,7 +218,6 @@
     font-size: 48px;
     font-weight: 700;
     line-height: 1;
-    transition: color 0.3s;
   }
   .danger-bar {
     height: 6px;
@@ -367,6 +374,106 @@
     width: 200px;
   }
 
+  /* Card top-border by type */
+  .card-border-cyan { border-top: 2px solid var(--cyan); }
+  .card-border-danger { border-top: 2px solid var(--red); }
+  .card-border-purple { border-top: 2px solid var(--purple); }
+
+  /* Danger card glow */
+  .danger-card-glow {
+    transition: box-shadow 0.5s;
+  }
+
+  /* ETH price card gradient bg */
+  .card-eth-price {
+    background: linear-gradient(135deg, var(--card) 0%, rgba(0,229,255,0.04) 100%);
+  }
+
+  /* P(fail) color coding */
+  .pfail-value {
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .pfail-label {
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .pfail-green { color: var(--green); }
+  .pfail-yellow { color: var(--yellow); }
+  .pfail-orange { color: var(--orange); }
+  .pfail-red { color: var(--red); }
+
+  /* Header toggle buttons */
+  .header-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--dim);
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    line-height: 1;
+    transition: border-color 0.2s, color 0.2s;
+  }
+  .header-toggle:hover { border-color: var(--cyan); color: var(--cyan); }
+  .header-toggle.active { border-color: var(--cyan); color: var(--cyan); }
+
+  /* Tooltip popovers */
+  .tooltip-wrap {
+    position: relative;
+    display: inline-block;
+    margin-left: 6px;
+    cursor: help;
+    vertical-align: middle;
+  }
+  .tooltip-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1px solid var(--dim);
+    font-size: 9px;
+    color: var(--dim);
+    font-family: 'JetBrains Mono', monospace;
+    font-style: normal;
+    line-height: 1;
+  }
+  .tooltip-wrap:hover .tooltip-icon {
+    border-color: var(--cyan);
+    color: var(--cyan);
+  }
+  .tooltip-content {
+    display: none;
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 8px);
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 280px;
+    background: #181c26;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text);
+    line-height: 1.5;
+    z-index: 100;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    white-space: normal;
+  }
+  .tooltip-wrap:hover .tooltip-content {
+    display: block;
+  }
+
+  @keyframes dangerPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+  }
+
   /* ========== Upgrade #3: Responsive Layout ========== */
   @media (max-width: 768px) {
     .grid {
@@ -416,6 +523,8 @@
   </div>
   <div style="display:flex;align-items:center;gap:12px;">
     <div class="conn-bar" id="connBar"></div>
+    <button class="header-toggle" id="dimToggle" onclick="toggleDimMode()" title="Toggle dim mode">☀</button>
+    <button class="header-toggle" id="soundToggle" onclick="toggleSound()" title="Toggle sound alerts">🔇</button>
     <button class="settings-toggle" onclick="toggleSettings()">⚙ CONFIG</button>
   </div>
 </div>
@@ -475,15 +584,15 @@
 
 <div class="grid">
   <!-- ETH Price -->
-  <div class="card">
+  <div class="card card-border-cyan card-eth-price">
     <div class="card-title">ETH PRICE</div>
     <div class="price-big" id="ethPrice">---</div>
     <div class="price-change" id="ethChange">--</div>
   </div>
 
   <!-- Danger Score — spans 2 columns -->
-  <div class="card span2">
-    <div class="card-title">COMPOSITE DANGER</div>
+  <div class="card span2 card-border-danger danger-card-glow" id="dangerCard">
+    <div class="card-title">COMPOSITE DANGER<span class="tooltip-wrap"><span class="tooltip-icon">i</span><span class="tooltip-content">Weighted: volatility (35%), CVD (20%), liquidations (15%), orderbook (12%), divergence (8%), funding (5%), IV/RV (5%)</span></span></div>
     <div class="danger-wrap">
       <div class="danger-score" id="dangerScore">--</div>
       <div class="danger-bar">
@@ -495,7 +604,7 @@
 
   <!-- Volatility Regime -->
   <div class="card">
-    <div class="card-title">VOLATILITY REGIME</div>
+    <div class="card-title">VOLATILITY REGIME<span class="tooltip-wrap"><span class="tooltip-icon">i</span><span class="tooltip-content">30-min annualized realized vol. LOW(&lt;40%), MEDIUM(40-80%), HIGH(&gt;80%)</span></span></div>
     <div style="margin-bottom:10px">
       <span class="vol-regime unknown" id="volRegime">UNKNOWN</span>
     </div>
@@ -514,7 +623,7 @@
   </div>
 
   <!-- HL Context -->
-  <div class="card">
+  <div class="card card-border-purple">
     <div class="card-title">HYPERLIQUID</div>
     <div class="vol-row">
       <span class="vol-label">Funding Rate</span>
@@ -536,7 +645,7 @@
 
   <!-- CVD -->
   <div class="card">
-    <div class="card-title">CUMULATIVE VOLUME DELTA</div>
+    <div class="card-title">CUMULATIVE VOLUME DELTA<span class="tooltip-wrap"><span class="tooltip-icon">i</span><span class="tooltip-content">Net buy vs sell pressure. Positive=buying, negative=selling.</span></span></div>
     <div class="metric-row">
       <span class="metric-label">Combined 5m</span>
       <span class="metric-val" id="cvdCombined">--</span>
@@ -565,7 +674,7 @@
 
   <!-- Orderbook Imbalance -->
   <div class="card">
-    <div class="card-title">ORDERBOOK IMBALANCE</div>
+    <div class="card-title">ORDERBOOK IMBALANCE<span class="tooltip-wrap"><span class="tooltip-icon">i</span><span class="tooltip-content">Bid vs ask depth ratio. Positive=bullish, negative=bearish</span></span></div>
     <div class="metric-row">
       <span class="metric-label">Binance</span>
       <span class="metric-val" id="obBin">--</span>
@@ -615,7 +724,7 @@
 
   <!-- Coinglass Heatmap -->
   <div class="card">
-    <div class="card-title">LIQUIDATION HEATMAP</div>
+    <div class="card-title">LIQUIDATION HEATMAP<span class="tooltip-wrap"><span class="tooltip-icon">i</span><span class="tooltip-content">Coinglass liquidation clusters near current price. Larger bars = more liquidation volume concentrated at that level.</span></span></div>
     <div id="heatmapContainer">
       <div style="color:var(--dim);font-size:12px;">Waiting for Coinglass data...</div>
     </div>
@@ -650,6 +759,8 @@ let ws = null;
 let reconnectTimer = null;
 const alerts = [];
 let currentState = null;
+let prevDangerHigh = false;
+let prevCascadeCritical = false;
 
 // ============================================================
 // Upgrade #1: Sparkline history buffers (30 min @ 5s = 360 pts)
@@ -669,6 +780,76 @@ const SPARK_INTERVAL = 5000; // 5 seconds
 const DANGER_HISTORY_MAX = 1440;
 const dangerHistory = []; // { t: timestamp, v: dangerScore }
 let lastDangerSample = 0;
+
+// ============================================================
+// DIM MODE
+// ============================================================
+let dimMode = localStorage.getItem('dimMode') === 'true';
+function applyDimMode() {
+  document.body.classList.toggle('dim-mode', dimMode);
+  document.getElementById('dimToggle').textContent = dimMode ? '☾' : '☀';
+  document.getElementById('dimToggle').classList.toggle('active', dimMode);
+}
+function toggleDimMode() {
+  dimMode = !dimMode;
+  localStorage.setItem('dimMode', dimMode);
+  applyDimMode();
+}
+applyDimMode();
+
+// ============================================================
+// SOUND ALERTS (Web Audio API)
+// ============================================================
+let soundEnabled = localStorage.getItem('soundEnabled') === 'true';
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+function applySoundToggle() {
+  document.getElementById('soundToggle').textContent = soundEnabled ? '🔊' : '🔇';
+  document.getElementById('soundToggle').classList.toggle('active', soundEnabled);
+}
+function toggleSound() {
+  soundEnabled = !soundEnabled;
+  localStorage.setItem('soundEnabled', soundEnabled);
+  applySoundToggle();
+  if (soundEnabled) getAudioCtx(); // init on user gesture
+}
+applySoundToggle();
+
+function playTone(startFreq, endFreq, duration) {
+  if (!soundEnabled) return;
+  var ctx = getAudioCtx();
+  var osc = ctx.createOscillator();
+  var gain = ctx.createGain();
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.frequency.setValueAtTime(startFreq, ctx.currentTime);
+  osc.frequency.linearRampToValueAtTime(endFreq, ctx.currentTime + duration / 1000);
+  gain.gain.setValueAtTime(0.15, ctx.currentTime);
+  gain.gain.linearRampToValueAtTime(0, ctx.currentTime + duration / 1000);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + duration / 1000);
+}
+
+function playDangerHigh() { playTone(800, 400, 300); }
+function playAllClear() { playTone(400, 800, 300); }
+function playCascadeCritical() {
+  if (!soundEnabled) return;
+  var ctx = getAudioCtx();
+  for (var i = 0; i < 3; i++) {
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.setValueAtTime(1000, ctx.currentTime + i * 0.12);
+    gain.gain.setValueAtTime(0.18, ctx.currentTime + i * 0.12);
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + i * 0.12 + 0.08);
+    osc.start(ctx.currentTime + i * 0.12);
+    osc.stop(ctx.currentTime + i * 0.12 + 0.08);
+  }
+}
 
 // ============================================================
 // Upgrade #4: Animated value transitions
@@ -858,6 +1039,31 @@ function render(s) {
   fill.style.width = ds + '%';
   fill.style.background = dangerColor;
 
+  // Danger card glow
+  var dangerCard = document.getElementById('dangerCard');
+  if (ds < 25) {
+    dangerCard.style.boxShadow = '0 0 12px rgba(0,230,118,0.15)';
+    dangerCard.style.animation = 'none';
+  } else if (ds < 50) {
+    dangerCard.style.boxShadow = '0 0 16px rgba(255,214,0,0.2)';
+    dangerCard.style.animation = 'none';
+  } else if (ds < 75) {
+    dangerCard.style.boxShadow = '0 0 20px rgba(255,145,0,0.25)';
+    dangerCard.style.animation = 'none';
+  } else {
+    dangerCard.style.boxShadow = '0 0 28px rgba(255,23,68,0.4)';
+    dangerCard.style.animation = 'dangerPulse 1.5s infinite';
+  }
+
+  // Sound alerts based on danger transitions
+  var nowHigh = ds >= 75;
+  var nowCascadeCritical = s.scores.cascadeRisk === 'CRITICAL';
+  if (nowHigh && !prevDangerHigh) playDangerHigh();
+  if (!nowHigh && prevDangerHigh) playAllClear();
+  if (nowCascadeCritical && !prevCascadeCritical) playCascadeCritical();
+  prevDangerHigh = nowHigh;
+  prevCascadeCritical = nowCascadeCritical;
+
   // Danger history chart
   drawDangerHistoryChart();
 
@@ -955,17 +1161,19 @@ function render(s) {
 // Upgrade #1: Sparklines in operation cards
 // ============================================================
 function renderOp(prefix, cardId, score, prob, sparkCanvasId, history) {
-  const card = document.getElementById(cardId);
+  var card = document.getElementById(cardId);
   card.className = 'op-card ' + (score >= 70 ? 'safe' : score >= 40 ? 'caution' : 'danger');
 
-  const scoreColor = score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow)' : 'var(--red)';
+  var scoreColor = score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow)' : 'var(--red)';
 
   // Animate the safety score
   animateValue('score' + prefix, score, 300, function(v) { return Math.round(v); });
   document.getElementById('score' + prefix).style.color = scoreColor;
 
-  // Animate P(fail)
-  animateValue('prob' + prefix, prob * 100, 300, function(v) { return 'P(fail): ' + v.toFixed(1) + '% [cal]'; });
+  // Color-coded P(fail)
+  var pct = (prob * 100).toFixed(1);
+  var pClass = prob * 100 < 5 ? 'pfail-green' : prob * 100 < 15 ? 'pfail-yellow' : prob * 100 < 30 ? 'pfail-orange' : 'pfail-red';
+  document.getElementById('prob' + prefix).innerHTML = '<span class="pfail-label">P(fail):</span> <span class="pfail-value ' + pClass + '">' + pct + '%</span> <span class="pfail-label">[cal]</span>';
 
   // Draw sparkline
   drawSparkline(sparkCanvasId, history);
