@@ -335,7 +335,7 @@
 <div class="header">
   <div class="header-left">
     <h1>OFFSHORE OPS TERMINAL</h1>
-    <span class="version">v3.1 — CALIBRATED</span>
+    <span class="version">v3.2 — CALIBRATED</span>
     <div id="serverStatus" class="server-status disconnected">
       <span class="conn-dot" id="serverDot"></span>
       <span id="serverLabel">DISCONNECTED</span>
@@ -367,7 +367,7 @@
     </div>
     <div style="display:flex;align-items:center;gap:6px;">
       <span style="font-size:10px;color:var(--dim);font-family:'JetBrains Mono',monospace;">CALIBRATED</span>
-      <span style="font-size:10px;color:var(--green);font-family:'JetBrains Mono',monospace;">● 90d backtest</span>
+      <span style="font-size:10px;color:var(--green);font-family:'JetBrains Mono',monospace;">● 180d backtest</span>
     </div>
   </div>
 </div>
@@ -376,21 +376,21 @@
 <div class="ops-grid">
   <div class="op-card" id="opExtortion">
     <div class="op-name">EXTORTION</div>
-    <div class="op-meta">5 min • 600x • 0.17% threshold</div>
+    <div class="op-meta">5 min • 2,565x • 0.039% threshold</div>
     <div class="op-score" id="scoreExt">--</div>
     <div class="op-score-label">SAFETY SCORE</div>
     <div class="op-prob" id="probExt">P(fail): --</div>
   </div>
   <div class="op-card" id="opArms">
     <div class="op-name">ARMS DEAL</div>
-    <div class="op-meta">30 min • 140x • 0.71% threshold</div>
+    <div class="op-meta">30 min • 567x • 0.176% threshold</div>
     <div class="op-score" id="scoreArms">--</div>
     <div class="op-score-label">SAFETY SCORE</div>
     <div class="op-prob" id="probArms">P(fail): --</div>
   </div>
   <div class="op-card" id="opDrug">
     <div class="op-name">DRUG DEAL</div>
-    <div class="op-meta">90 min • 50x • 2.0% threshold</div>
+    <div class="op-meta">90 min • 193x • 0.518% threshold</div>
     <div class="op-score" id="scoreDrug">--</div>
     <div class="op-score-label">SAFETY SCORE</div>
     <div class="op-prob" id="probDrug">P(fail): --</div>
@@ -465,7 +465,7 @@
       <span class="metric-val" id="cvdCombined">--</span>
     </div>
     <div class="metric-row">
-      <span class="metric-label">Binance 5m</span>
+      <span class="metric-label">Hyperliquid 5m</span>
       <span class="metric-val" id="cvdBin">--</span>
     </div>
     <div class="metric-row">
@@ -487,11 +487,11 @@
   <div class="card">
     <div class="card-title">ORDERBOOK IMBALANCE</div>
     <div class="metric-row">
-      <span class="metric-label">Binance</span>
+      <span class="metric-label">Hyperliquid</span>
       <span class="metric-val" id="obBin">--</span>
     </div>
     <div class="metric-row">
-      <span class="metric-label">Binance Spread</span>
+      <span class="metric-label">HL Spread</span>
       <span class="metric-val" id="obBinSpread">--</span>
     </div>
     <div class="metric-row">

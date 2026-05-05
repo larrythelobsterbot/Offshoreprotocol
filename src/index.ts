@@ -1,6 +1,7 @@
 import { BinanceFeed } from './feeds/binance';
 import { BybitFeed } from './feeds/bybit';
 import { HyperliquidFeed } from './feeds/hyperliquid';
+import { HyperliquidWsFeed } from './feeds/hyperliquid-ws';
 import { PolymarketFeed } from './feeds/polymarket';
 import { CoinglassFeed } from './feeds/coinglass';
 import { VolatilityEngine } from './engine/volatility';
@@ -22,7 +23,8 @@ async function main() {
 
   const binance = new BinanceFeed();
   const bybit = new BybitFeed();
-  const hl = new HyperliquidFeed();
+  const hl = new HyperliquidFeed();        // REST: funding / OI / mark / oracle / volume
+  const hlws = new HyperliquidWsFeed();    // WS: trades + L2 book (primary tick source)
   const poly = new PolymarketFeed();
   const cg = new CoinglassFeed();
 
@@ -60,9 +62,29 @@ async function main() {
   });
   bybit.on('status', (s) => engine.setConnection('bybit', s));
 
-  // Hyperliquid
+  // Hyperliquid REST (funding / OI / mark / volume)
   hl.on('data', (data) => engine.onHyperliquid(data));
   hl.on('status', (s) => engine.setConnection('hyperliquid', s));
+
+  // Hyperliquid WS (primary tick + trade + book source).
+  // We feed its orderbook into engine.onBinanceOB because that slot is
+  // semantically "primary OB" in the dashboard render path. The Binance
+  // and Bybit slots stay live in case those feeds ever start delivering
+  // data again — the engine will just see the freshest snapshot win.
+  hlws.on('tick', (tick) => {
+    engine.onTick(tick.p);
+    tickBatch.push({ t: tick.t, p: tick.p, src: 'hl' });
+  });
+  hlws.on('trade', (trade) => {
+    engine.onTrade(trade);
+    tradeBatch.push(trade);
+  });
+  hlws.on('orderbook', (ob) => engine.onBinanceOB(ob));
+  hlws.on('status', (s) => {
+    // hl status is owned by the REST poller; only flip connection state
+    // on the AND of the two so the UI doesn't churn on transient WS drops.
+    if (!s) engine.setConnection('hyperliquid', false);
+  });
 
   // Polymarket
   poly.on('data', (data) => engine.onPolymarket(data));
@@ -120,6 +142,7 @@ async function main() {
   binance.start();
   bybit.start();
   hl.start();
+  hlws.start();
   poly.start();
   cg.start();
 
@@ -145,6 +168,7 @@ async function main() {
     binance.stop();
     bybit.stop();
     hl.stop();
+    hlws.stop();
     poly.stop();
     cg.stop();
     // Flush remaining batches
