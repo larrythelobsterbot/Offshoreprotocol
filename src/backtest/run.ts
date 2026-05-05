@@ -67,11 +67,18 @@ async function main() {
 
   const allResults = [];
 
+  // CLI flag: pass --calibrated as a 3rd arg to enable calibration in the
+  // backtest. With --calibrated the run also computes a calibrated Brier
+  // score for direct comparison vs raw.
+  const applyCalibration = process.argv.includes('--calibrated');
+  if (applyCalibration) logger.info('  Calibration enabled — computing calibrated Brier alongside raw.');
+
   for (const c of configs) {
     logger.info(`  Running ${c.op} backtest...`);
     const results = runBacktest(klines, c.op, {
       volWindow: c.volWindow,
       sampleEvery: c.sampleEvery,
+      applyCalibration,
     });
     printResults(results);
     allResults.push(results);
@@ -82,15 +89,35 @@ async function main() {
   logger.info('  SUMMARY — MODEL CALIBRATION');
   logger.info('='.repeat(60));
   logger.info('');
-  logger.info('  Operation    | Simulations | Fail Rate | Avg Pred  | Brier');
-  logger.info('  ' + '-'.repeat(58));
-  for (const r of allResults) {
-    logger.info(
-      `  ${r.operation.padEnd(12)} | ${String(r.totalSimulations).padStart(10)} | ` +
-      `${(r.overallFailRate * 100).toFixed(1).padStart(7)}%  | ` +
-      `${(r.overallAvgPredicted * 100).toFixed(1).padStart(6)}%   | ` +
-      `${r.brierScore.toFixed(4)}`
-    );
+  if (applyCalibration) {
+    logger.info('  Operation    | Sims     | Fail %  | Raw Pred | Cal Pred | Brier Raw | Brier Cal | Δ');
+    logger.info('  ' + '-'.repeat(96));
+    for (const r of allResults) {
+      const dRel = r.brierScoreCalibrated !== undefined
+        ? ((r.brierScoreCalibrated - r.brierScore) / r.brierScore) * 100
+        : 0;
+      const arrow = dRel < -1 ? 'better' : dRel > 1 ? 'WORSE' : 'same';
+      logger.info(
+        `  ${r.operation.padEnd(12)} | ${String(r.totalSimulations).padStart(7)} | ` +
+        `${(r.overallFailRate * 100).toFixed(1).padStart(5)}% | ` +
+        `${(r.overallAvgPredicted * 100).toFixed(1).padStart(6)}% | ` +
+        `${((r.overallAvgCalibrated ?? 0) * 100).toFixed(1).padStart(6)}% | ` +
+        `${r.brierScore.toFixed(4).padStart(7)}   | ` +
+        `${(r.brierScoreCalibrated ?? 0).toFixed(4).padStart(7)}   | ` +
+        `${dRel.toFixed(1).padStart(5)}% ${arrow}`,
+      );
+    }
+  } else {
+    logger.info('  Operation    | Simulations | Fail Rate | Avg Pred  | Brier');
+    logger.info('  ' + '-'.repeat(58));
+    for (const r of allResults) {
+      logger.info(
+        `  ${r.operation.padEnd(12)} | ${String(r.totalSimulations).padStart(10)} | ` +
+        `${(r.overallFailRate * 100).toFixed(1).padStart(7)}%  | ` +
+        `${(r.overallAvgPredicted * 100).toFixed(1).padStart(6)}%   | ` +
+        `${r.brierScore.toFixed(4)}`
+      );
+    }
   }
 
   logger.info('  INTERPRETATION:');

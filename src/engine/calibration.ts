@@ -1,72 +1,88 @@
 // ============================================================
-// Probability Calibration — derived from Phase 4 backtesting
-// 90-day backtest (2025-11-17 to 2026-02-16)
+// Probability Calibration
+// 180-day backtest (2025-11-05 to 2026-05-05), 259,459 1-min candles
+// Source: Coinbase ETH-USD spot (full history), Hyperliquid (recent only)
+// Thresholds: canonical from offshoreprotocol.fun/llms.txt
+//   Extortion 0.039% / 5m, Arms 0.176% / 30m, Drug 0.518% / 90m
 //
-// The normal CDF model systematically under-predicts failure.
+// The Student-t model under-predicts failure at these tight
+// thresholds because the model assumes Student-t marginals while
+// realized 1-min ETH returns have additional microstructure noise
+// (bid-ask flicker, isolated wicks) that crosses 0.039% routinely.
 // This module corrects raw predictions using:
-// 1. Piecewise linear calibration from backtest calibration tables
-// 2. Hourly adjustment factors (14-18 UTC = danger zone)
-// 3. Regime-based floor probabilities
+// 1. Piecewise linear interpolation from PAVA-monotonic backtest
+//    calibration tables (low-count buckets filtered, n>=50)
+// 2. Hourly adjustment factors (14-17 UTC danger band, mild)
+//
+// Regenerate via: npx tsx src/backtest/build-calibration.ts 180
 // ============================================================
 
-// Calibration points: [rawPredicted, observedActual]
-// Derived from 30-day + 90-day backtest calibration tables
+// Calibration points: [rawPredicted (Student-t df=4), observedActual]
 const CALIBRATION_POINTS = {
   extortion: [
-    [0.000, 0.020],  // floor: even at "0%" predicted, ~2% actual
-    [0.006, 0.034],
-    [0.034, 0.082],
-    [0.076, 0.146],
-    [0.151, 0.238],
-    [0.270, 0.418],
-    [0.384, 0.673],
-    [0.500, 0.800],  // extrapolated
-    [1.000, 1.000],
+    [0.000, 0.201],  // floor
+    [0.176, 0.201],  // w=736
+    [0.230, 0.209],  // w=2406
+    [0.278, 0.292],  // w=6390
+    [0.329, 0.404],  // w=15270
+    [0.380, 0.553],  // w=46071
+    [0.428, 0.697],  // w=118711
+    [0.464, 0.821],  // w=69820
+    [1.000, 1.000],  // anchor
   ],
   arms: [
-    [0.000, 0.030],  // floor
-    [0.004, 0.062],
-    [0.034, 0.121],
-    [0.074, 0.187],
-    [0.146, 0.247],
-    [0.264, 0.476],
-    [0.382, 0.484],
-    [0.500, 0.650],  // extrapolated
-    [1.000, 1.000],
+    [0.000, 0.099],  // floor
+    [0.081, 0.099],  // w=302
+    [0.114, 0.108],  // w=371
+    [0.139, 0.120],  // w=527
+    [0.177, 0.164],  // w=1460
+    [0.228, 0.293],  // w=2740
+    [0.278, 0.398],  // w=5183
+    [0.327, 0.505],  // w=9407
+    [0.376, 0.600],  // w=15048
+    [0.423, 0.710],  // w=13739
+    [0.461, 0.822],  // w=3079
+    [1.000, 1.000],  // anchor
   ],
   drug: [
-    [0.000, 0.015],  // floor
-    [0.003, 0.040],
-    [0.034, 0.110],
-    [0.074, 0.139],
-    [0.145, 0.255],
-    [0.248, 0.384],
-    [0.390, 0.500],
-    [0.500, 0.600],  // extrapolated
-    [1.000, 1.000],
+    [0.000, 0.020],  // floor
+    [0.017, 0.020],  // w=99
+    [0.038, 0.049],  // w=390
+    [0.076, 0.093],  // w=1031
+    [0.113, 0.131],  // w=724
+    [0.138, 0.188],  // w=913
+    [0.177, 0.242],  // w=2511
+    [0.227, 0.320],  // w=3530
+    [0.276, 0.386],  // w=4639
+    [0.325, 0.468],  // w=5301
+    [0.373, 0.544],  // w=4257
+    [0.421, 0.670],  // w=2359
+    [0.459, 0.783],  // w=180
+    [1.000, 1.000],  // anchor
   ],
 };
 
-// Hourly risk multipliers (UTC) derived from 30d+90d backtest hourly patterns
-// Base = 1.0 (average), >1.0 = more dangerous, <1.0 = safer
+// Hourly multipliers derived from 180d backtest hourly fail-rate / overall.
+// Under canonical thresholds the diurnal pattern is muted (1.0±0.15) because
+// base failure rate is high; the old wide-threshold tables had 2-3x swings.
 const HOURLY_MULTIPLIERS: Record<string, number[]> = {
   extortion: [
-    0.92, 0.90, 0.94, 0.76, 0.69, 0.66,  // 00-05 UTC
-    0.89, 0.76, 0.96, 0.74, 0.60, 0.69,  // 06-11 UTC
-    0.82, 0.99, 1.61, 1.60, 1.65, 1.39,  // 12-17 UTC
-    1.41, 1.20, 1.20, 0.91, 1.01, 1.01,  // 18-23 UTC
+    1.02, 1.01, 1.00, 0.96, 0.92, 0.93,  // 00-05 UTC
+    0.91, 0.92, 0.95, 0.93, 0.93, 0.93,  // 06-11 UTC
+    0.98, 1.05, 1.13, 1.14, 1.13, 1.08,  // 12-17 UTC
+    1.07, 1.03, 1.01, 0.97, 1.00, 0.99,  // 18-23 UTC
   ],
   arms: [
-    0.61, 0.77, 0.98, 0.64, 0.58, 0.79,  // 00-05
-    1.15, 0.80, 0.84, 0.45, 0.54, 0.41,  // 06-11
-    0.62, 0.98, 2.10, 1.83, 1.75, 1.64,  // 12-17
-    1.42, 1.02, 1.02, 1.02, 1.08, 1.08,  // 18-23
+    1.02, 1.03, 1.00, 0.87, 0.88, 0.91,  // 00-05 UTC
+    0.85, 0.86, 0.93, 0.89, 0.86, 0.87,  // 06-11 UTC
+    1.00, 1.13, 1.28, 1.18, 1.20, 1.13,  // 12-17 UTC
+    1.10, 1.03, 1.00, 0.96, 1.03, 1.00,  // 18-23 UTC
   ],
   drug: [
-    0.59, 0.87, 0.98, 0.59, 0.49, 0.65,  // 00-05
-    0.68, 0.47, 0.53, 0.27, 0.38, 0.49,  // 06-11
-    0.53, 1.77, 2.83, 2.12, 1.83, 2.24,  // 12-17
-    1.57, 0.81, 0.56, 0.94, 0.94, 0.78,  // 18-23
+    0.91, 1.00, 0.92, 0.84, 0.89, 0.83,  // 00-05 UTC
+    0.85, 0.88, 0.81, 0.85, 0.80, 0.95,  // 06-11 UTC
+    1.14, 1.44, 1.46, 1.26, 1.25, 1.21,  // 12-17 UTC
+    1.06, 0.95, 0.92, 0.90, 1.00, 0.91,  // 18-23 UTC
   ],
 };
 
@@ -124,7 +140,18 @@ export function getHourlyRiskLevel(utcHour: number): 'safe' | 'normal' | 'danger
 }
 
 /**
- * Get suggested operation for current conditions
+ * Get suggested operation for current conditions.
+ *
+ * Thresholds are scaled to the calibrated probability distribution
+ * for canonical game thresholds (Ext 67% avg fail, Arms 56%, Drug 40%).
+ * "Good" windows are notably below those averages; nothing is risk-free.
+ *
+ * Operation selection also has to account for fire rate and payout
+ * (12 ops/hr extortion, 2 ops/hr arms, ~0.67 ops/hr drug — all paying
+ * 100-130 $DIRTY), which favors extortion's expected $/hour heavily
+ * despite higher per-op failure rate. The thresholds below pick the
+ * highest fire-rate op whose calibrated P(fail) is still better than
+ * its category-average baseline.
  */
 export function getSuggestedOp(
   calibratedProbs: { extortion: number; arms: number; drug: number },
@@ -132,14 +159,30 @@ export function getSuggestedOp(
 ): string {
   const hourRisk = getHourlyRiskLevel(utcHour);
 
+  // Average calibrated baselines (180d backtest):
+  //   Extortion ~0.67, Arms ~0.56, Drug ~0.40
+  // "Good" = roughly 15+ percentage points under baseline.
+  const EXT_GOOD = 0.50;
+  const EXT_OK   = 0.60;
+  const ARM_GOOD = 0.40;
+  const ARM_OK   = 0.50;
+  const DRUG_GOOD = 0.25;
+  const DRUG_OK   = 0.35;
+
   if (hourRisk === 'danger') {
-    if (calibratedProbs.drug < 0.10) return 'Drug Deal only (danger hours)';
+    if (calibratedProbs.drug < DRUG_GOOD) return 'Drug Deal only (danger hours)';
+    if (calibratedProbs.drug < DRUG_OK)   return 'Drug Deal cautious (danger hours)';
     return 'AVOID ALL — danger hours + elevated risk';
   }
 
-  if (calibratedProbs.extortion < 0.05) return 'Extortion (excellent window)';
-  if (calibratedProbs.extortion < 0.10) return 'Extortion or Arms Deal';
-  if (calibratedProbs.arms < 0.15) return 'Arms Deal';
-  if (calibratedProbs.drug < 0.15) return 'Drug Deal only';
-  return 'CAUTION — all operations elevated risk';
+  // Prefer highest fire-rate op whose calibrated P(fail) is in a "good" window.
+  if (calibratedProbs.extortion < EXT_GOOD) return 'Extortion (good window)';
+  if (calibratedProbs.arms      < ARM_GOOD) return 'Arms Deal (good window)';
+  if (calibratedProbs.drug      < DRUG_GOOD) return 'Drug Deal (good window)';
+
+  if (calibratedProbs.extortion < EXT_OK) return 'Extortion (acceptable window)';
+  if (calibratedProbs.arms      < ARM_OK) return 'Arms Deal (acceptable window)';
+  if (calibratedProbs.drug      < DRUG_OK) return 'Drug Deal (acceptable window)';
+
+  return 'CAUTION — all operations at or above baseline risk';
 }

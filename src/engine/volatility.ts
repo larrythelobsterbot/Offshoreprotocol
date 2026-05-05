@@ -6,12 +6,16 @@ import type {
 } from '../types';
 import { config } from '../config';
 import { calibrateProb, getHourlyRiskLevel, getSuggestedOp } from './calibration';
+import { dropProbStudentT, dropProbNormal } from './distributions';
 
-// Operation thresholds (leverage-derived max drop %)
+// Operation thresholds — canonical values from offshoreprotocol.fun/llms.txt
+// Extortion: 2,565x leverage -> 0.039% drop fails it
+// Arms Deal: 567x leverage   -> 0.176% drop fails it
+// Drug Deal: 193x leverage   -> 0.518% drop fails it
 const THRESHOLDS = {
-  extortion: 0.17,
-  arms: 0.71,
-  drug: 2.0,
+  extortion: 0.039,
+  arms: 0.176,
+  drug: 0.518,
 };
 // Time windows in ms
 const WINDOWS = {
@@ -43,97 +47,8 @@ class TimeBuffer<T extends { t: number }> {
   clear() { this.items = []; }
 }
 
-// Normal CDF approximation
-function normCdf(x: number): number {
-  const t = 1 / (1 + 0.2316419 * Math.abs(x));
-  const d = 0.3989422804014327;
-  const p = d * Math.exp(-x * x / 2) * t *
-    (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
-  return x > 0 ? 1 - p : p;
-}
-
-// --- Student-t CDF via regularized incomplete beta function ---
-
-// Log-gamma using Lanczos approximation
-function logGamma(z: number): number {
-  const g = 7;
-  const c = [
-    0.99999999999980993, 676.5203681218851, -1259.1392167224028,
-    771.32342877765313, -176.61502916214059, 12.507343278686905,
-    -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7,
-  ];
-  if (z < 0.5) {
-    // Reflection formula
-    return Math.log(Math.PI / Math.sin(Math.PI * z)) - logGamma(1 - z);
-  }
-  z -= 1;
-  let x = c[0];
-  for (let i = 1; i < g + 2; i++) {
-    x += c[i] / (z + i);
-  }
-  const t = z + g + 0.5;
-  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
-}
-
-// Regularized incomplete beta function I_x(a, b) via continued fraction
-function regularizedBeta(x: number, a: number, b: number): number {
-  if (x <= 0) return 0;
-  if (x >= 1) return 1;
-
-  // Use symmetry relation for better convergence
-  if (x > (a + 1) / (a + b + 2)) {
-    return 1 - regularizedBeta(1 - x, b, a);
-  }
-
-  const lnBeta = logGamma(a) + logGamma(b) - logGamma(a + b);
-  const front = Math.exp(Math.log(x) * a + Math.log(1 - x) * b - lnBeta) / a;
-
-  // Lentz's continued fraction algorithm
-  const maxIter = 200;
-  const eps = 1e-14;
-  let f = 1;
-  let c = 1;
-  let d = 1 - (a + b) * x / (a + 1);
-  if (Math.abs(d) < eps) d = eps;
-  d = 1 / d;
-  f = d;
-
-  for (let m = 1; m <= maxIter; m++) {
-    // Even step
-    let num = m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m));
-    d = 1 + num * d;
-    if (Math.abs(d) < eps) d = eps;
-    c = 1 + num / c;
-    if (Math.abs(c) < eps) c = eps;
-    d = 1 / d;
-    f *= c * d;
-
-    // Odd step
-    num = -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1));
-    d = 1 + num * d;
-    if (Math.abs(d) < eps) d = eps;
-    c = 1 + num / c;
-    if (Math.abs(c) < eps) c = eps;
-    d = 1 / d;
-    const delta = c * d;
-    f *= delta;
-
-    if (Math.abs(delta - 1) < eps) break;
-  }
-
-  return front * f;
-}
-
-// Student-t CDF for given degrees of freedom
-function studentTCdf(x: number, df: number): number {
-  const xt = df / (df + x * x);
-  const beta = regularizedBeta(xt, df / 2, 0.5);
-  if (x >= 0) {
-    return 1 - 0.5 * beta;
-  } else {
-    return 0.5 * beta;
-  }
-}
+// normCdf, studentTCdf, dropProbStudentT, dropProbNormal are imported
+// from ./distributions so the backtester can share the same implementation.
 
 export class VolatilityEngine extends EventEmitter {
   // Price ticks (1-minute aggregated returns)
@@ -250,32 +165,14 @@ export class VolatilityEngine extends EventEmitter {
   private calcDropProbStudentT(windowMinutes: number, thresholdPct: number): number {
     const vol = this.calcVol(windowMinutes);
     if (vol === null) return 0.5;
-
-    const volPerMin = (vol / 100) / Math.sqrt(525600);
-    const windowVol = volPerMin * Math.sqrt(windowMinutes);
-    const threshold = thresholdPct / 100;
-
-    // Student-t: scale the z-score for the t-distribution
-    // Under t-distribution, the scale parameter sigma relates to normal sigma
-    // with a factor of sqrt(df/(df-2)) for df>2
-    const df = this.studentTDf;
-    const scale = df > 2 ? Math.sqrt((df - 2) / df) : 1;
-    const t = (threshold / windowVol) * scale;
-    return 1 - studentTCdf(t, df);
+    return dropProbStudentT(vol, windowMinutes, thresholdPct, this.studentTDf);
   }
 
   // Fallback: Normal CDF based drop probability
   private calcDropProbNormal(windowMinutes: number, thresholdPct: number): number {
     const vol = this.calcVol(windowMinutes);
     if (vol === null) return 0.5;
-
-    const volPerMin = (vol / 100) / Math.sqrt(525600);
-    const windowVol = volPerMin * Math.sqrt(windowMinutes);
-    const threshold = thresholdPct / 100;
-
-    // P(drop > threshold) using one-sided normal CDF
-    const z = threshold / windowVol;
-    return 1 - normCdf(z);
+    return dropProbNormal(vol, windowMinutes, thresholdPct);
   }
 
   private getVolatility(): VolatilityData {

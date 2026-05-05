@@ -2,26 +2,24 @@
 // Phase 4: Backtesting Engine
 // Replays historical 1-min klines through the volatility model
 // and checks whether predicted probabilities match reality.
+//
+// Uses the same Student-t drop-probability function as the live
+// engine (src/engine/distributions.ts) so the calibration tables
+// derived here are valid for the production raw distribution.
 // ============================================================
 
 import type { Kline } from './fetcher';
 import { logger } from '../logger';
+import { dropProbStudentT } from '../engine/distributions';
+import { calibrateProb } from '../engine/calibration';
+import { config } from '../config';
 
-// Same thresholds as live engine
+// Canonical game thresholds from offshoreprotocol.fun/llms.txt
 const THRESHOLDS = {
-  extortion: { dropPct: 0.17, windowMin: 5 },
-  arms: { dropPct: 0.71, windowMin: 30 },
-  drug: { dropPct: 2.0, windowMin: 90 },
+  extortion: { dropPct: 0.039, windowMin: 5 },
+  arms: { dropPct: 0.176, windowMin: 30 },
+  drug: { dropPct: 0.518, windowMin: 90 },
 };
-
-// Normal CDF approximation (same as live engine)
-function normCdf(x: number): number {
-  const t = 1 / (1 + 0.2316419 * Math.abs(x));
-  const d = 0.3989422804014327;
-  const p = d * Math.exp(-x * x / 2) * t *
-    (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
-  return x > 0 ? 1 - p : p;
-}
 
 // Calculate realized vol from returns (annualized %)
 function calcVol(returns: number[]): number | null {
@@ -32,13 +30,9 @@ function calcVol(returns: number[]): number | null {
   return stdDev * Math.sqrt(525600) * 100;
 }
 
-// Predict P(drop > threshold) using vol model
+// Predict P(drop > threshold) using same Student-t model as live engine
 function predictDropProb(volAnnualized: number, windowMin: number, thresholdPct: number): number {
-  const volPerMin = (volAnnualized / 100) / Math.sqrt(525600);
-  const windowVol = volPerMin * Math.sqrt(windowMin);
-  const threshold = thresholdPct / 100;
-  const z = threshold / windowVol;
-  return 1 - normCdf(z);
+  return dropProbStudentT(volAnnualized, windowMin, thresholdPct, config.studentTDf);
 }
 
 // Check if ETH actually dropped > threshold during window
@@ -48,7 +42,6 @@ function didDrop(klines: Kline[], startIdx: number, windowMin: number, threshold
   const endIdx = Math.min(startIdx + windowMin, klines.length);
 
   for (let i = startIdx + 1; i < endIdx; i++) {
-    // Check candle low — if low dropped below threshold, operation fails
     const maxDrop = (startPrice - klines[i].low) / startPrice;
     if (maxDrop >= threshold) return true;
   }
@@ -58,14 +51,16 @@ function didDrop(klines: Kline[], startIdx: number, windowMin: number, threshold
 export interface BacktestConfig {
   volWindow: number;       // minutes of history for vol calc (default 30)
   sampleEvery: number;     // simulate operation every N minutes (default 5)
+  applyCalibration?: boolean; // also compute calibrated Brier alongside raw
 }
 
 export interface OperationResult {
   timestamp: number;
   price: number;
   volAnnualized: number;
-  predicted: number;       // P(fail) from model
-  actual: boolean;         // did it actually fail?
+  predicted: number;       // raw P(fail) from Student-t model
+  calibrated?: number;     // calibrated P(fail), if requested
+  actual: boolean;
   regime: 'low' | 'medium' | 'high';
 }
 
@@ -76,15 +71,18 @@ export interface CalibrationBucket {
   failures: number;
   actualRate: number;
   avgPredicted: number;
-  calibrationError: number;  // |actual - predicted|
+  calibrationError: number;
 }
 
 export interface BacktestResults {
   operation: string;
+  thresholdPct: number;
+  windowMin: number;
   totalSimulations: number;
   totalFailures: number;
   overallFailRate: number;
   overallAvgPredicted: number;
+  overallAvgCalibrated?: number;
   calibration: CalibrationBucket[];
   byRegime: {
     regime: string;
@@ -93,8 +91,9 @@ export interface BacktestResults {
     failRate: number;
     avgPredicted: number;
   }[];
-  brierScore: number;
-  hourlyPattern: { hour: number; count: number; failRate: number }[];
+  brierScore: number;             // raw Student-t predictions
+  brierScoreCalibrated?: number;  // after calibrateProb()
+  hourlyPattern: { hour: number; count: number; failRate: number; failures: number }[];
 }
 
 export function runBacktest(
@@ -111,25 +110,25 @@ export function runBacktest(
     returns.push(Math.log(klines[i].close / klines[i - 1].close));
   }
 
-  // Need enough history for vol window AND enough future for operation window
   const startIdx = cfg.volWindow + 1;
   const endIdx = klines.length - windowMin;
 
-  logger.info({ opType, startIdx, endIdx, step: cfg.sampleEvery }, `[Backtest] ${opType}: simulating`);
+  logger.info({ opType, dropPct, windowMin, startIdx, endIdx, step: cfg.sampleEvery }, `[Backtest] ${opType}: simulating`);
 
   for (let i = startIdx; i < endIdx; i += cfg.sampleEvery) {
-    // Get trailing vol
     const trailingReturns = returns.slice(i - cfg.volWindow, i);
     const vol = calcVol(trailingReturns);
     if (vol === null) continue;
 
-    // Predict failure probability
     const predicted = predictDropProb(vol, windowMin, dropPct);
-
-    // Check actual outcome
     const actual = didDrop(klines, i, windowMin, dropPct);
 
-    // Classify regime
+    let calibrated: number | undefined;
+    if (cfg.applyCalibration) {
+      const utcHour = new Date(klines[i].openTime).getUTCHours();
+      calibrated = calibrateProb(predicted, opType, utcHour);
+    }
+
     const regime = vol < 40 ? 'low' as const : vol < 80 ? 'medium' as const : 'high' as const;
 
     results.push({
@@ -137,20 +136,27 @@ export function runBacktest(
       price: klines[i].close,
       volAnnualized: vol,
       predicted,
+      calibrated,
       actual,
       regime,
     });
   }
 
-  // === Analyze results ===
-
   const totalSimulations = results.length;
   const totalFailures = results.filter(r => r.actual).length;
   const overallFailRate = totalFailures / totalSimulations;
   const overallAvgPredicted = results.reduce((s, r) => s + r.predicted, 0) / totalSimulations;
+  const overallAvgCalibrated = cfg.applyCalibration
+    ? results.reduce((s, r) => s + (r.calibrated ?? 0), 0) / totalSimulations
+    : undefined;
 
-  // Calibration buckets
-  const bucketEdges = [0, 0.02, 0.05, 0.10, 0.20, 0.35, 0.50, 1.0];
+  // Calibration buckets — fine resolution in the 0-50% band where the
+  // Student-t model concentrates predictions under canonical thresholds.
+  // Coarser at the high end where the predictor rarely produces values.
+  const bucketEdges = [
+    0, 0.025, 0.05, 0.075, 0.10, 0.125, 0.15, 0.20,
+    0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.75, 1.0001,
+  ];
   const calibration: CalibrationBucket[] = [];
 
   for (let b = 0; b < bucketEdges.length - 1; b++) {
@@ -164,8 +170,8 @@ export function runBacktest(
     const avgPred = inBucket.reduce((s, r) => s + r.predicted, 0) / inBucket.length;
 
     calibration.push({
-      bucketLabel: `${(lo * 100).toFixed(0)}-${(hi * 100).toFixed(0)}%`,
-      predRange: [lo, hi],
+      bucketLabel: `${(lo * 100).toFixed(0)}-${(Math.min(hi, 1) * 100).toFixed(0)}%`,
+      predRange: [lo, Math.min(hi, 1)],
       count: inBucket.length,
       failures,
       actualRate,
@@ -174,7 +180,6 @@ export function runBacktest(
     });
   }
 
-  // By regime
   const regimes = ['low', 'medium', 'high'] as const;
   const byRegime = regimes.map(regime => {
     const inRegime = results.filter(r => r.regime === regime);
@@ -189,13 +194,18 @@ export function runBacktest(
     };
   });
 
-  // Brier score (lower = better calibrated, 0 = perfect)
   const brierScore = results.reduce((s, r) => {
     const actual = r.actual ? 1 : 0;
     return s + (r.predicted - actual) ** 2;
   }, 0) / totalSimulations;
 
-  // Hourly pattern
+  const brierScoreCalibrated = cfg.applyCalibration
+    ? results.reduce((s, r) => {
+        const actual = r.actual ? 1 : 0;
+        return s + ((r.calibrated ?? 0) - actual) ** 2;
+      }, 0) / totalSimulations
+    : undefined;
+
   const hourBuckets = Array.from({ length: 24 }, (_, h) => ({ hour: h, count: 0, failures: 0 }));
   for (const r of results) {
     const hour = new Date(r.timestamp).getUTCHours();
@@ -205,33 +215,45 @@ export function runBacktest(
   const hourlyPattern = hourBuckets.map(b => ({
     hour: b.hour,
     count: b.count,
+    failures: b.failures,
     failRate: b.count > 0 ? b.failures / b.count : 0,
   }));
 
   return {
     operation: opType,
+    thresholdPct: dropPct,
+    windowMin,
     totalSimulations,
     totalFailures,
     overallFailRate,
     overallAvgPredicted,
+    overallAvgCalibrated,
     calibration,
     byRegime,
     brierScore,
+    brierScoreCalibrated,
     hourlyPattern,
   };
 }
 
-// Pretty print results
 export function printResults(r: BacktestResults) {
   logger.info('\n' + '='.repeat(60));
-  logger.info(`  BACKTEST: ${r.operation.toUpperCase()}`);
+  logger.info(`  BACKTEST: ${r.operation.toUpperCase()}  (drop ${r.thresholdPct}% in ${r.windowMin}m)`);
   logger.info('='.repeat(60));
   logger.info(`  Simulations: ${r.totalSimulations.toLocaleString()}`);
   logger.info(`  Failures:    ${r.totalFailures.toLocaleString()} (${(r.overallFailRate * 100).toFixed(2)}%)`);
-  logger.info(`  Avg Predicted P(fail): ${(r.overallAvgPredicted * 100).toFixed(2)}%`);
-  logger.info(`  Brier Score: ${r.brierScore.toFixed(4)} (lower = better, <0.1 = good)`);
+  logger.info(`  Avg Raw Predicted P(fail):        ${(r.overallAvgPredicted * 100).toFixed(2)}%`);
+  if (r.overallAvgCalibrated !== undefined) {
+    logger.info(`  Avg Calibrated Predicted P(fail): ${(r.overallAvgCalibrated * 100).toFixed(2)}%`);
+  }
+  logger.info(`  Brier Score (raw):        ${r.brierScore.toFixed(4)}`);
+  if (r.brierScoreCalibrated !== undefined) {
+    const delta = r.brierScoreCalibrated - r.brierScore;
+    const arrow = delta < 0 ? 'better' : delta > 0 ? 'WORSE' : 'same';
+    logger.info(`  Brier Score (calibrated): ${r.brierScoreCalibrated.toFixed(4)}  (${arrow}, Δ=${delta.toFixed(4)})`);
+  }
 
-  logger.info('  CALIBRATION (predicted vs actual failure rate):');
+  logger.info('  CALIBRATION (raw predicted vs actual failure rate):');
   logger.info('  ' + '-'.repeat(56));
   logger.info('  Pred Range   | Count   | Actual   | Predicted | Error');
   logger.info('  ' + '-'.repeat(56));
@@ -260,7 +282,7 @@ export function printResults(r: BacktestResults) {
   for (const h of r.hourlyPattern) {
     if (h.count === 0) continue;
     const barLen = maxRate > 0 ? Math.round((h.failRate / maxRate) * 20) : 0;
-    const bar = '█'.repeat(barLen) + '░'.repeat(20 - barLen);
+    const bar = '#'.repeat(barLen) + '.'.repeat(20 - barLen);
     logger.info(
       `  ${String(h.hour).padStart(2)}:00 | ${bar} | ${(h.failRate * 100).toFixed(1)}% (n=${h.count})`
     );
