@@ -10,6 +10,7 @@ import { dropProbStudentT, dropProbNormal } from './distributions';
 import { buildEconomics } from './economics';
 import type { OpStatsBlock } from './op-stats';
 import type { OpType } from './economics';
+import type { WalletBalances } from '../feeds/onchain-balances';
 
 // Operation thresholds — canonical values from offshoreprotocol.fun/llms.txt
 // Extortion: 2,565x leverage -> 0.039% drop fails it
@@ -99,6 +100,7 @@ export class VolatilityEngine extends EventEmitter {
   //   fraction once the user has logged enough outcomes.
   private getOpStats: (() => OpStatsBlock) | null = null;
   private getEmpiricalFractions: (() => Partial<Record<OpType, number>>) | null = null;
+  private latestWalletBalances: WalletBalances | null = null;
 
   setOpStatsProvider(
     statsFn: () => OpStatsBlock,
@@ -106,6 +108,10 @@ export class VolatilityEngine extends EventEmitter {
   ) {
     this.getOpStats = statsFn;
     this.getEmpiricalFractions = fractionsFn;
+  }
+
+  onWalletBalances(b: WalletBalances) {
+    this.latestWalletBalances = b;
   }
 
   // --- Feed handlers ---
@@ -472,6 +478,7 @@ export class VolatilityEngine extends EventEmitter {
         ),
       },
       opStats,
+      walletBalances: this.latestWalletBalances,
     } as any;
   }
 

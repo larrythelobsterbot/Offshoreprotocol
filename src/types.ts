@@ -4,6 +4,7 @@
 
 import type { EconomicsBlock } from './engine/economics';
 import type { OpStatsBlock } from './engine/op-stats';
+import type { WalletBalances } from './feeds/onchain-balances';
 
 export interface Tick {
   t: number;   // timestamp ms
@@ -98,6 +99,7 @@ export interface DashboardState {
   scores: SafetyScores;
   economics: EconomicsBlock;
   opStats: OpStatsBlock | null;
+  walletBalances: WalletBalances | null;
   orderbook: {
     binance: OrderbookSnapshot;
     bybit: OrderbookSnapshot;

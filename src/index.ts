@@ -2,6 +2,7 @@ import { BinanceFeed } from './feeds/binance';
 import { BybitFeed } from './feeds/bybit';
 import { HyperliquidFeed } from './feeds/hyperliquid';
 import { HyperliquidWsFeed } from './feeds/hyperliquid-ws';
+import { OnchainBalancesFeed } from './feeds/onchain-balances';
 import { PolymarketFeed } from './feeds/polymarket';
 import { CoinglassFeed } from './feeds/coinglass';
 import { VolatilityEngine } from './engine/volatility';
@@ -40,6 +41,7 @@ async function main() {
   const bybit = new BybitFeed();
   const hl = new HyperliquidFeed();        // REST: funding / OI / mark / oracle / volume
   const hlws = new HyperliquidWsFeed();    // WS: trades + L2 book (primary tick source)
+  const balances = new OnchainBalancesFeed(config.walletAddress, config.onchainPollInterval);
   const poly = new PolymarketFeed();
   const cg = new CoinglassFeed();
 
@@ -109,6 +111,9 @@ async function main() {
   cg.on('data', (data) => engine.onHeatmap(data));
   cg.on('status', (s) => engine.setConnection('coinglass', s));
 
+  // On-chain wallet balances (INF / DIRTY / USDM)
+  balances.on('balances', (b) => engine.onWalletBalances(b));
+
   // Alerts → Telegram + storage
   engine.on('alert', async (alert) => {
     logger.warn({ alert }, `[ALERT] ${alert.message}`);
@@ -162,6 +167,7 @@ async function main() {
   bybit.start();
   hl.start();
   hlws.start();
+  balances.start();
   poly.start();
   cg.start();
 
@@ -188,6 +194,7 @@ async function main() {
     bybit.stop();
     hl.stop();
     hlws.stop();
+    balances.stop();
     poly.stop();
     cg.stop();
     // Flush remaining batches

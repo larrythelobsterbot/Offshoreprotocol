@@ -227,6 +227,57 @@
     padding: 3px 8px;
   }
 
+  /* --- Live wallet panel --- */
+  .wallet-card { border-color: var(--cyan); }
+  .wallet-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .wallet-meta { display: flex; align-items: center; gap: 8px; }
+  .wallet-dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--dim);
+  }
+  .wallet-dot.live { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .wallet-dot.stale { background: var(--red); }
+  .wallet-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+  }
+  .wallet-cell {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px 12px;
+  }
+  .wallet-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--dim);
+    letter-spacing: 1px;
+    margin-bottom: 4px;
+  }
+  .wallet-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.1;
+    color: var(--text);
+  }
+  .wallet-rate {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--dim);
+    margin-top: 4px;
+  }
+  .wallet-rate.pos { color: var(--green); }
+  .wallet-rate.neg { color: var(--red); }
+
   /* --- Op outcome logger panel --- */
   .op-log-toggle {
     background: transparent;
@@ -501,6 +552,44 @@
   <label>Server URL:
     <input id="serverUrl" value="ws://localhost:3000/ws" onchange="reconnect()">
   </label>
+</div>
+
+<!-- Live wallet balances (on-chain) -->
+<div style="padding: 8px 24px 0;">
+  <div class="card wallet-card" id="walletCard" style="display:none;padding:12px 16px;">
+    <div class="wallet-header">
+      <div>
+        <span class="card-title" style="margin:0">WALLET</span>
+        <a id="walletAddrLink" target="_blank" rel="noopener" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--cyan);text-decoration:none;margin-left:8px;">--</a>
+      </div>
+      <div class="wallet-meta">
+        <span id="walletStatus" class="wallet-dot"></span>
+        <span id="walletObserved" style="font-size:10px;color:var(--dim);">--</span>
+      </div>
+    </div>
+    <div class="wallet-grid">
+      <div class="wallet-cell">
+        <div class="wallet-label">INFLUENCE</div>
+        <div class="wallet-value" id="walletInf">--</div>
+        <div class="wallet-rate" id="walletInfRate">--</div>
+      </div>
+      <div class="wallet-cell">
+        <div class="wallet-label">USDM</div>
+        <div class="wallet-value" id="walletUsdm">--</div>
+        <div class="wallet-rate" id="walletUsdmRate">--</div>
+      </div>
+      <div class="wallet-cell">
+        <div class="wallet-label">$DIRTY</div>
+        <div class="wallet-value" id="walletDirty">--</div>
+        <div class="wallet-rate" id="walletDirtyRate">--</div>
+      </div>
+      <div class="wallet-cell">
+        <div class="wallet-label">NET RATE (est)</div>
+        <div class="wallet-value" id="walletNet">--</div>
+        <div class="wallet-rate" id="walletNetSub">$DIRTY @ live rate − INF burn</div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Calibration context bar -->
@@ -900,6 +989,88 @@ function toggleSettings() {
 }
 
 // ============================================================
+// LIVE WALLET PANEL
+// ============================================================
+
+// Live $DIRTY → USDM rate. Hardcoded from the in-app swap screen
+// (1 USDM = 7.23 $DIRTY → $DIRTY = 1/7.23 USDM ≈ 0.1383). Update
+// this value when you observe the in-app rate change, or wire it
+// up to a feed later.
+const DIRTY_TO_USDM = 1 / 7.23;
+
+function fmtSigned(v, suffix = '', dp = 2) {
+  if (v == null || !Number.isFinite(v)) return '--';
+  const sign = v >= 0 ? '+' : '';
+  return sign + v.toFixed(dp) + suffix;
+}
+
+function renderWallet(b) {
+  const card = document.getElementById('walletCard');
+  if (!b) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  // Truncated address with link to MegaETH explorer (best-effort)
+  const addr = b.wallet || '';
+  const trunc = addr ? addr.slice(0, 6) + '...' + addr.slice(-4) : '--';
+  const link = document.getElementById('walletAddrLink');
+  link.textContent = trunc;
+  link.href = addr ? `https://www.megaexplorer.xyz/address/${addr}` : '#';
+
+  // Status dot
+  const dot = document.getElementById('walletStatus');
+  dot.className = 'wallet-dot ' + (b.ok ? 'live' : 'stale');
+
+  // Observed-time label
+  const obs = b.observedSeconds || 0;
+  const label = obs < 60 ? `${obs}s tracked`
+              : obs < 3600 ? `${Math.floor(obs/60)}m tracked`
+              : `${(obs/3600).toFixed(1)}h tracked`;
+  document.getElementById('walletObserved').textContent = label;
+
+  // Balances
+  document.getElementById('walletInf').textContent = b.inf.toFixed(2);
+  document.getElementById('walletUsdm').textContent = '$' + b.usdm.toFixed(2);
+  document.getElementById('walletDirty').textContent = b.dirty.toFixed(2);
+
+  // Per-hour rates
+  const rateInf = b.infPerHour;
+  const rateUsdm = b.usdmPerHour;
+  const rateDirty = b.dirtyPerHour;
+
+  setRate('walletInfRate', rateInf, ' INF/hr');
+  setRate('walletUsdmRate', rateUsdm, ' USDM/hr');
+  setRate('walletDirtyRate', rateDirty, ' $/hr', 1);
+
+  // Net rate in USDM-equivalent: $DIRTY/hr × DIRTY_TO_USDM + USDM/hr − INF/hr (since INF costs $1/INF)
+  if (rateInf != null && rateUsdm != null && rateDirty != null) {
+    const netUsdm = rateDirty * DIRTY_TO_USDM + rateUsdm - (-rateInf);
+    // Note: -(-rateInf) — INF burn shows as negative INF/hr, and INF cost = 1 USDM/INF,
+    // so net flow = DIRTY value gained + USDM gained + INF gained (negative when burning).
+    const fixed = rateDirty * DIRTY_TO_USDM + rateUsdm + rateInf;
+    setRate('walletNet', fixed, ' USDM/hr', 2);
+    const el = document.getElementById('walletNet');
+    el.classList.remove('wallet-rate');
+    el.classList.add('wallet-value');
+    el.style.color = fixed > 0 ? 'var(--green)' : fixed < 0 ? 'var(--red)' : 'var(--text)';
+  } else {
+    document.getElementById('walletNet').textContent = obs < 60 ? 'warming up...' : '--';
+    document.getElementById('walletNet').style.color = 'var(--dim)';
+  }
+}
+
+function setRate(id, value, suffix, dp = 2) {
+  const el = document.getElementById(id);
+  if (value == null || !Number.isFinite(value)) {
+    el.textContent = 'warming up...';
+    el.classList.remove('pos','neg');
+    return;
+  }
+  el.textContent = fmtSigned(value, suffix, dp);
+  el.classList.toggle('pos', value > 0);
+  el.classList.toggle('neg', value < 0);
+}
+
+// ============================================================
 // OP OUTCOME LOGGER
 // ============================================================
 
@@ -1081,6 +1252,9 @@ function render(s) {
     renderOp('Arms', 'opArms',      s.scores.arms,      null, false, s.scores.probArms);
     renderOp('Drug', 'opDrug',      s.scores.drug,      null, false, s.scores.probDrug);
   }
+
+  // Live wallet balances (on-chain)
+  if (s.walletBalances) renderWallet(s.walletBalances);
 
   // Op outcome stats (empirical failure fractions)
   if (s.opStats) renderOpStats(s.opStats);
