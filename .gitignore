@@ -1,0 +1,28 @@
+# Secrets — never commit
+.env
+.env.local
+.env.production
+.env.*.local
+*.pem
+*.key
+
+# Build output
+dist/
+
+# Dependencies
+node_modules/
+
+# Runtime data
+logs/
+*.log
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.json
+.playwright-cli/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
