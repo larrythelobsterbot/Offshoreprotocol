@@ -507,6 +507,48 @@
   }
   .op-log-recent-row button:hover { border-color: var(--red); color: var(--red); }
 
+  /* --- Tokenomics panel --- */
+  .tokenomics-card { border-color: var(--cyan); }
+  .tokenomics-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .tokenomics-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+  .tokenomics-cell {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px 12px;
+  }
+  .tokenomics-cell .sym {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--dim);
+    letter-spacing: 1px;
+    margin-bottom: 4px;
+  }
+  .tokenomics-cell .supply {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+  .tokenomics-cell .delta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--dim);
+    margin-top: 4px;
+  }
+  .tokenomics-cell .delta.pos { color: var(--green); }
+  .tokenomics-cell .delta.neg { color: var(--red); }
+  .tokenomics-cell .delta.warming { color: var(--dim); font-style: italic; }
+
   /* --- Public-mode hero CTA --- */
   .hero-card {
     background: linear-gradient(135deg, rgba(0,229,255,0.08) 0%, rgba(0,229,255,0.02) 100%);
@@ -761,12 +803,31 @@
   </label>
 </div>
 
+<!-- Tokenomics panel (always visible — public network data, no PII) -->
+<div style="padding: 0 24px 8px;">
+  <div class="card tokenomics-card" id="tokenomicsCard" style="display:none;padding:12px 16px;">
+    <div class="tokenomics-header">
+      <div>
+        <span class="card-title" style="margin:0">TOKENOMICS</span><span class="info-pill" title="Live token supply tracking from on-chain. $DIRTY mints with each successful op; burns on asset purchases and Status upgrades. Net supply growth is a leading indicator of $DIRTY price direction.">?</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span id="tokenomicsActivePlayers" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--cyan);">--</span>
+        <span class="wallet-dot" id="tokenomicsDot"></span>
+      </div>
+    </div>
+    <div class="tokenomics-grid" id="tokenomicsGrid">
+      <!-- rows injected dynamically -->
+    </div>
+  </div>
+</div>
+
 <!-- Hero card (only shown in PUBLIC_MODE) -->
 <div id="heroCard" class="hero-card" style="display:none;">
   <div class="hero-row">
     <div>
       <div class="hero-headline">Live ETH risk intelligence for Offshore Protocol</div>
       <div class="hero-subhead">
+        <span id="heroPlayerCount" style="color:var(--cyan);"></span>
         Real-time calibrated probability of operation failure · Live $DIRTY price · Danger-band warnings · Updated every second
       </div>
     </div>
@@ -1283,6 +1344,66 @@ function toggleSettings() {
 }
 
 // ============================================================
+// TOKENOMICS PANEL — supply tracking + active player count
+// ============================================================
+
+function fmtSupply(value, decimals = 0) {
+  if (!Number.isFinite(value)) return '--';
+  if (Math.abs(value) >= 1e6) return (value / 1e6).toFixed(2) + 'M';
+  if (Math.abs(value) >= 1e3) return (value / 1e3).toFixed(1) + 'K';
+  return value.toFixed(decimals);
+}
+
+function fmtSignedDelta(value, decimals = 0) {
+  if (value == null || !Number.isFinite(value)) return null;
+  const sign = value >= 0 ? '+' : '';
+  return sign + (Math.abs(value) >= 1e3 ? (value / 1e3).toFixed(1) + 'K' : value.toFixed(decimals));
+}
+
+function renderTokenomics(t) {
+  const card = document.getElementById('tokenomicsCard');
+  if (!t) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  document.getElementById('tokenomicsDot').className = 'wallet-dot ' + (t.ok ? 'live' : 'stale');
+  document.getElementById('tokenomicsActivePlayers').textContent =
+    `${t.activePlayers} active players (last ${(t.activePlayersWindowBlocks/1000).toFixed(0)}k blocks)`;
+
+  const grid = document.getElementById('tokenomicsGrid');
+  grid.innerHTML = '';
+  for (const sym of ['DIRTY', 'INF', 'USDM', 'OSBT']) {
+    const tk = t.tokens[sym];
+    if (!tk) continue;
+    const cell = document.createElement('div');
+    cell.className = 'tokenomics-cell';
+    const supplyDisplay = sym === 'OSBT'
+      ? `${tk.totalSupply.toFixed(0)} minted`
+      : fmtSupply(tk.totalSupply);
+    let deltaText, deltaClass;
+    if (tk.delta24h == null) {
+      deltaText = 'warming up...';
+      deltaClass = 'warming';
+    } else {
+      const pct = tk.pctChange24h != null ? ` (${tk.pctChange24h >= 0 ? '+' : ''}${tk.pctChange24h.toFixed(2)}%)` : '';
+      deltaText = `24h: ${fmtSignedDelta(tk.delta24h)}${pct}`;
+      deltaClass = tk.delta24h > 0 ? 'pos' : tk.delta24h < 0 ? 'neg' : '';
+    }
+    cell.innerHTML = `
+      <div class="sym">${sym}${sym === 'OSBT' ? ' (PRESALE SBT)' : ''}</div>
+      <div class="supply">${supplyDisplay}</div>
+      <div class="delta ${deltaClass}">${deltaText}</div>
+    `;
+    grid.appendChild(cell);
+  }
+
+  // Hero CTA player count badge — only meaningful in public mode
+  const heroPC = document.getElementById('heroPlayerCount');
+  if (heroPC && t.activePlayers > 0) {
+    heroPC.textContent = `Live for ${t.activePlayers}+ active players · `;
+  }
+}
+
+// ============================================================
 // PUBLIC-MODE: hero CTA + hide personal panels
 // ============================================================
 
@@ -1767,6 +1888,9 @@ function render(s) {
 
   // Public-mode CTA: show hero card, hide personal panels.
   applyPublicMode(!!s.publicMode, s.tgBotUsername, s.tgChannelUsername);
+
+  // Network-wide tokenomics + active player count (public, always visible)
+  if (s.tokenomics) renderTokenomics(s.tokenomics);
 
   // On-chain wallet + corp state + activity rollups
   if (s.walletBalances) renderWallet(s.walletBalances, s.ammRate);

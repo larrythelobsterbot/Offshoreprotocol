@@ -109,6 +109,18 @@ export class Storage {
       );
       CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(timestamp);
 
+      -- Token supply snapshots. One row per (token, timestamp) capture.
+      -- Used by the tokenomics feed to compute mint/burn rates and net
+      -- inflation across 1h / 24h / 7d windows.
+      CREATE TABLE IF NOT EXISTS token_supply_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        symbol TEXT NOT NULL,
+        total_supply_raw TEXT NOT NULL  -- bigint as string so we don't overflow
+      );
+      CREATE INDEX IF NOT EXISTS idx_supply_ts ON token_supply_history(ts);
+      CREATE INDEX IF NOT EXISTS idx_supply_symbol_ts ON token_supply_history(symbol, ts);
+
       -- Telegram bot subscribers. Each row is a TG user who has registered
       -- via the bot's /start command and (optionally) bound a wallet for
       -- personal alerts. alert_types is a JSON array of enabled categories;
@@ -305,6 +317,34 @@ export class Storage {
         (SELECT MAX(timestamp) FROM ticks) as latest_tick
     `).get() as any;
     return counts;
+  }
+
+  // --- Token supply history ---
+
+  insertTokenSupply(symbol: string, ts: number, totalSupplyRaw: bigint): void {
+    this.db.prepare(
+      'INSERT INTO token_supply_history (ts, symbol, total_supply_raw) VALUES (?, ?, ?)'
+    ).run(ts, symbol, totalSupplyRaw.toString());
+  }
+
+  /**
+   * Latest supply snapshot for a given token (or null if never recorded).
+   */
+  getLatestSupply(symbol: string): { ts: number; total_supply_raw: string } | null {
+    return (this.db.prepare(
+      'SELECT ts, total_supply_raw FROM token_supply_history WHERE symbol = ? ORDER BY ts DESC LIMIT 1'
+    ).get(symbol) as any) || null;
+  }
+
+  /**
+   * The supply snapshot closest to (but not after) `targetTs` for a given
+   * token. Used to compute deltas across windows: e.g. snapshotAt(now-24h)
+   * vs snapshotAt(now). Returns null if no snapshot is old enough.
+   */
+  getSupplyAtOrBefore(symbol: string, targetTs: number): { ts: number; total_supply_raw: string } | null {
+    return (this.db.prepare(
+      'SELECT ts, total_supply_raw FROM token_supply_history WHERE symbol = ? AND ts <= ? ORDER BY ts DESC LIMIT 1'
+    ).get(symbol, targetTs) as any) || null;
   }
 
   // --- Subscribers (Telegram bot service) ---

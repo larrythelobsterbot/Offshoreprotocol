@@ -6,6 +6,7 @@ import { OnchainBalancesFeed } from './feeds/onchain-balances';
 import { CorpStateFeed } from './feeds/corp-state';
 import { AmmRateFeed } from './feeds/amm-rate';
 import { OpScraperFeed } from './feeds/op-scraper';
+import { TokenomicsFeed } from './feeds/tokenomics';
 import { PolymarketFeed } from './feeds/polymarket';
 import { CoinglassFeed } from './feeds/coinglass';
 import { VolatilityEngine } from './engine/volatility';
@@ -55,6 +56,7 @@ async function main() {
   const balances = new OnchainBalancesFeed(config.walletAddress, config.onchainPollInterval);
   const corps = new CorpStateFeed(config.walletAddress, config.onchainPollInterval);
   const amm = new AmmRateFeed(); // 30s default — AMM doesn't move that fast
+  const tokenomics = new TokenomicsFeed(storage); // 5-min default poll
 
   // Track the latest corp-address list so the scraper always has fresh inputs.
   let latestCorpAddresses: string[] = [];
@@ -139,6 +141,9 @@ async function main() {
 
   // Live $DIRTY ↔ USDM AMM rate from the in-game Uniswap V3 pool
   amm.on('rate', (r) => engine.onAmmRate(r));
+
+  // Token supply tracking + active player count (Tier A)
+  tokenomics.on('tokenomics', (t) => engine.onTokenomics(t));
 
   // On-chain operation outcome scraper. Posts each newly-finalized
   // TradeCompleted event to /api/op-result so the empirical
@@ -276,6 +281,7 @@ async function main() {
   hl.start();
   hlws.start();
   amm.start();
+  tokenomics.start();
   poly.start();
   cg.start();
 
@@ -317,6 +323,7 @@ async function main() {
     balances.stop();
     corps.stop();
     amm.stop();
+    tokenomics.stop();
     scraper.stop();
     poly.stop();
     cg.stop();

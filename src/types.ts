@@ -8,6 +8,7 @@ import type { WalletBalances } from './feeds/onchain-balances';
 import type { CorpStateBlock } from './feeds/corp-state';
 import type { AmmRate } from './feeds/amm-rate';
 import type { OpSummary } from './engine/op-summary';
+import type { TokenomicsBlock } from './feeds/tokenomics';
 
 export interface Tick {
   t: number;   // timestamp ms
@@ -111,6 +112,7 @@ export interface DashboardState {
   walletBalances: WalletBalances | null;
   corpState: CorpStateBlock | null;
   ammRate: AmmRate | null;
+  tokenomics: TokenomicsBlock | null;
   activity: {
     last1h: OpSummary;
     last24h: OpSummary;
