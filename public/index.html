@@ -603,7 +603,7 @@
 
 <div class="settings-panel" id="settingsPanel">
   <label>Server URL:
-    <input id="serverUrl" value="ws://localhost:3000/ws" onchange="reconnect()">
+    <input id="serverUrl" value="" placeholder="ws://host:port/ws (auto-detected if blank)" onchange="reconnect()">
   </label>
 </div>
 
@@ -1003,8 +1003,10 @@ function deepMerge(target, delta) {
 
 function getServerUrl() {
   const input = document.getElementById('serverUrl');
-  // Auto-detect: if page loaded from VPS, use same host
-  if (input.value === 'ws://localhost:3000/ws' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+  // Default to same-origin WS — the server serves both the static
+  // dashboard and the WebSocket on the same port, so the page's
+  // own host is always correct unless the user explicitly overrides.
+  if (!input.value || input.value === 'ws://localhost:3000/ws') {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     input.value = `${proto}//${location.host}/ws`;
   }
