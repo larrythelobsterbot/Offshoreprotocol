@@ -195,6 +195,37 @@
     margin-top: 8px;
     color: var(--dim);
   }
+  .op-ev {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 36px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .op-secondary {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    margin-top: 8px;
+    color: var(--dim);
+  }
+  .op-score-mini {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    margin-top: 6px;
+    color: var(--dim);
+    letter-spacing: 1px;
+  }
+  .op-card.best-ev { box-shadow: 0 0 0 2px var(--cyan), inset 0 0 24px rgba(0,229,255,0.06); }
+  .badge-best-ev {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--cyan);
+    border: 1px solid rgba(0,229,255,0.4);
+    border-radius: 4px;
+    padding: 3px 8px;
+  }
 
   /* Danger gauge */
   .danger-wrap { text-align: center; }
@@ -365,7 +396,8 @@
       <span id="hourlyRisk" class="vol-regime unknown" style="font-size:11px">--</span>
       <span id="utcHour" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim)">--:00 UTC</span>
     </div>
-    <div style="display:flex;align-items:center;gap:6px;">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span class="badge-best-ev" id="badgeBestEv">BEST EV/INF: --</span>
       <span style="font-size:10px;color:var(--dim);font-family:'JetBrains Mono',monospace;">CALIBRATED</span>
       <span style="font-size:10px;color:var(--green);font-family:'JetBrains Mono',monospace;">● 180d backtest</span>
     </div>
@@ -376,24 +408,27 @@
 <div class="ops-grid">
   <div class="op-card" id="opExtortion">
     <div class="op-name">EXTORTION</div>
-    <div class="op-meta">5 min • 2,565x • 0.039% threshold</div>
-    <div class="op-score" id="scoreExt">--</div>
-    <div class="op-score-label">SAFETY SCORE</div>
-    <div class="op-prob" id="probExt">P(fail): --</div>
+    <div class="op-meta">5 min • 2,565x • 0.039% • binary</div>
+    <div class="op-ev" id="evExt">--</div>
+    <div class="op-score-label">EV ($DIRTY/op)</div>
+    <div class="op-secondary"><span id="probExt">P(fail): --</span> &nbsp;•&nbsp; <span id="dpiExt">$/INF: --</span></div>
+    <div class="op-score-mini" id="scoreExt">SAFETY --</div>
   </div>
   <div class="op-card" id="opArms">
     <div class="op-name">ARMS DEAL</div>
-    <div class="op-meta">30 min • 567x • 0.176% threshold</div>
-    <div class="op-score" id="scoreArms">--</div>
-    <div class="op-score-label">SAFETY SCORE</div>
-    <div class="op-prob" id="probArms">P(fail): --</div>
+    <div class="op-meta">30 min • 567x • 0.176% • progressive</div>
+    <div class="op-ev" id="evArms">--</div>
+    <div class="op-score-label">EV ($DIRTY/op)</div>
+    <div class="op-secondary"><span id="probArms">P(fail): --</span> &nbsp;•&nbsp; <span id="dpiArms">$/INF: --</span></div>
+    <div class="op-score-mini" id="scoreArms">SAFETY --</div>
   </div>
   <div class="op-card" id="opDrug">
     <div class="op-name">DRUG DEAL</div>
-    <div class="op-meta">90 min • 193x • 0.518% threshold</div>
-    <div class="op-score" id="scoreDrug">--</div>
-    <div class="op-score-label">SAFETY SCORE</div>
-    <div class="op-prob" id="probDrug">P(fail): --</div>
+    <div class="op-meta">90 min • 193x • 0.518% • progressive</div>
+    <div class="op-ev" id="evDrug">--</div>
+    <div class="op-score-label">EV ($DIRTY/op)</div>
+    <div class="op-secondary"><span id="probDrug">P(fail): --</span> &nbsp;•&nbsp; <span id="dpiDrug">$/INF: --</span></div>
+    <div class="op-score-mini" id="scoreDrug">SAFETY --</div>
   </div>
 </div>
 
@@ -694,10 +729,22 @@ function render(s) {
   document.getElementById('vol30m').textContent = s.volatility.vol30m != null ? s.volatility.vol30m.toFixed(1) + '%' : '--';
   document.getElementById('vol90m').textContent = s.volatility.vol90m != null ? s.volatility.vol90m.toFixed(1) + '%' : '--';
 
-  // Operation cards
-  renderOp('Ext', 'opExtortion', s.scores.extortion, s.scores.probExtortion);
-  renderOp('Arms', 'opArms', s.scores.arms, s.scores.probArms);
-  renderOp('Drug', 'opDrug', s.scores.drug, s.scores.probDrug);
+  // Operation cards — EV-driven render
+  const econ = s.economics;
+  if (econ) {
+    renderOp('Ext',  'opExtortion', s.scores.extortion, econ.extortion, econ.bestEvPerInfOp === 'extortion');
+    renderOp('Arms', 'opArms',      s.scores.arms,      econ.arms,      econ.bestEvPerInfOp === 'arms');
+    renderOp('Drug', 'opDrug',      s.scores.drug,      econ.drug,      econ.bestEvPerInfOp === 'drug');
+
+    const opLabel = { extortion: 'EXTORTION', arms: 'ARMS', drug: 'DRUG' }[econ.bestEvPerInfOp] || '--';
+    document.getElementById('badgeBestEv').textContent =
+      `BEST EV/INF: ${opLabel} → $${econ.bestEvPerInfValue.toFixed(1)} per INF`;
+  } else {
+    // Fallback for old state shape
+    renderOp('Ext',  'opExtortion', s.scores.extortion, null, false, s.scores.probExtortion);
+    renderOp('Arms', 'opArms',      s.scores.arms,      null, false, s.scores.probArms);
+    renderOp('Drug', 'opDrug',      s.scores.drug,      null, false, s.scores.probDrug);
+  }
 
   // CVD
   const fmtUsd = (v) => {
@@ -776,15 +823,40 @@ function render(s) {
   }
 }
 
-function renderOp(prefix, cardId, score, prob) {
+// econ: { evDirty, dirtyPerInf, probFail, baseReward, failureRewardFraction }
+// fallbackProb is used when econ is null (old state shape).
+function renderOp(prefix, cardId, score, econ, isBestEv, fallbackProb) {
   const card = document.getElementById(cardId);
-  card.className = 'op-card ' + (score >= 70 ? 'safe' : score >= 40 ? 'caution' : 'danger');
-  
+  let cls = 'op-card ' + (score >= 70 ? 'safe' : score >= 40 ? 'caution' : 'danger');
+  if (isBestEv) cls += ' best-ev';
+  card.className = cls;
+
+  // Mini safety score
   const scoreEl = document.getElementById('score' + prefix);
-  scoreEl.textContent = score;
-  scoreEl.style.color = score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow)' : 'var(--red)';
-  
-  document.getElementById('prob' + prefix).textContent = `P(fail): ${(prob * 100).toFixed(1)}% [cal]`;
+  if (scoreEl) {
+    scoreEl.textContent = `SAFETY ${score}`;
+    scoreEl.style.color = score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow)' : 'var(--red)';
+  }
+
+  // EV in $DIRTY
+  const evEl = document.getElementById('ev' + prefix);
+  if (evEl) {
+    if (econ) {
+      evEl.textContent = econ.evDirty.toFixed(1);
+      // Color EV by quality vs base reward
+      const ratio = econ.evDirty / econ.baseReward; // 0..1
+      evEl.style.color = ratio >= 0.7 ? 'var(--green)' : ratio >= 0.45 ? 'var(--yellow)' : 'var(--red)';
+    } else {
+      evEl.textContent = '--';
+    }
+  }
+
+  // P(fail) and $/INF subtitle
+  const probEl = document.getElementById('prob' + prefix);
+  const dpiEl  = document.getElementById('dpi' + prefix);
+  const p = econ ? econ.probFail : fallbackProb;
+  if (probEl && p != null) probEl.textContent = `P(fail): ${(p * 100).toFixed(1)}%`;
+  if (dpiEl && econ)       dpiEl.textContent  = `$/INF: ${econ.dirtyPerInf.toFixed(2)}`;
 }
 
 function fmtImbalance(v) {

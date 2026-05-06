@@ -2,6 +2,8 @@
 // Core data types for Offshore Ops Terminal
 // ============================================================
 
+import type { EconomicsBlock } from './engine/economics';
+
 export interface Tick {
   t: number;   // timestamp ms
   p: number;   // price
@@ -93,6 +95,7 @@ export interface DashboardState {
   ethPriceStart: number | null;
   volatility: VolatilityData;
   scores: SafetyScores;
+  economics: EconomicsBlock;
   orderbook: {
     binance: OrderbookSnapshot;
     bybit: OrderbookSnapshot;

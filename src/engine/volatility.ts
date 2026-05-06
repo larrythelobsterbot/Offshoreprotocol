@@ -7,6 +7,7 @@ import type {
 import { config } from '../config';
 import { calibrateProb, getHourlyRiskLevel, getSuggestedOp } from './calibration';
 import { dropProbStudentT, dropProbNormal } from './distributions';
+import { buildEconomics } from './economics';
 
 // Operation thresholds — canonical values from offshoreprotocol.fun/llms.txt
 // Extortion: 2,565x leverage -> 0.039% drop fails it
@@ -407,12 +408,18 @@ export class VolatilityEngine extends EventEmitter {
 
     const activeSources = Object.values(this.connections).filter(Boolean).length;
     const utcHour = new Date().getUTCHours();
+    const economics = buildEconomics({
+      extortion: vol.probExtortion,
+      arms: vol.probArms,
+      drug: vol.probDrug,
+    });
 
     return {
       ethPrice: this.ethPrice,
       ethPriceStart: this.ethPriceStart,
       volatility: vol,
       scores,
+      economics,
       orderbook: {
         binance: this.binOB ?? this.emptyOB(),
         bybit: this.bybOB ?? this.emptyOB(),
