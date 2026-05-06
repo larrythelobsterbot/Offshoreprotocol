@@ -5,6 +5,7 @@ import { HyperliquidWsFeed } from './feeds/hyperliquid-ws';
 import { OnchainBalancesFeed } from './feeds/onchain-balances';
 import { CorpStateFeed } from './feeds/corp-state';
 import { AmmRateFeed } from './feeds/amm-rate';
+import { OpScraperFeed } from './feeds/op-scraper';
 import { PolymarketFeed } from './feeds/polymarket';
 import { CoinglassFeed } from './feeds/coinglass';
 import { VolatilityEngine } from './engine/volatility';
@@ -46,6 +47,9 @@ async function main() {
   const balances = new OnchainBalancesFeed(config.walletAddress, config.onchainPollInterval);
   const corps = new CorpStateFeed(config.walletAddress, config.onchainPollInterval);
   const amm = new AmmRateFeed(); // 30s default — AMM doesn't move that fast
+
+  // Track the latest corp-address list so the scraper always has fresh inputs.
+  let latestCorpAddresses: string[] = [];
   const poly = new PolymarketFeed();
   const cg = new CoinglassFeed();
 
@@ -119,10 +123,61 @@ async function main() {
   balances.on('balances', (b) => engine.onWalletBalances(b));
 
   // Per-corp on-chain state (mode, autoTrade, cooldown, pendingReward, ...)
-  corps.on('corps', (b) => engine.onCorpState(b));
+  corps.on('corps', (b) => {
+    engine.onCorpState(b);
+    // Feed the live address list to the scraper.
+    latestCorpAddresses = b.corps.map((c: any) => c.address.toLowerCase());
+  });
 
   // Live $DIRTY ↔ USDM AMM rate from the in-game Uniswap V3 pool
   amm.on('rate', (r) => engine.onAmmRate(r));
+
+  // On-chain operation outcome scraper. Posts each newly-finalized
+  // TradeCompleted event to /api/op-result so the empirical
+  // failure-fraction tracker learns from real outcomes automatically.
+  const seenTxHashes = new Set<string>();
+  const scraper = new OpScraperFeed({
+    wallet: config.walletAddress,
+    getCorpAddresses: () => latestCorpAddresses,
+    baseRewardDirty: parseFloat(process.env.BASE_REWARD_DIRTY || '100'),
+    initialLookbackBlocks: parseInt(process.env.OP_SCRAPER_LOOKBACK || '500000'),
+    onOutcome: async (o) => {
+      // Dedup across restarts within the same session.
+      if (seenTxHashes.has(o.txHash)) return;
+      seenTxHashes.add(o.txHash);
+      if (o.opType === 'unknown') {
+        logger.warn({ txHash: o.txHash, durationMin: o.durationMin, mode: o.mode },
+          '[OpScraper] outcome with unknown opType; not logging');
+        return;
+      }
+      try {
+        const res = await fetch(`http://localhost:${config.port}/api/op-result`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            opType: o.opType,
+            succeeded: o.succeeded,
+            dirtyEarned: o.rewardDirty,
+            baseReward: o.baseReward,
+            ts: o.ts,
+            note: `auto:${o.txHash.slice(0, 12)}...:${o.corp.slice(0, 8)}:m${o.mode}`,
+          }),
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          logger.warn({ status: res.status, body: txt.slice(0, 200), txHash: o.txHash },
+            '[OpScraper] /api/op-result rejected outcome');
+        } else {
+          logger.info(
+            { op: o.opType, reward: o.rewardDirty, succeeded: o.succeeded, corp: o.corp.slice(0, 10) },
+            '[OpScraper] auto-logged outcome',
+          );
+        }
+      } catch (err: any) {
+        logger.error({ err: err.message }, '[OpScraper] POST /api/op-result failed');
+      }
+    },
+  });
 
   // Alerts → Telegram + storage
   engine.on('alert', async (alert) => {
@@ -180,6 +235,9 @@ async function main() {
   balances.start();
   void corps.start();
   amm.start();
+  // Wait one second after corps.start() before kicking the scraper so the
+  // initial company-list fetch has a chance to resolve.
+  setTimeout(() => { void scraper.start(); }, 1500);
   poly.start();
   cg.start();
 
@@ -209,6 +267,7 @@ async function main() {
     balances.stop();
     corps.stop();
     amm.stop();
+    scraper.stop();
     poly.stop();
     cg.stop();
     // Flush remaining batches

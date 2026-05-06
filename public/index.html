@@ -1093,8 +1093,13 @@ function renderCorps(b) {
   const claimable = b.corps.filter(c => c.status === 'claimable').length;
   const liquidatable = b.corps.filter(c => c.status === 'liquidatable').length;
   const autoOn = b.corps.filter(c => c.autoTradeEnabled).length;
+  // The user's actual deployed corps are those with any nonzero state.
+  // The remaining slots are pre-computed CREATE2 addresses available
+  // to unlock at higher Power Levels.
+  const owned = b.corps.filter(c => c.tradeInfo?.active || c.autoTradeEnabled || c.pendingReward > 0 || c.cooldownEnd > 0).length;
+  const slots = total - owned;
   document.getElementById('corpSummary').textContent =
-    `${total} corps · ${running} running · ${idle} idle · ${claimable} claimable · ${autoOn} auto-on`;
+    `${owned} active / ${slots} slots available · ${running} running · ${claimable} claimable · ${autoOn} auto-on`;
 
   document.getElementById('corpStatusDot').className = 'wallet-dot ' + (b.ok ? 'live' : 'stale');
   document.getElementById('corpStatus').textContent = b.ok ? 'reading on-chain' : (b.error || 'error');
@@ -1129,11 +1134,8 @@ function renderCorps(b) {
   const alertEl = document.getElementById('corpAlert');
   const alerts = [];
   if (claimable > 0) alerts.push(`✓ ${claimable} corp${claimable>1?'s':''} ready to CLAIM rewards`);
-  if (idle > 0 && b.corps.length > 1) {
-    const idlePct = Math.round((idle / total) * 100);
-    if (idlePct >= 30) alerts.push(`! ${idle} of ${total} corps IDLE (${idlePct}% capital sitting unused)`);
-  }
   if (liquidatable > 0) alerts.push(`✗ ${liquidatable} corp${liquidatable>1?'s':''} liquidatable — claim to settle`);
+  // Note: idle slots are PL-gated unlocks, not capital sitting unused.
 
   if (alerts.length > 0) {
     alertEl.style.display = '';

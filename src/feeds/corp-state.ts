@@ -106,23 +106,23 @@ export interface CorpStateBlock {
   corps: CorpState[];
 }
 
-// Mode → operation-type label. Inferred from on-chain trade duration:
-//   90-min duration ⇒ mode 2 = Drug Deal (verified live).
-// 5-min and 30-min durations not yet observed; mode 1 / mode 3 mapping
-// stays "?" until we see one. Each mode's window is also encoded in
-// MODE_WINDOW_SEC for the cooldown / completion math downstream.
+// Mode → operation-type label. Verified live by reading getTradeInfo on
+// completed trades and observing endTime − startTime:
+//   mode 0 → 5 min  → Extortion
+//   mode 1 → 30 min → Arms Deal
+//   mode 2 → 90 min → Drug Deal
+// (When a corp shows mode 0 with active=false it's actually idle, not a
+// running Extortion — handled in the renderer.)
 const MODE_LABEL: Record<number, string> = {
-  0: 'idle',
-  1: 'mode 1 (?)',
+  0: 'Extortion',  // also doubles as 'idle' when active=false; renderer disambiguates
+  1: 'Arms Deal',
   2: 'Drug Deal',
-  3: 'mode 3 (?)',
 };
 
 const MODE_WINDOW_SEC: Record<number, number> = {
-  0: 0,
-  1: 0,        // unknown
-  2: 5400,     // 90 min — Drug
-  3: 0,        // unknown
+  0: 300,    // 5 min — Extortion
+  1: 1800,   // 30 min — Arms
+  2: 5400,   // 90 min — Drug
 };
 
 // LocationId → human-readable name. Pulled from the public Supabase
@@ -341,6 +341,10 @@ export class CorpStateFeed extends EventEmitter {
 
         const mode = tradeInfo?.mode ?? (reads.autoTradeMode.success ? decodeUint8(reads.autoTradeMode.data) : 0);
         const locationId = reads.locationId.success ? decodeUint8(reads.locationId.data) : -1;
+        // status='idle' means active=false — disambiguate from mode 0 (Extortion).
+        // Show "idle" when not running, the actual op label when running.
+        const isIdle = !tradeInfo?.active && !hasPendingClaim && !isCompletable && !isLiquidatable;
+        const modeLabelResolved = isIdle ? 'idle' : (MODE_LABEL[mode] ?? `mode ${mode}`);
 
         corps.push({
           address: this.companies[i],
@@ -356,7 +360,7 @@ export class CorpStateFeed extends EventEmitter {
           pendingRewardRaw: pendingRewardRaw.toString(),
           locationId,
           tradeInfo,
-          modeLabel: MODE_LABEL[mode] ?? `mode ${mode}`,
+          modeLabel: modeLabelResolved,
           locationLabel: LOCATION_LABEL[locationId] ?? `loc ${locationId}`,
           status,
           ok: slice.every(s => s.success),
