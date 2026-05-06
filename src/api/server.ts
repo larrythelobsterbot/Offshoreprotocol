@@ -5,6 +5,7 @@ import fastifyCors from '@fastify/cors';
 import path from 'path';
 import type { WebSocket } from 'ws';
 import type { DashboardState, StoredIndicator } from '../types';
+// (config used at runtime to gate operator-only endpoints in PUBLIC_MODE)
 import { Storage } from '../storage/db';
 import { config } from '../config';
 import { logger } from '../logger';
@@ -168,6 +169,14 @@ export class ApiServer {
     });
 
     // --- Op outcome logging (used by partial-fraction tracker) ---
+    // In PUBLIC_MODE these endpoints are gated — they're for the operator
+    // only. Multi-tenant equivalents live behind the Telegram bot.
+    const publicGate = (handler: any) => async (req: any, reply: any) => {
+      if (config.publicMode) {
+        return reply.status(404).send({ error: 'Not Found' });
+      }
+      return handler(req, reply);
+    };
 
     // Log a single op outcome. The user (or a future scraper) POSTs this
     // when an operation completes in-game. baseReward defaults to PL1=100
@@ -200,7 +209,7 @@ export class ApiServer {
           },
         },
       },
-      async (req, reply) => {
+      publicGate(async (req: any, reply: any) => {
         const { opType, succeeded, dirtyEarned, baseReward, ts, note } = req.body;
         // Sanity: dirtyEarned should not exceed reasonable cap of base; clamp.
         const base = baseReward ?? 100;
@@ -220,21 +229,21 @@ export class ApiServer {
         });
         this.onOpStatsChanged?.();
         return { success: true, id };
-      },
+      }),
     );
 
     // Read aggregated stats per op type. The dashboard's op cards consume
     // this via the WebSocket DashboardState.opStats, but exposing as REST
     // is useful for debugging and for any downstream tooling.
-    this.app.get('/api/op-stats', async () => {
+    this.app.get('/api/op-stats', publicGate(async () => {
       return this.getState().opStats;
-    });
+    }));
 
     // Time-windowed activity rollup (last hour, last 24h, since session start).
     // Mirrors the in-game Activity Log's structure.
-    this.app.get('/api/op-summary', async () => {
+    this.app.get('/api/op-summary', publicGate(async () => {
       return (this.getState() as any).activity;
-    });
+    }));
 
     // List recent outcomes (for verification / undo UI).
     this.app.get<{ Querystring: { limit?: string; opType?: 'extortion' | 'arms' | 'drug' } }>(
@@ -250,16 +259,16 @@ export class ApiServer {
           },
         },
       },
-      async (req) => {
+      publicGate(async (req: any) => {
         const limit = req.query.limit ? Number(req.query.limit) : 50;
         return this.storage.getOpOutcomes({ opType: req.query.opType, limit });
-      },
+      }),
     );
 
     // Undo a mistakenly logged outcome.
     this.app.delete<{ Params: { id: string } }>(
       '/api/op-result/:id',
-      async (req, reply) => {
+      publicGate(async (req: any, reply: any) => {
         const id = parseInt(req.params.id, 10);
         if (!Number.isFinite(id) || id < 1) {
           return reply.status(400).send({ error: 'Bad Request', message: 'Invalid id' });
@@ -268,7 +277,7 @@ export class ApiServer {
         if (!deleted) return reply.status(404).send({ error: 'Not Found' });
         this.onOpStatsChanged?.();
         return { success: true };
-      },
+      }),
     );
 
     // Health check

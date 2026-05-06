@@ -456,10 +456,15 @@ export class VolatilityEngine extends EventEmitter {
       },
       empiricalFractions,
     );
-    const opStats = this.getOpStats?.() ?? null;
-    const activity = this.getActivityBundle?.() ?? null;
+    // In public mode, also strip the historical op-stats and activity rollups
+    // (they would otherwise leak the operator's win/loss history and earnings).
+    const opStats = config.publicMode ? null : (this.getOpStats?.() ?? null);
+    const activity = config.publicMode ? null : (this.getActivityBundle?.() ?? null);
 
     return {
+      publicMode: config.publicMode,
+      tgBotUsername: config.publicMode ? config.tgBotUsername : undefined,
+      tgChannelUsername: config.publicMode ? config.tgChannelUsername : undefined,
       ethPrice: this.ethPrice,
       ethPriceStart: this.ethPriceStart,
       volatility: vol,

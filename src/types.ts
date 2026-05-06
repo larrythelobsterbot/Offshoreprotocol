@@ -96,6 +96,12 @@ export interface SafetyScores {
 }
 
 export interface DashboardState {
+  // True when the engine is running in PUBLIC_MODE — frontend uses this
+  // to hide personal panels and show the public-CTA hero.
+  publicMode?: boolean;
+  // Optional pointers for the hero CTA (set when publicMode=true).
+  tgBotUsername?: string;
+  tgChannelUsername?: string;
   ethPrice: number | null;
   ethPriceStart: number | null;
   volatility: VolatilityData;

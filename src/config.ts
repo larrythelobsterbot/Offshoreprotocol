@@ -25,6 +25,17 @@ export const config = {
   walletAddress: process.env.WALLET_ADDRESS || '',
   onchainPollInterval: parseInt(process.env.ONCHAIN_POLL_MS || '15000'),
 
+  // Public deployment mode: hide the operator's personal wallet/corp/op
+  // data from the dashboard so it can be advertised as a market-intel
+  // tool. Personal feeds are not started; only market feeds run. The
+  // Telegram bot service handles per-subscriber personal alerts instead.
+  publicMode: process.env.PUBLIC_MODE === 'true',
+  // Username of the Telegram bot users should subscribe to. Used in the
+  // public-mode hero CTA. Format: 'offshoreopsbot' (no @ prefix).
+  tgBotUsername: process.env.TG_BOT_USERNAME || '',
+  // Optional: a public Telegram channel handle to direct visitors to.
+  tgChannelUsername: process.env.TG_CHANNEL_USERNAME || '',
+
   // Polling intervals (ms)
   hlPollInterval: 30_000,
   polyPollInterval: 10_000,

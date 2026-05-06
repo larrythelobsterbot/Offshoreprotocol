@@ -238,14 +238,21 @@ async function main() {
   bybit.start();
   hl.start();
   hlws.start();
-  balances.start();
-  void corps.start();
   amm.start();
-  // Wait one second after corps.start() before kicking the scraper so the
-  // initial company-list fetch has a chance to resolve.
-  setTimeout(() => { void scraper.start(); }, 1500);
   poly.start();
   cg.start();
+
+  if (config.publicMode) {
+    // Public deployment: do not start personal-data feeds. The TG bot service
+    // (Phase 2) will handle multi-tenant per-subscriber polling separately.
+    logger.info('[PublicMode] Personal feeds (wallet/corps/op-scraper) DISABLED.');
+  } else {
+    balances.start();
+    void corps.start();
+    // Wait one second after corps.start() before kicking the scraper so the
+    // initial company-list fetch has a chance to resolve.
+    setTimeout(() => { void scraper.start(); }, 1500);
+  }
 
   // Log status every 60s
   setInterval(() => {

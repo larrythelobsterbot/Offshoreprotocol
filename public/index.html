@@ -507,6 +507,103 @@
   }
   .op-log-recent-row button:hover { border-color: var(--red); color: var(--red); }
 
+  /* --- Public-mode hero CTA --- */
+  .hero-card {
+    background: linear-gradient(135deg, rgba(0,229,255,0.08) 0%, rgba(0,229,255,0.02) 100%);
+    border: 1px solid var(--cyan);
+    border-radius: 8px;
+    padding: 18px 24px;
+    margin: 8px 24px 0;
+  }
+  .hero-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .hero-headline {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: var(--text);
+    line-height: 1.3;
+    margin-bottom: 4px;
+  }
+  .hero-subhead {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--dim);
+  }
+  .hero-cta-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .hero-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--cyan);
+    color: #001318;
+    border: none;
+    border-radius: 6px;
+    padding: 12px 18px;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 1px;
+    cursor: pointer;
+    text-decoration: none;
+    transition: filter 0.15s;
+  }
+  .hero-btn:hover { filter: brightness(1.15); }
+  .hero-btn.secondary {
+    background: transparent;
+    color: var(--cyan);
+    border: 1px solid var(--cyan);
+  }
+  .hero-features {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(0,229,255,0.15);
+  }
+  .hero-feature {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+  }
+  .hero-feature .label {
+    color: var(--cyan);
+    letter-spacing: 1px;
+    margin-bottom: 3px;
+  }
+  .hero-feature .desc {
+    color: var(--dim);
+    line-height: 1.4;
+  }
+
+  /* Tooltip helpers ([?]) used in public mode */
+  .info-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--dim);
+    color: var(--dim);
+    border-radius: 50%;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    margin-left: 6px;
+    cursor: help;
+    line-height: 1;
+  }
+  .info-pill:hover { color: var(--cyan); border-color: var(--cyan); }
+
   /* Danger gauge */
   .danger-wrap { text-align: center; }
   .danger-score {
@@ -664,6 +761,44 @@
   </label>
 </div>
 
+<!-- Hero card (only shown in PUBLIC_MODE) -->
+<div id="heroCard" class="hero-card" style="display:none;">
+  <div class="hero-row">
+    <div>
+      <div class="hero-headline">Live ETH risk intelligence for Offshore Protocol</div>
+      <div class="hero-subhead">
+        Real-time calibrated probability of operation failure · Live $DIRTY price · Danger-band warnings · Updated every second
+      </div>
+    </div>
+    <div class="hero-cta-row">
+      <a id="heroBotBtn" class="hero-btn" target="_blank" rel="noopener">
+        ➤ SUBSCRIBE TO TELEGRAM
+      </a>
+      <a id="heroChannelBtn" class="hero-btn secondary" target="_blank" rel="noopener" style="display:none;">
+        # JOIN CHANNEL
+      </a>
+    </div>
+  </div>
+  <div class="hero-features">
+    <div class="hero-feature">
+      <div class="label">PERSONAL ALERTS</div>
+      <div class="desc">DM when your corp is ready to claim, INF runs low, or auto-trade pauses</div>
+    </div>
+    <div class="hero-feature">
+      <div class="label">MARKET WARNINGS</div>
+      <div class="desc">Pre-alerts before the 14:00 UTC danger band; cascade-risk notifications</div>
+    </div>
+    <div class="hero-feature">
+      <div class="label">CYCLE EVENTS</div>
+      <div class="desc">Vault open / close, optimal laundering windows, reward pool size</div>
+    </div>
+    <div class="hero-feature">
+      <div class="label">FREE</div>
+      <div class="desc">Just send <span style="color:var(--cyan)">/start</span> to the bot and add your wallet</div>
+    </div>
+  </div>
+</div>
+
 <!-- Per-corporation on-chain state -->
 <div style="padding: 0 24px 8px;">
   <div class="card corp-card" id="corpCard" style="display:none;padding:12px 16px;">
@@ -753,11 +888,11 @@
 <div style="padding: 8px 24px;">
   <div class="card" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;">
     <div style="display:flex;align-items:center;gap:12px;">
-      <span class="card-title" style="margin:0">SUGGESTION</span>
+      <span class="card-title" style="margin:0">SUGGESTION</span><span class="info-pill" title="Real-time recommendation based on calibrated probability of operation failure under current ETH conditions. Updated every second.">?</span>
       <span id="suggestion" style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:var(--cyan)">--</span>
     </div>
     <div style="display:flex;align-items:center;gap:12px;">
-      <span class="card-title" style="margin:0">HOUR RISK</span>
+      <span class="card-title" style="margin:0">HOUR RISK</span><span class="info-pill" title="Hourly multiplier applied to baseline failure rate. Derived from 180-day backtest. 14:00–17:00 UTC is historically the worst window (US market open).">?</span>
       <span id="hourlyRisk" class="vol-regime unknown" style="font-size:11px">--</span>
       <span id="utcHour" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim)">--:00 UTC</span>
     </div>
@@ -861,7 +996,7 @@
 <!-- Operation safety cards -->
 <div class="ops-grid">
   <div class="op-card" id="opExtortion">
-    <div class="op-name">EXTORTION</div>
+    <div class="op-name">EXTORTION<span class="info-pill" title="5-minute leveraged short on ETH at 2,565x. Fails if ETH drops &gt;0.039% within the window. Binary outcome: full reward (100 $DIRTY at PL1) on success, ZERO on failure.">?</span></div>
     <div class="op-meta">5 min • 2,565x • 0.039% • binary</div>
     <div class="op-ev" id="evExt">--</div>
     <div class="op-score-label">EV ($DIRTY/op)</div>
@@ -869,7 +1004,7 @@
     <div class="op-score-mini" id="scoreExt">SAFETY --</div>
   </div>
   <div class="op-card" id="opArms">
-    <div class="op-name">ARMS DEAL</div>
+    <div class="op-name">ARMS DEAL<span class="info-pill" title="30-minute leveraged short on ETH at 567x. Fails if ETH drops &gt;0.176% within the window. Progressive failure: partial $DIRTY refund based on how much past threshold ETH dropped.">?</span></div>
     <div class="op-meta">30 min • 567x • 0.176% • progressive</div>
     <div class="op-ev" id="evArms">--</div>
     <div class="op-score-label">EV ($DIRTY/op)</div>
@@ -877,7 +1012,7 @@
     <div class="op-score-mini" id="scoreArms">SAFETY --</div>
   </div>
   <div class="op-card" id="opDrug">
-    <div class="op-name">DRUG DEAL</div>
+    <div class="op-name">DRUG DEAL<span class="info-pill" title="90-minute leveraged short on ETH at 193x. Fails if ETH drops &gt;0.518% within the window. Progressive failure: partial $DIRTY refund. Highest empirical $DIRTY-per-INF on average market days.">?</span></div>
     <div class="op-meta">90 min • 193x • 0.518% • progressive</div>
     <div class="op-ev" id="evDrug">--</div>
     <div class="op-score-label">EV ($DIRTY/op)</div>
@@ -889,14 +1024,14 @@
 <div class="grid">
   <!-- ETH Price -->
   <div class="card">
-    <div class="card-title">ETH PRICE</div>
+    <div class="card-title">ETH PRICE<span class="info-pill" title="Live ETH spot price from Hyperliquid. Operations fail when ETH drops past their threshold within the operation window.">?</span></div>
     <div class="price-big" id="ethPrice">---</div>
     <div class="price-change" id="ethChange">--</div>
   </div>
 
   <!-- Danger Score -->
   <div class="card">
-    <div class="card-title">COMPOSITE DANGER</div>
+    <div class="card-title">COMPOSITE DANGER<span class="info-pill" title="0–100 score combining realized volatility, orderbook imbalance, liquidation cascade risk, funding skew, and IV/RV spread. >75 = avoid all ops.">?</span></div>
     <div class="danger-wrap">
       <div class="danger-score" id="dangerScore">--</div>
       <div class="danger-bar">
@@ -907,7 +1042,7 @@
 
   <!-- Volatility Regime -->
   <div class="card">
-    <div class="card-title">VOLATILITY REGIME</div>
+    <div class="card-title">VOLATILITY REGIME<span class="info-pill" title="Realized vol (annualized %) over 5/30/90 minute windows — matched to Extortion / Arms / Drug operation durations. Higher vol = more failures.">?</span></div>
     <div style="margin-bottom:10px">
       <span class="vol-regime unknown" id="volRegime">UNKNOWN</span>
     </div>
@@ -927,7 +1062,7 @@
 
   <!-- HL Context -->
   <div class="card">
-    <div class="card-title">HYPERLIQUID</div>
+    <div class="card-title">HYPERLIQUID<span class="info-pill" title="Live ETH perp data from Hyperliquid. Funding rate, open interest, mark/oracle prices and 24h volume — useful for cross-checking ETH market conditions.">?</span></div>
     <div class="vol-row">
       <span class="vol-label">Funding Rate</span>
       <span class="vol-val" id="hlFunding">--</span>
@@ -948,7 +1083,7 @@
 
   <!-- CVD -->
   <div class="card">
-    <div class="card-title">CUMULATIVE VOLUME DELTA</div>
+    <div class="card-title">CUMULATIVE VOLUME DELTA<span class="info-pill" title="Sum of taker buy minus taker sell volume in $USD. Positive = aggressive buying; negative = aggressive selling. Strong negative CVD often precedes ETH dumps.">?</span></div>
     <div class="metric-row">
       <span class="metric-label">Combined 5m</span>
       <span class="metric-val" id="cvdCombined">--</span>
@@ -974,7 +1109,7 @@
 
   <!-- Orderbook Imbalance -->
   <div class="card">
-    <div class="card-title">ORDERBOOK IMBALANCE</div>
+    <div class="card-title">ORDERBOOK IMBALANCE<span class="info-pill" title="Ratio of bid-side volume to ask-side volume in the top 5 levels. Negative imbalance ('ASK heavy') means more sell pressure ready to hit the book.">?</span></div>
     <div class="metric-row">
       <span class="metric-label">Hyperliquid</span>
       <span class="metric-val" id="obBin">--</span>
@@ -999,7 +1134,7 @@
 
   <!-- Liquidations -->
   <div class="card">
-    <div class="card-title">LIQUIDATIONS</div>
+    <div class="card-title">LIQUIDATIONS<span class="info-pill" title="Forced closures of leveraged positions on ETH perps. High liquidation velocity = cascade in progress, ETH price highly unstable.">?</span></div>
     <div class="metric-row">
       <span class="metric-label">Cascade Risk</span>
       <span id="cascadeRisk"><span class="cascade-badge LOW">LOW</span></span>
@@ -1145,6 +1280,68 @@ function setServerStatus(on) {
 
 function toggleSettings() {
   document.getElementById('settingsPanel').classList.toggle('open');
+}
+
+// ============================================================
+// PUBLIC-MODE: hero CTA + hide personal panels
+// ============================================================
+
+let _publicModeApplied = null; // memo so we only re-render once per state change
+
+function applyPublicMode(isPublic, botUsername, channelUsername) {
+  if (_publicModeApplied === isPublic) return;
+  _publicModeApplied = isPublic;
+
+  const heroCard = document.getElementById('heroCard');
+  const personalPanelIds = [
+    'walletCard',     // wallet balances
+    'corpCard',       // per-corp state table
+    'activityCard',   // activity rollup (24h/1h/session) — uses op_outcomes which is the operator's
+  ];
+  // The op outcome logger (manual log) is also operator-only.
+  const opLogToggleVisibilityIds = ['opLogBody'];
+
+  if (isPublic) {
+    heroCard.style.display = '';
+    if (botUsername) {
+      const btn = document.getElementById('heroBotBtn');
+      btn.href = 'https://t.me/' + botUsername.replace(/^@/, '');
+      btn.style.display = '';
+    } else {
+      document.getElementById('heroBotBtn').style.display = 'none';
+    }
+    if (channelUsername) {
+      const btn = document.getElementById('heroChannelBtn');
+      btn.href = 'https://t.me/' + channelUsername.replace(/^@/, '');
+      btn.style.display = '';
+    }
+    // Hide personal panels — these are operator-specific and shouldn't be
+    // public. The data is also intentionally absent from state.* in publicMode.
+    for (const id of personalPanelIds) {
+      const el = document.getElementById(id);
+      if (el) {
+        el.style.display = 'none';
+        el.dataset.publicHidden = '1';
+      }
+    }
+    // Hide the op logger card entirely (not just collapsed).
+    const logger = document.querySelector('.card .card-title');
+    document.querySelectorAll('.card').forEach(c => {
+      const title = c.querySelector('.card-title');
+      if (title && title.textContent.trim() === 'OP OUTCOME LOG') {
+        c.parentElement.style.display = 'none';
+      }
+    });
+  } else {
+    heroCard.style.display = 'none';
+    for (const id of personalPanelIds) {
+      const el = document.getElementById(id);
+      if (el && el.dataset.publicHidden === '1') {
+        el.style.display = '';
+        delete el.dataset.publicHidden;
+      }
+    }
+  }
 }
 
 // ============================================================
@@ -1567,6 +1764,9 @@ function render(s) {
 
   // Stash state for tab-switch handlers (Activity panel)
   window.__lastState = s;
+
+  // Public-mode CTA: show hero card, hide personal panels.
+  applyPublicMode(!!s.publicMode, s.tgBotUsername, s.tgChannelUsername);
 
   // On-chain wallet + corp state + activity rollups
   if (s.walletBalances) renderWallet(s.walletBalances, s.ammRate);
