@@ -227,6 +227,59 @@
     padding: 3px 8px;
   }
 
+  /* --- Corporations panel --- */
+  .corp-card { border-color: var(--cyan); }
+  .corp-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .corp-meta { display: flex; align-items: center; gap: 8px; }
+  .corp-table {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+  }
+  .corp-row {
+    display: grid;
+    grid-template-columns: 30px 2fr 110px 100px 90px 110px 110px;
+    gap: 8px;
+    align-items: center;
+    padding: 5px 8px;
+    border-radius: 4px;
+    background: var(--bg);
+  }
+  .corp-row-header {
+    background: transparent;
+    color: var(--dim);
+    font-size: 9px;
+    letter-spacing: 1px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+  }
+  .corp-row.idle { color: var(--dim); }
+  .corp-row.running { background: rgba(0,229,255,0.05); }
+  .corp-row.claimable { background: rgba(0,230,118,0.10); color: var(--green); font-weight: 600; }
+  .corp-row.liquidatable { background: rgba(255,23,68,0.10); color: var(--red); font-weight: 600; }
+  .corp-row .col-idx { color: var(--dim); font-size: 10px; }
+  .corp-row .col-auto.on { color: var(--green); font-weight: 600; }
+  .corp-row .col-auto.off { color: var(--dim); }
+  .corp-row .col-pending.has { color: var(--green); font-weight: 600; }
+  .corp-alert {
+    margin-top: 10px;
+    padding: 8px 12px;
+    background: rgba(255,213,79,0.08);
+    border: 1px solid var(--yellow);
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--yellow);
+  }
+
   /* --- Live wallet panel --- */
   .wallet-card { border-color: var(--cyan); }
   .wallet-header {
@@ -552,6 +605,34 @@
   <label>Server URL:
     <input id="serverUrl" value="ws://localhost:3000/ws" onchange="reconnect()">
   </label>
+</div>
+
+<!-- Per-corporation on-chain state -->
+<div style="padding: 0 24px 8px;">
+  <div class="card corp-card" id="corpCard" style="display:none;padding:12px 16px;">
+    <div class="corp-header">
+      <div>
+        <span class="card-title" style="margin:0">CORPORATIONS</span>
+        <span id="corpSummary" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);margin-left:8px;">--</span>
+      </div>
+      <div class="corp-meta">
+        <span id="corpStatusDot" class="wallet-dot"></span>
+        <span id="corpStatus" style="font-size:10px;color:var(--dim);">--</span>
+      </div>
+    </div>
+    <div id="corpTable" class="corp-table">
+      <div class="corp-row corp-row-header">
+        <div>#</div>
+        <div>LOCATION</div>
+        <div>STATUS</div>
+        <div>OP</div>
+        <div>AUTO</div>
+        <div>COOLDOWN</div>
+        <div>PENDING</div>
+      </div>
+    </div>
+    <div id="corpAlert" class="corp-alert" style="display:none;"></div>
+  </div>
 </div>
 
 <!-- Live wallet balances (on-chain) -->
@@ -989,6 +1070,87 @@ function toggleSettings() {
 }
 
 // ============================================================
+// CORPORATIONS PANEL
+// ============================================================
+
+function fmtCooldown(secRemain) {
+  if (!secRemain || secRemain <= 0) return '--';
+  if (secRemain < 60) return `${secRemain}s`;
+  const m = Math.floor(secRemain / 60);
+  const s = secRemain % 60;
+  return `${m}m ${s.toString().padStart(2,'0')}s`;
+}
+
+function renderCorps(b) {
+  const card = document.getElementById('corpCard');
+  if (!b) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  // Header summary
+  const total = b.count;
+  const running = b.corps.filter(c => c.status === 'running').length;
+  const idle = b.corps.filter(c => c.status === 'idle').length;
+  const claimable = b.corps.filter(c => c.status === 'claimable').length;
+  const liquidatable = b.corps.filter(c => c.status === 'liquidatable').length;
+  const autoOn = b.corps.filter(c => c.autoTradeEnabled).length;
+  document.getElementById('corpSummary').textContent =
+    `${total} corps · ${running} running · ${idle} idle · ${claimable} claimable · ${autoOn} auto-on`;
+
+  document.getElementById('corpStatusDot').className = 'wallet-dot ' + (b.ok ? 'live' : 'stale');
+  document.getElementById('corpStatus').textContent = b.ok ? 'reading on-chain' : (b.error || 'error');
+
+  // Table rows
+  const table = document.getElementById('corpTable');
+  // Keep header, rebuild body
+  const header = table.querySelector('.corp-row-header');
+  table.innerHTML = '';
+  table.appendChild(header);
+
+  for (const c of b.corps) {
+    const row = document.createElement('div');
+    row.className = 'corp-row ' + c.status;
+    row.innerHTML = `
+      <div class="col-idx">#${c.index}</div>
+      <div>${c.locationLabel}</div>
+      <div>${c.status.toUpperCase()}</div>
+      <div>${c.modeLabel}</div>
+      <div class="col-auto ${c.autoTradeEnabled ? 'on' : 'off'}">
+        ${c.autoTradeEnabled ? `ON (m${c.autoTradeMode})` : 'off'}
+      </div>
+      <div>${c.tradeInfo && c.tradeInfo.active ? fmtTimeRemain(c.tradeInfo.endTime) : '--'}</div>
+      <div class="col-pending ${c.pendingReward > 0 ? 'has' : ''}">
+        ${c.pendingReward > 0 ? c.pendingReward.toFixed(2) + ' $D' : '--'}
+      </div>
+    `;
+    table.appendChild(row);
+  }
+
+  // Alerts
+  const alertEl = document.getElementById('corpAlert');
+  const alerts = [];
+  if (claimable > 0) alerts.push(`✓ ${claimable} corp${claimable>1?'s':''} ready to CLAIM rewards`);
+  if (idle > 0 && b.corps.length > 1) {
+    const idlePct = Math.round((idle / total) * 100);
+    if (idlePct >= 30) alerts.push(`! ${idle} of ${total} corps IDLE (${idlePct}% capital sitting unused)`);
+  }
+  if (liquidatable > 0) alerts.push(`✗ ${liquidatable} corp${liquidatable>1?'s':''} liquidatable — claim to settle`);
+
+  if (alerts.length > 0) {
+    alertEl.style.display = '';
+    alertEl.innerHTML = alerts.map(a => `<div>${a}</div>`).join('');
+  } else {
+    alertEl.style.display = 'none';
+  }
+}
+
+function fmtTimeRemain(endTimeSec) {
+  if (!endTimeSec) return '--';
+  const remain = endTimeSec - Math.floor(Date.now() / 1000);
+  if (remain <= 0) return 'done';
+  return fmtCooldown(remain);
+}
+
+// ============================================================
 // LIVE WALLET PANEL
 // ============================================================
 
@@ -1253,8 +1415,9 @@ function render(s) {
     renderOp('Drug', 'opDrug',      s.scores.drug,      null, false, s.scores.probDrug);
   }
 
-  // Live wallet balances (on-chain)
+  // On-chain wallet + corp state
   if (s.walletBalances) renderWallet(s.walletBalances);
+  if (s.corpState) renderCorps(s.corpState);
 
   // Op outcome stats (empirical failure fractions)
   if (s.opStats) renderOpStats(s.opStats);
