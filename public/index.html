@@ -1154,11 +1154,9 @@ function fmtTimeRemain(endTimeSec) {
 // LIVE WALLET PANEL
 // ============================================================
 
-// Live $DIRTY → USDM rate. Hardcoded from the in-app swap screen
-// (1 USDM = 7.23 $DIRTY → $DIRTY = 1/7.23 USDM ≈ 0.1383). Update
-// this value when you observe the in-app rate change, or wire it
-// up to a feed later.
-const DIRTY_TO_USDM = 1 / 7.23;
+// Live $DIRTY → USDM rate. Updated from state.ammRate every WS tick;
+// fallback is the hardcoded swap-UI snapshot (1 USDM = 7.23 $DIRTY).
+let DIRTY_TO_USDM = 1 / 7.23;
 
 function fmtSigned(v, suffix = '', dp = 2) {
   if (v == null || !Number.isFinite(v)) return '--';
@@ -1166,7 +1164,7 @@ function fmtSigned(v, suffix = '', dp = 2) {
   return sign + v.toFixed(dp) + suffix;
 }
 
-function renderWallet(b) {
+function renderWallet(b, amm) {
   const card = document.getElementById('walletCard');
   if (!b) { card.style.display = 'none'; return; }
   card.style.display = '';
@@ -1193,6 +1191,17 @@ function renderWallet(b) {
   document.getElementById('walletInf').textContent = b.inf.toFixed(2);
   document.getElementById('walletUsdm').textContent = '$' + b.usdm.toFixed(2);
   document.getElementById('walletDirty').textContent = b.dirty.toFixed(2);
+
+  // $DIRTY USDM-equivalent under the $DIRTY column
+  const dirtyValueUsdm = b.dirty * DIRTY_TO_USDM;
+  const dirtyLabel = `≈ $${dirtyValueUsdm.toFixed(2)} @ ${amm && amm.ok ? `\$${DIRTY_TO_USDM.toFixed(4)}/D` : 'cached price'}`;
+  // Stash live rate label under "NET RATE" subtitle
+  const netSub = document.getElementById('walletNetSub');
+  if (amm && amm.ok) {
+    netSub.textContent = `Buy 1 USDM = ${amm.buyDirtyPerUsdm.toFixed(2)} D · Sell 1 D = $${amm.sellUsdmPerDirty.toFixed(4)} · spread ${amm.spreadPct.toFixed(2)}%`;
+  } else {
+    netSub.textContent = '$DIRTY @ live rate − INF burn (rate stale)';
+  }
 
   // Per-hour rates
   const rateInf = b.infPerHour;
@@ -1415,8 +1424,13 @@ function render(s) {
     renderOp('Drug', 'opDrug',      s.scores.drug,      null, false, s.scores.probDrug);
   }
 
+  // Live AMM rate — update the global before rendering wallet so net P&L is accurate
+  if (s.ammRate && s.ammRate.ok && s.ammRate.dirtyPriceUsdm > 0) {
+    DIRTY_TO_USDM = s.ammRate.dirtyPriceUsdm;
+  }
+
   // On-chain wallet + corp state
-  if (s.walletBalances) renderWallet(s.walletBalances);
+  if (s.walletBalances) renderWallet(s.walletBalances, s.ammRate);
   if (s.corpState) renderCorps(s.corpState);
 
   // Op outcome stats (empirical failure fractions)

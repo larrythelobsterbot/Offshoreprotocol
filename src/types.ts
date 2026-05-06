@@ -6,6 +6,7 @@ import type { EconomicsBlock } from './engine/economics';
 import type { OpStatsBlock } from './engine/op-stats';
 import type { WalletBalances } from './feeds/onchain-balances';
 import type { CorpStateBlock } from './feeds/corp-state';
+import type { AmmRate } from './feeds/amm-rate';
 
 export interface Tick {
   t: number;   // timestamp ms
@@ -102,6 +103,7 @@ export interface DashboardState {
   opStats: OpStatsBlock | null;
   walletBalances: WalletBalances | null;
   corpState: CorpStateBlock | null;
+  ammRate: AmmRate | null;
   orderbook: {
     binance: OrderbookSnapshot;
     bybit: OrderbookSnapshot;

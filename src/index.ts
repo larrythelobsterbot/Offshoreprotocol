@@ -4,6 +4,7 @@ import { HyperliquidFeed } from './feeds/hyperliquid';
 import { HyperliquidWsFeed } from './feeds/hyperliquid-ws';
 import { OnchainBalancesFeed } from './feeds/onchain-balances';
 import { CorpStateFeed } from './feeds/corp-state';
+import { AmmRateFeed } from './feeds/amm-rate';
 import { PolymarketFeed } from './feeds/polymarket';
 import { CoinglassFeed } from './feeds/coinglass';
 import { VolatilityEngine } from './engine/volatility';
@@ -44,6 +45,7 @@ async function main() {
   const hlws = new HyperliquidWsFeed();    // WS: trades + L2 book (primary tick source)
   const balances = new OnchainBalancesFeed(config.walletAddress, config.onchainPollInterval);
   const corps = new CorpStateFeed(config.walletAddress, config.onchainPollInterval);
+  const amm = new AmmRateFeed(); // 30s default — AMM doesn't move that fast
   const poly = new PolymarketFeed();
   const cg = new CoinglassFeed();
 
@@ -119,6 +121,9 @@ async function main() {
   // Per-corp on-chain state (mode, autoTrade, cooldown, pendingReward, ...)
   corps.on('corps', (b) => engine.onCorpState(b));
 
+  // Live $DIRTY ↔ USDM AMM rate from the in-game Uniswap V3 pool
+  amm.on('rate', (r) => engine.onAmmRate(r));
+
   // Alerts → Telegram + storage
   engine.on('alert', async (alert) => {
     logger.warn({ alert }, `[ALERT] ${alert.message}`);
@@ -174,6 +179,7 @@ async function main() {
   hlws.start();
   balances.start();
   void corps.start();
+  amm.start();
   poly.start();
   cg.start();
 
@@ -202,6 +208,7 @@ async function main() {
     hlws.stop();
     balances.stop();
     corps.stop();
+    amm.stop();
     poly.stop();
     cg.stop();
     // Flush remaining batches
