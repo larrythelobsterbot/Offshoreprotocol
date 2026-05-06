@@ -34,10 +34,24 @@
 // ============================================================
 
 import { EventEmitter } from 'events';
+import fs from 'fs';
+import path from 'path';
 import { logger } from '../logger';
 
+const CURSOR_FILE = path.join(process.cwd(), 'data', 'op-scraper-cursor.json');
+
 const RPC_URL = 'https://mainnet.megaeth.com/rpc';
+// TradeCompleted(address,address,uint256,uint256)
+//   topics: [topic0, player, corp]
+//   data:   [reward, influence]
 const TRADE_COMPLETED_TOPIC = '0x35c06e2c02cc93628588ec67d74925fa30de5c693ea264ec67458bb0b65c3bf1';
+
+// TradeLiquidated(address,address,address,uint256,uint256,uint256)
+//   topics: [topic0, liquidator, player, corp]
+//   data:   [ethPriceAtLiq, partialReward, durationOrTicks]
+// Verified live: data[1] is the partial $DIRTY paid on liquidation
+// (sample observations: 49.57 / 54.31 / 65.06 / 73.69 DIRTY).
+const TRADE_LIQUIDATED_TOPIC = '0xbc95a830b1019b9734680ca35152c5632ef54d080bfa3a55531b755867397678';
 
 // getTradeInfo() selector — matches src/feeds/corp-state.ts
 const SEL_GET_TRADE_INFO = '0xd6694027';
@@ -136,18 +150,44 @@ export class OpScraperFeed extends EventEmitter {
       logger.info('[OpScraper] No wallet configured; scraper disabled.');
       return;
     }
-    // Initialize cursor at (latest − initialLookback) so we backfill recent ops on startup.
+    // Initialize cursor: prefer persisted value (so restarts don't re-emit
+    // the same events), fall back to (latest − initialLookback) on first run.
     try {
       const latestHex = await rpc<string>({ method: 'eth_blockNumber', params: [] });
       const latest = Number(BigInt(latestHex));
-      const lookback = this.cfg.initialLookbackBlocks ?? DEFAULT_LOOKBACK_BLOCKS;
-      this.lastBlockSeen = Math.max(0, latest - lookback);
-      logger.info({ from: this.lastBlockSeen, latest }, '[OpScraper] cursor initialized');
+      const persisted = this.loadCursor();
+      if (persisted && persisted > 0 && persisted <= latest) {
+        this.lastBlockSeen = persisted;
+        logger.info({ resumed: persisted, latest }, '[OpScraper] cursor resumed');
+      } else {
+        const lookback = this.cfg.initialLookbackBlocks ?? DEFAULT_LOOKBACK_BLOCKS;
+        this.lastBlockSeen = Math.max(0, latest - lookback);
+        logger.info({ from: this.lastBlockSeen, latest }, '[OpScraper] cursor initialized (first run)');
+      }
     } catch (err: any) {
       logger.error({ err: err.message }, '[OpScraper] failed to init cursor');
     }
     void this.poll();
     this.interval = setInterval(() => void this.poll(), this.cfg.pollMs ?? DEFAULT_POLL_MS);
+  }
+
+  private loadCursor(): number | null {
+    try {
+      if (!fs.existsSync(CURSOR_FILE)) return null;
+      const raw = fs.readFileSync(CURSOR_FILE, 'utf-8');
+      const obj = JSON.parse(raw);
+      return typeof obj.lastBlockSeen === 'number' ? obj.lastBlockSeen : null;
+    } catch { return null; }
+  }
+
+  private saveCursor() {
+    try {
+      const dir = path.dirname(CURSOR_FILE);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(CURSOR_FILE, JSON.stringify({ lastBlockSeen: this.lastBlockSeen, updated: Date.now() }));
+    } catch (err: any) {
+      logger.warn({ err: err.message }, '[OpScraper] failed to persist cursor');
+    }
   }
 
   stop() {
@@ -168,13 +208,13 @@ export class OpScraperFeed extends EventEmitter {
       const fromBlock = '0x' + (this.lastBlockSeen + 1).toString(16);
       const toBlock = '0x' + latest.toString(16);
 
-      // eth_getLogs supports an array of addresses on most clients; if not, we'd
-      // need to query each corp separately. MegaETH supports it.
+      // Pull both event types in one call. MegaETH's getLogs accepts an array
+      // of topic0 values via topics[0]: [...].
       const logs = await rpc<any[]>({
         method: 'eth_getLogs',
         params: [{
           address: corps,
-          topics: [TRADE_COMPLETED_TOPIC],
+          topics: [[TRADE_COMPLETED_TOPIC, TRADE_LIQUIDATED_TOPIC]],
           fromBlock,
           toBlock,
         }],
@@ -183,17 +223,36 @@ export class OpScraperFeed extends EventEmitter {
       this.alive = true;
       this.emit('status', true);
       this.lastBlockSeen = latest;
+      this.saveCursor();
 
       if (logs.length === 0) return;
-      logger.info({ count: logs.length }, '[OpScraper] new TradeCompleted events');
+      const liqCount = logs.filter(l => l.topics[0] === TRADE_LIQUIDATED_TOPIC).length;
+      const compCount = logs.length - liqCount;
+      logger.info({ completed: compCount, liquidated: liqCount }, '[OpScraper] new outcome events');
 
       for (const log of logs) {
         try {
-          const player = '0x' + log.topics[1].slice(26);
-          const corp = '0x' + log.topics[2].slice(26);
+          const isLiquidation = log.topics[0] === TRADE_LIQUIDATED_TOPIC;
+          // TradeCompleted: topics = [t0, player, corp]
+          // TradeLiquidated: topics = [t0, liquidator, player, corp]
+          const player = isLiquidation
+            ? '0x' + log.topics[2].slice(26)
+            : '0x' + log.topics[1].slice(26);
+          const corp = isLiquidation
+            ? '0x' + log.topics[3].slice(26)
+            : '0x' + log.topics[2].slice(26);
+
           const data = log.data.replace(/^0x/, '');
-          const rewardRaw = BigInt('0x' + data.substring(0, 64));
-          const influenceRaw = BigInt('0x' + data.substring(64, 128));
+          let rewardRaw: bigint;
+          let influenceRaw: bigint;
+          if (isLiquidation) {
+            // data layout: [ethPriceAtLiq, partialReward, durationOrTicks]
+            rewardRaw = BigInt('0x' + data.substring(64, 128)); // word 2
+            influenceRaw = 5n * 10n ** 18n; // doc says liquidation forfeits all 5 INF; not in event payload
+          } else {
+            rewardRaw = BigInt('0x' + data.substring(0, 64));
+            influenceRaw = BigInt('0x' + data.substring(64, 128));
+          }
           const block = Number(BigInt(log.blockNumber));
 
           // Read the corp's tradeInfo at the block before completion to learn mode + window.
@@ -215,7 +274,10 @@ export class OpScraperFeed extends EventEmitter {
 
           const opType = classifyDuration(durationSec);
           const rewardDirty = Number(rewardRaw) / 1e18;
-          const succeeded = rewardDirty >= this.cfg.baseRewardDirty * 0.999; // small float slack
+          // Successful only if the event was TradeCompleted AND the reward
+          // matches the base. TradeLiquidated is a failure by definition,
+          // even when the partial reward is large.
+          const succeeded = !isLiquidation && rewardDirty >= this.cfg.baseRewardDirty * 0.999;
 
           const outcome: ScrapedOpOutcome = {
             txHash: log.transactionHash,
