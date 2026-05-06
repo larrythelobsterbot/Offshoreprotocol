@@ -7,6 +7,19 @@ import type { StoredTick, StoredIndicator } from '../types';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 
+export interface Subscriber {
+  id: number;
+  tg_user_id: number;
+  tg_username: string | null;
+  wallet_address: string | null;
+  ref_code: string | null;
+  alerts_enabled: number;
+  alert_types: string | null;
+  last_seen_block: number;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface OpOutcome {
   id?: number;
   ts: number;
@@ -95,6 +108,40 @@ export class Storage {
         danger_score REAL
       );
       CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(timestamp);
+
+      -- Telegram bot subscribers. Each row is a TG user who has registered
+      -- via the bot's /start command and (optionally) bound a wallet for
+      -- personal alerts. alert_types is a JSON array of enabled categories;
+      -- empty/null means "all enabled". ref_code captures attribution from
+      -- ad campaigns or organic referrals (e.g. /start ref=ABC123).
+      CREATE TABLE IF NOT EXISTS subscribers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tg_user_id INTEGER UNIQUE NOT NULL,
+        tg_username TEXT,
+        wallet_address TEXT,
+        ref_code TEXT,
+        alerts_enabled INTEGER NOT NULL DEFAULT 1,
+        alert_types TEXT,
+        last_seen_block INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_sub_wallet ON subscribers(wallet_address) WHERE wallet_address IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_sub_active ON subscribers(alerts_enabled);
+
+      -- Bot alert dedup: one row per (subscriber, alert_key) we've sent.
+      -- Used to prevent re-sending the same alert (e.g. "claim ready for corp X")
+      -- on every poll while the underlying condition holds.
+      CREATE TABLE IF NOT EXISTS bot_alert_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subscriber_id INTEGER NOT NULL,
+        alert_key TEXT NOT NULL,
+        alert_type TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        FOREIGN KEY (subscriber_id) REFERENCES subscribers(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_bot_alert_sub_key ON bot_alert_log(subscriber_id, alert_key);
+      CREATE INDEX IF NOT EXISTS idx_bot_alert_ts ON bot_alert_log(ts);
 
       -- Per-op outcome log used to fit empirical partial-failure fractions.
       -- One row per completed operation (success or failure). dirty_earned
@@ -258,6 +305,81 @@ export class Storage {
         (SELECT MAX(timestamp) FROM ticks) as latest_tick
     `).get() as any;
     return counts;
+  }
+
+  // --- Subscribers (Telegram bot service) ---
+
+  upsertSubscriber(s: { tg_user_id: number; tg_username?: string | null; ref_code?: string | null }): Subscriber {
+    const now = Date.now();
+    const existing = this.db.prepare('SELECT * FROM subscribers WHERE tg_user_id = ?').get(s.tg_user_id) as Subscriber | undefined;
+    if (existing) {
+      // Update tg_username if it changed; preserve everything else.
+      this.db.prepare(`
+        UPDATE subscribers SET
+          tg_username = COALESCE(?, tg_username),
+          ref_code = COALESCE(ref_code, ?),
+          updated_at = ?
+        WHERE tg_user_id = ?
+      `).run(s.tg_username ?? null, s.ref_code ?? null, now, s.tg_user_id);
+      return this.db.prepare('SELECT * FROM subscribers WHERE tg_user_id = ?').get(s.tg_user_id) as Subscriber;
+    }
+    const info = this.db.prepare(`
+      INSERT INTO subscribers (tg_user_id, tg_username, ref_code, alerts_enabled, last_seen_block, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 0, ?, ?)
+    `).run(s.tg_user_id, s.tg_username ?? null, s.ref_code ?? null, now, now);
+    return this.db.prepare('SELECT * FROM subscribers WHERE id = ?').get(Number(info.lastInsertRowid)) as Subscriber;
+  }
+
+  setSubscriberWallet(tg_user_id: number, wallet: string | null): boolean {
+    const info = this.db.prepare(`
+      UPDATE subscribers SET wallet_address = ?, last_seen_block = 0, updated_at = ? WHERE tg_user_id = ?
+    `).run(wallet, Date.now(), tg_user_id);
+    return info.changes > 0;
+  }
+
+  setSubscriberAlerts(tg_user_id: number, enabled: boolean): boolean {
+    const info = this.db.prepare(
+      'UPDATE subscribers SET alerts_enabled = ?, updated_at = ? WHERE tg_user_id = ?'
+    ).run(enabled ? 1 : 0, Date.now(), tg_user_id);
+    return info.changes > 0;
+  }
+
+  getSubscriber(tg_user_id: number): Subscriber | null {
+    return (this.db.prepare('SELECT * FROM subscribers WHERE tg_user_id = ?').get(tg_user_id) as Subscriber) || null;
+  }
+
+  listActiveSubscribersWithWallet(): Subscriber[] {
+    return this.db.prepare(`
+      SELECT * FROM subscribers
+      WHERE alerts_enabled = 1 AND wallet_address IS NOT NULL
+    `).all() as Subscriber[];
+  }
+
+  countSubscribers(): { total: number; withWallet: number; active: number } {
+    const r = this.db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN wallet_address IS NOT NULL THEN 1 ELSE 0 END) as withWallet,
+        SUM(CASE WHEN alerts_enabled = 1 THEN 1 ELSE 0 END) as active
+      FROM subscribers
+    `).get() as any;
+    return { total: r.total || 0, withWallet: r.withWallet || 0, active: r.active || 0 };
+  }
+
+  // --- Bot alert dedup ---
+
+  hasRecentAlert(subscriber_id: number, alert_key: string, withinMs: number): boolean {
+    const cutoff = Date.now() - withinMs;
+    const r = this.db.prepare(
+      'SELECT 1 FROM bot_alert_log WHERE subscriber_id = ? AND alert_key = ? AND ts > ? LIMIT 1'
+    ).get(subscriber_id, alert_key, cutoff);
+    return !!r;
+  }
+
+  recordAlert(subscriber_id: number, alert_key: string, alert_type: string): void {
+    this.db.prepare(
+      'INSERT INTO bot_alert_log (subscriber_id, alert_key, alert_type, ts) VALUES (?, ?, ?, ?)'
+    ).run(subscriber_id, alert_key, alert_type, Date.now());
   }
 
   // --- Cleanup ---

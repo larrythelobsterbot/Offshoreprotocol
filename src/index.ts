@@ -14,6 +14,9 @@ import { Storage } from './storage/db';
 import { ApiServer } from './api/server';
 import { buildOpStats, getEmpiricalFractions } from './engine/op-stats';
 import { buildSummaryBundle } from './engine/op-summary';
+import { TgBot } from './engine/tgbot';
+import { SubscriberPoller } from './engine/sub-poller';
+import { Broadcaster } from './engine/broadcaster';
 import { config } from './config';
 import { logger } from './logger';
 
@@ -222,9 +225,43 @@ async function main() {
     }
   }, config.indicatorStoreInterval);
 
-  // Broadcast state to WS clients every 1s
+  // --- Telegram bot service (Phase 2). No-ops when TELEGRAM_BOT_TOKEN
+  //     is unset, so deploying without TG just keeps the dashboard going. ---
+  const bot = new TgBot({
+    token: config.telegramBotToken,
+    storage,
+    refLink: config.refLink || undefined,
+    operatorChatId: config.operatorChatId,
+    dashboardUrl: config.dashboardUrl,
+  });
+  void bot.start();
+
+  // Multi-tenant per-subscriber alert poller. Iterates registered subscribers'
+  // wallets and DMs them on transitions (claim ready, INF low, auto off).
+  const subPoller = new SubscriberPoller({
+    storage,
+    bot,
+    pollMs: config.subPollIntervalMs,
+  });
+  // Only run if the bot is alive AND we have at least the token configured.
+  // The poller itself short-circuits when zero subscribers, so it's safe to
+  // start unconditionally in PUBLIC_MODE — it just sits idle.
+  if (config.telegramBotToken) {
+    subPoller.start();
+  }
+
+  // Channel broadcaster for market alerts (no-op without channel handle).
+  const broadcaster = new Broadcaster({
+    bot,
+    channelHandle: config.tgChannelUsername,
+    refLink: config.refLink || undefined,
+  });
+
+  // Broadcast state to WS clients every 1s + observe transitions for channel alerts.
   setInterval(() => {
-    server.broadcast(engine.getState());
+    const state = engine.getState();
+    server.broadcast(state);
+    broadcaster.observe(state);
   }, 1000);
 
   // DB cleanup hourly
@@ -283,6 +320,8 @@ async function main() {
     scraper.stop();
     poly.stop();
     cg.stop();
+    bot.stop();
+    subPoller.stop();
     // Flush remaining batches
     if (tickBatch.length) storage.insertTickBatch(tickBatch);
     if (tradeBatch.length) storage.insertTradeBatch(tradeBatch);

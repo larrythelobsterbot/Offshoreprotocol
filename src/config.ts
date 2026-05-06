@@ -35,6 +35,15 @@ export const config = {
   tgBotUsername: process.env.TG_BOT_USERNAME || '',
   // Optional: a public Telegram channel handle to direct visitors to.
   tgChannelUsername: process.env.TG_CHANNEL_USERNAME || '',
+  // Operator's referral link for the game, surfaced via the bot's /ref command.
+  refLink: process.env.OFFSHORE_REF_LINK || '',
+  // Operator's TG user ID — receives admin pings (e.g. new subscriber notification).
+  // Optional. When unset, admin pings are no-op.
+  operatorChatId: parseInt(process.env.TG_OPERATOR_CHAT_ID || '0') || null,
+  // Public dashboard URL surfaced via /help and channel alerts.
+  dashboardUrl: process.env.DASHBOARD_URL || 'https://offshore.lekker.design',
+  // Subscriber poller cadence (multi-tenant, per-subscriber alert checks).
+  subPollIntervalMs: parseInt(process.env.SUB_POLL_MS || '30000'),
 
   // Polling intervals (ms)
   hlPollInterval: 30_000,
