@@ -230,6 +230,12 @@ export class ApiServer {
       return this.getState().opStats;
     });
 
+    // Time-windowed activity rollup (last hour, last 24h, since session start).
+    // Mirrors the in-game Activity Log's structure.
+    this.app.get('/api/op-summary', async () => {
+      return (this.getState() as any).activity;
+    });
+
     // List recent outcomes (for verification / undo UI).
     this.app.get<{ Querystring: { limit?: string; opType?: 'extortion' | 'arms' | 'drug' } }>(
       '/api/op-results',

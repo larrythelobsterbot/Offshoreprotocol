@@ -10,6 +10,7 @@ import { dropProbStudentT, dropProbNormal } from './distributions';
 import { buildEconomics } from './economics';
 import type { OpStatsBlock } from './op-stats';
 import type { OpType } from './economics';
+import type { OpSummary } from './op-summary';
 import type { WalletBalances } from '../feeds/onchain-balances';
 import type { CorpStateBlock } from '../feeds/corp-state';
 import type { AmmRate } from '../feeds/amm-rate';
@@ -102,6 +103,7 @@ export class VolatilityEngine extends EventEmitter {
   //   fraction once the user has logged enough outcomes.
   private getOpStats: (() => OpStatsBlock) | null = null;
   private getEmpiricalFractions: (() => Partial<Record<OpType, number>>) | null = null;
+  private getActivityBundle: (() => { last1h: OpSummary; last24h: OpSummary; sinceSession: OpSummary }) | null = null;
   private latestWalletBalances: WalletBalances | null = null;
   private latestCorpState: CorpStateBlock | null = null;
   private latestAmmRate: AmmRate | null = null;
@@ -109,9 +111,11 @@ export class VolatilityEngine extends EventEmitter {
   setOpStatsProvider(
     statsFn: () => OpStatsBlock,
     fractionsFn: () => Partial<Record<OpType, number>>,
+    activityFn?: () => { last1h: OpSummary; last24h: OpSummary; sinceSession: OpSummary },
   ) {
     this.getOpStats = statsFn;
     this.getEmpiricalFractions = fractionsFn;
+    this.getActivityBundle = activityFn ?? null;
   }
 
   onWalletBalances(b: WalletBalances) {
@@ -453,6 +457,7 @@ export class VolatilityEngine extends EventEmitter {
       empiricalFractions,
     );
     const opStats = this.getOpStats?.() ?? null;
+    const activity = this.getActivityBundle?.() ?? null;
 
     return {
       ethPrice: this.ethPrice,
@@ -493,6 +498,7 @@ export class VolatilityEngine extends EventEmitter {
       walletBalances: this.latestWalletBalances,
       corpState: this.latestCorpState,
       ammRate: this.latestAmmRate,
+      activity,
     } as any;
   }
 

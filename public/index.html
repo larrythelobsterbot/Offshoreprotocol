@@ -227,6 +227,63 @@
     padding: 3px 8px;
   }
 
+  /* --- Activity panel (mirrors in-game Activity Log) --- */
+  .activity-card { border-color: var(--cyan); }
+  .activity-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .activity-tabs { display: flex; gap: 4px; }
+  .activity-tab {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--dim);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 4px 10px;
+    cursor: pointer;
+    border-radius: 4px;
+    letter-spacing: 1px;
+  }
+  .activity-tab:hover { color: var(--text); border-color: var(--cyan); }
+  .activity-tab.active { background: var(--cyan); color: #001318; border-color: var(--cyan); }
+  .activity-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .activity-row {
+    display: grid;
+    grid-template-columns: 100px 60px 100px 80px 80px;
+    gap: 12px;
+    align-items: center;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: var(--bg);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+  }
+  .activity-row.empty { color: var(--dim); }
+  .activity-row .op-label { font-weight: 600; }
+  .activity-row .pos { color: var(--green); }
+  .activity-row .neg { color: var(--red); }
+  .activity-row .neutral { color: var(--dim); }
+  .activity-net {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: 100px 60px 100px 80px 80px;
+    gap: 12px;
+    align-items: center;
+    padding: 6px 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
   /* --- Corporations panel --- */
   .corp-card { border-color: var(--cyan); }
   .corp-header {
@@ -673,6 +730,25 @@
   </div>
 </div>
 
+<!-- Activity rollup (mirrors the in-game Activity Log) -->
+<div style="padding: 0 24px 8px;">
+  <div class="card activity-card" id="activityCard" style="display:none;padding:12px 16px;">
+    <div class="activity-header">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span class="card-title" style="margin:0">ACTIVITY</span>
+        <span id="activityWindowLabel" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--cyan);">Last 24h</span>
+      </div>
+      <div class="activity-tabs">
+        <button class="activity-tab active" data-window="last24h" onclick="switchActivityTab('last24h')">24h</button>
+        <button class="activity-tab" data-window="last1h" onclick="switchActivityTab('last1h')">1h</button>
+        <button class="activity-tab" data-window="sinceSession" onclick="switchActivityTab('sinceSession')">Session</button>
+      </div>
+    </div>
+    <div id="activityRows" class="activity-rows"></div>
+    <div id="activityNet" class="activity-net"></div>
+  </div>
+</div>
+
 <!-- Calibration context bar -->
 <div style="padding: 8px 24px;">
   <div class="card" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;">
@@ -1072,6 +1148,62 @@ function toggleSettings() {
 }
 
 // ============================================================
+// ACTIVITY PANEL — rollup of on-chain TradeCompleted /
+// TradeLiquidated outcomes over a chosen time window. Mirrors
+// the format of the in-game Activity Log.
+// ============================================================
+
+let activityWindow = 'last24h'; // 'last24h' | 'last1h' | 'sinceSession'
+
+function switchActivityTab(w) {
+  activityWindow = w;
+  document.querySelectorAll('.activity-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.window === w);
+  });
+  // Trigger an immediate re-render with the cached state
+  if (window.__lastState) renderActivity(window.__lastState.activity);
+}
+
+function renderActivity(bundle) {
+  const card = document.getElementById('activityCard');
+  if (!bundle) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  const s = bundle[activityWindow];
+  if (!s) return;
+
+  document.getElementById('activityWindowLabel').textContent = s.windowLabel;
+
+  const rows = document.getElementById('activityRows');
+  rows.innerHTML = '';
+  const ops = ['extortion', 'arms', 'drug'];
+  for (const op of ops) {
+    const p = s.byOp[op];
+    const empty = p.trades === 0;
+    const row = document.createElement('div');
+    row.className = 'activity-row' + (empty ? ' empty' : '');
+    row.innerHTML = `
+      <div class="op-label">${op.charAt(0).toUpperCase() + op.slice(1)}</div>
+      <div>${p.trades} ${p.trades === 1 ? 'trade' : 'trades'}</div>
+      <div class="${p.dirtyGained > 0 ? 'pos' : 'neutral'}">${p.dirtyGained > 0 ? '+' : ''}${p.dirtyGained.toFixed(1)} $D</div>
+      <div class="${p.infNet < 0 ? 'neg' : 'neutral'}">${p.infNet} INF</div>
+      <div class="${p.xpEarned > 0 ? 'pos' : 'neutral'}">${p.xpEarned > 0 ? '+' : ''}${p.xpEarned.toFixed(1)} XP</div>
+    `;
+    rows.appendChild(row);
+  }
+
+  const t = s.total;
+  const net = document.getElementById('activityNet');
+  net.innerHTML = `
+    <div class="op-label">Net</div>
+    <div>${t.trades} ${t.trades === 1 ? 'trade' : 'trades'}</div>
+    <div class="${t.dirtyGained > 0 ? 'pos' : 'neutral'}">${t.dirtyGained > 0 ? '+' : ''}${t.dirtyGained.toFixed(1)} $D</div>
+    <div class="${t.infNet < 0 ? 'neg' : 'neutral'}">${t.infNet} INF</div>
+    <div class="${t.xpEarned > 0 ? 'pos' : 'neutral'}">${t.xpEarned > 0 ? '+' : ''}${t.xpEarned.toFixed(1)} XP</div>
+  `;
+}
+
+// ============================================================
 // CORPORATIONS PANEL
 // ============================================================
 
@@ -1433,9 +1565,13 @@ function render(s) {
     DIRTY_TO_USDM = s.ammRate.dirtyPriceUsdm;
   }
 
-  // On-chain wallet + corp state
+  // Stash state for tab-switch handlers (Activity panel)
+  window.__lastState = s;
+
+  // On-chain wallet + corp state + activity rollups
   if (s.walletBalances) renderWallet(s.walletBalances, s.ammRate);
   if (s.corpState) renderCorps(s.corpState);
+  if (s.activity) renderActivity(s.activity);
 
   // Op outcome stats (empirical failure fractions)
   if (s.opStats) renderOpStats(s.opStats);

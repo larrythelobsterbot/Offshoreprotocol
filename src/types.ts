@@ -7,6 +7,7 @@ import type { OpStatsBlock } from './engine/op-stats';
 import type { WalletBalances } from './feeds/onchain-balances';
 import type { CorpStateBlock } from './feeds/corp-state';
 import type { AmmRate } from './feeds/amm-rate';
+import type { OpSummary } from './engine/op-summary';
 
 export interface Tick {
   t: number;   // timestamp ms
@@ -104,6 +105,11 @@ export interface DashboardState {
   walletBalances: WalletBalances | null;
   corpState: CorpStateBlock | null;
   ammRate: AmmRate | null;
+  activity: {
+    last1h: OpSummary;
+    last24h: OpSummary;
+    sinceSession: OpSummary;
+  } | null;
   orderbook: {
     binance: OrderbookSnapshot;
     bybit: OrderbookSnapshot;

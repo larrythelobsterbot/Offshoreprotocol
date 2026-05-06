@@ -191,6 +191,17 @@ export class Storage {
   }
 
   /**
+   * Fetch op outcomes within a time window (newest first). Used by the
+   * activity-summary endpoint to roll up "last 24h" / "last hour" /
+   * since-session-start views, mirroring the in-game Activity Log.
+   */
+  getOpOutcomesSince(sinceTs: number): OpOutcome[] {
+    return this.db.prepare(
+      'SELECT id, ts, op_type as opType, succeeded, dirty_earned as dirtyEarned, base_reward as baseReward, note FROM op_outcomes WHERE ts >= ? ORDER BY ts DESC'
+    ).all(sinceTs) as OpOutcome[];
+  }
+
+  /**
    * Fetch op outcomes ordered newest first, optionally filtered by op type
    * and limited to the last `limit` rows. Used by both stats aggregation
    * and the recent-log UI panel.
