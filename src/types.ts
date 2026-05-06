@@ -3,6 +3,7 @@
 // ============================================================
 
 import type { EconomicsBlock } from './engine/economics';
+import type { OpStatsBlock } from './engine/op-stats';
 
 export interface Tick {
   t: number;   // timestamp ms
@@ -96,6 +97,7 @@ export interface DashboardState {
   volatility: VolatilityData;
   scores: SafetyScores;
   economics: EconomicsBlock;
+  opStats: OpStatsBlock | null;
   orderbook: {
     binance: OrderbookSnapshot;
     bybit: OrderbookSnapshot;

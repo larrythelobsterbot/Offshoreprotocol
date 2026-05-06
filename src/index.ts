@@ -8,6 +8,7 @@ import { VolatilityEngine } from './engine/volatility';
 import { sendTelegramAlert } from './engine/telegram';
 import { Storage } from './storage/db';
 import { ApiServer } from './api/server';
+import { buildOpStats, getEmpiricalFractions } from './engine/op-stats';
 import { config } from './config';
 import { logger } from './logger';
 
@@ -20,6 +21,20 @@ async function main() {
   // Initialize components
   const storage = new Storage();
   const engine = new VolatilityEngine();
+
+  // Op-stats: cache the latest aggregation so getState() doesn't query
+  // SQLite on every 1-second broadcast tick. Recompute every 5s, which is
+  // fast enough that newly-logged ops show up almost immediately.
+  let cachedOpStats = buildOpStats(storage);
+  let cachedEmpiricalFractions = getEmpiricalFractions(cachedOpStats);
+  setInterval(() => {
+    cachedOpStats = buildOpStats(storage);
+    cachedEmpiricalFractions = getEmpiricalFractions(cachedOpStats);
+  }, 5_000);
+  engine.setOpStatsProvider(
+    () => cachedOpStats,
+    () => cachedEmpiricalFractions,
+  );
 
   const binance = new BinanceFeed();
   const bybit = new BybitFeed();
@@ -103,7 +118,11 @@ async function main() {
   });
 
   // --- API Server ---
-  const server = new ApiServer(storage, () => engine.getState());
+  const onOpStatsChanged = () => {
+    cachedOpStats = buildOpStats(storage);
+    cachedEmpiricalFractions = getEmpiricalFractions(cachedOpStats);
+  };
+  const server = new ApiServer(storage, () => engine.getState(), onOpStatsChanged);
 
   // --- Periodic tasks ---
 

@@ -8,6 +8,8 @@ import { config } from '../config';
 import { calibrateProb, getHourlyRiskLevel, getSuggestedOp } from './calibration';
 import { dropProbStudentT, dropProbNormal } from './distributions';
 import { buildEconomics } from './economics';
+import type { OpStatsBlock } from './op-stats';
+import type { OpType } from './economics';
 
 // Operation thresholds — canonical values from offshoreprotocol.fun/llms.txt
 // Extortion: 2,565x leverage -> 0.039% drop fails it
@@ -90,6 +92,21 @@ export class VolatilityEngine extends EventEmitter {
 
   // Student-t degrees of freedom
   private studentTDf = config.studentTDf;
+
+  // Optional providers wired by index.ts so the engine doesn't depend on Storage.
+  // getOpStats: returns the latest aggregated op-outcome stats for UI display.
+  // getEmpiricalFractions: returns per-op overrides for the failure reward
+  //   fraction once the user has logged enough outcomes.
+  private getOpStats: (() => OpStatsBlock) | null = null;
+  private getEmpiricalFractions: (() => Partial<Record<OpType, number>>) | null = null;
+
+  setOpStatsProvider(
+    statsFn: () => OpStatsBlock,
+    fractionsFn: () => Partial<Record<OpType, number>>,
+  ) {
+    this.getOpStats = statsFn;
+    this.getEmpiricalFractions = fractionsFn;
+  }
 
   // --- Feed handlers ---
 
@@ -408,11 +425,16 @@ export class VolatilityEngine extends EventEmitter {
 
     const activeSources = Object.values(this.connections).filter(Boolean).length;
     const utcHour = new Date().getUTCHours();
-    const economics = buildEconomics({
-      extortion: vol.probExtortion,
-      arms: vol.probArms,
-      drug: vol.probDrug,
-    });
+    const empiricalFractions = this.getEmpiricalFractions?.() ?? {};
+    const economics = buildEconomics(
+      {
+        extortion: vol.probExtortion,
+        arms: vol.probArms,
+        drug: vol.probDrug,
+      },
+      empiricalFractions,
+    );
+    const opStats = this.getOpStats?.() ?? null;
 
     return {
       ethPrice: this.ethPrice,
@@ -449,6 +471,7 @@ export class VolatilityEngine extends EventEmitter {
           utcHour
         ),
       },
+      opStats,
     } as any;
   }
 

@@ -81,15 +81,28 @@ export interface OpEvSnapshot {
   failureRewardFraction: number;
 }
 
+export interface OpEvSnapshotExtended extends OpEvSnapshot {
+  failureFractionSource: 'default' | 'empirical';
+}
+
 /**
  * E[$DIRTY per op] = base * (P(succ) + failFrac * P(fail))
  *                  = base * (1 - (1 - failFrac) * P(fail))
  * E[$DIRTY per INF] = E[$DIRTY] / influenceCost
+ *
+ * If `empiricalFailFrac` is provided (because op-stats has enough samples),
+ * it overrides the env default for THIS computation only — leaves OP_ECONOMICS
+ * untouched so the source-of-truth distinction is preserved in the snapshot.
  */
-export function computeOpEv(op: OpType, probFail: number): OpEvSnapshot {
+export function computeOpEv(
+  op: OpType,
+  probFail: number,
+  empiricalFailFrac?: number,
+): OpEvSnapshotExtended {
   const econ = OP_ECONOMICS[op];
   const p = Math.max(0, Math.min(1, probFail));
-  const evDirty = econ.baseReward * (1 - (1 - econ.failureRewardFraction) * p);
+  const failFrac = empiricalFailFrac !== undefined ? empiricalFailFrac : econ.failureRewardFraction;
+  const evDirty = econ.baseReward * (1 - (1 - failFrac) * p);
   const dirtyPerInf = evDirty / econ.influenceCost;
   return {
     op,
@@ -98,24 +111,33 @@ export function computeOpEv(op: OpType, probFail: number): OpEvSnapshot {
     evDirty,
     dirtyPerInf,
     baseReward: econ.baseReward,
-    failureRewardFraction: econ.failureRewardFraction,
+    failureRewardFraction: failFrac,
+    failureFractionSource: empiricalFailFrac !== undefined ? 'empirical' : 'default',
   };
 }
 
 export interface EconomicsBlock {
   baseReward: number;          // current PL base reward used for all calcs
   influenceCost: number;       // INF cost per op (always 5 currently)
-  extortion: OpEvSnapshot;
-  arms: OpEvSnapshot;
-  drug: OpEvSnapshot;
+  extortion: OpEvSnapshotExtended;
+  arms: OpEvSnapshotExtended;
+  drug: OpEvSnapshotExtended;
   bestEvPerInfOp: OpType;      // which op has highest E[$DIRTY/INF] right now
   bestEvPerInfValue: number;
 }
 
-export function buildEconomics(probs: { extortion: number; arms: number; drug: number }): EconomicsBlock {
-  const ext = computeOpEv('extortion', probs.extortion);
-  const arms = computeOpEv('arms', probs.arms);
-  const drug = computeOpEv('drug', probs.drug);
+/**
+ * `empiricalFractions` is an optional per-op override coming from op-stats.
+ * If a key is present, the corresponding op uses the empirical value instead
+ * of the env-default. Missing keys fall back to OP_ECONOMICS defaults.
+ */
+export function buildEconomics(
+  probs: { extortion: number; arms: number; drug: number },
+  empiricalFractions: Partial<Record<OpType, number>> = {},
+): EconomicsBlock {
+  const ext  = computeOpEv('extortion', probs.extortion, empiricalFractions.extortion);
+  const arms = computeOpEv('arms',      probs.arms,      empiricalFractions.arms);
+  const drug = computeOpEv('drug',      probs.drug,      empiricalFractions.drug);
 
   // Pick the highest dirtyPerInf as the recommended op.
   let bestOp: OpType = 'drug';

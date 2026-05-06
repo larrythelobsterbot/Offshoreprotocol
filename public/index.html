@@ -227,6 +227,125 @@
     padding: 3px 8px;
   }
 
+  /* --- Op outcome logger panel --- */
+  .op-log-toggle {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--dim);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 4px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  .op-log-toggle:hover { color: var(--text); border-color: var(--cyan); }
+
+  .op-log-form {
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 10px 0 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .op-log-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--dim);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .op-log-form select, .op-log-form input {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }
+  .op-log-form select:focus, .op-log-form input:focus { outline: none; border-color: var(--cyan); }
+  .op-log-submit {
+    background: var(--cyan);
+    color: #001318;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    cursor: pointer;
+  }
+  .op-log-submit:hover { filter: brightness(1.15); }
+
+  .op-log-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    padding-top: 12px;
+  }
+  .op-log-stat {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+  }
+  .op-log-stat.has-override { border-color: var(--cyan); box-shadow: 0 0 0 1px rgba(0,229,255,0.2); }
+  .op-log-stat-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .op-log-stat-row {
+    display: flex;
+    justify-content: space-between;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    line-height: 1.6;
+  }
+  .op-log-stat-row span:first-child { color: var(--dim); }
+  .op-log-stat-row span:last-child { color: var(--text); }
+  .op-log-stat-row .ls-empirical-active { color: var(--cyan); font-weight: 700; }
+
+  .op-log-recent {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 120px;
+    overflow-y: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+  }
+  .op-log-recent-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 4px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+  .op-log-recent-row .op-name { width: 70px; color: var(--dim); }
+  .op-log-recent-row .op-outcome.win { color: var(--green); width: 28px; }
+  .op-log-recent-row .op-outcome.loss { color: var(--red); width: 28px; }
+  .op-log-recent-row .op-amount { width: 60px; }
+  .op-log-recent-row .op-time { color: var(--dim); flex: 1; font-size: 9px; }
+  .op-log-recent-row button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--dim);
+    padding: 1px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 9px;
+  }
+  .op-log-recent-row button:hover { border-color: var(--red); color: var(--red); }
+
   /* Danger gauge */
   .danger-wrap { text-align: center; }
   .danger-score {
@@ -400,6 +519,95 @@
       <span class="badge-best-ev" id="badgeBestEv">BEST EV/INF: --</span>
       <span style="font-size:10px;color:var(--dim);font-family:'JetBrains Mono',monospace;">CALIBRATED</span>
       <span style="font-size:10px;color:var(--green);font-family:'JetBrains Mono',monospace;">● 180d backtest</span>
+    </div>
+  </div>
+</div>
+
+<!-- Op outcome logger: capture observed in-game results so the
+     economics module can replace the placeholder failure-reward
+     fractions with empirical values. -->
+<div style="padding: 0 24px 8px;">
+  <div class="card" style="padding:12px 16px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span class="card-title" style="margin:0">OP OUTCOME LOG</span>
+        <span style="font-size:10px;color:var(--dim);font-family:'JetBrains Mono',monospace;">
+          Logs your observed wins/losses to fit the partial-failure fraction empirically
+        </span>
+      </div>
+      <button class="op-log-toggle" id="opLogToggle" onclick="toggleOpLog()">▼ Show</button>
+    </div>
+
+    <div id="opLogBody" style="display:none;">
+      <!-- Logging form -->
+      <div class="op-log-form">
+        <label>
+          <span>OP</span>
+          <select id="opLogType">
+            <option value="extortion">Extortion</option>
+            <option value="arms">Arms Deal</option>
+            <option value="drug" selected>Drug Deal</option>
+          </select>
+        </label>
+        <label>
+          <span>OUTCOME</span>
+          <select id="opLogOutcome">
+            <option value="true" selected>✓ Success</option>
+            <option value="false">✗ Failure</option>
+          </select>
+        </label>
+        <label>
+          <span>$DIRTY EARNED</span>
+          <input type="number" id="opLogDirty" min="0" max="500" step="0.01" placeholder="100" style="width:90px;" />
+        </label>
+        <label>
+          <span>BASE REWARD</span>
+          <input type="number" id="opLogBase" min="1" max="500" step="1" value="100" style="width:70px;" />
+        </label>
+        <button class="op-log-submit" onclick="logOpOutcome()">+ LOG</button>
+        <span id="opLogStatus" style="font-size:11px;color:var(--dim);margin-left:8px;"></span>
+      </div>
+
+      <!-- Per-op empirical stats -->
+      <div class="op-log-stats">
+        <div class="op-log-stat" id="opStatExtortion">
+          <div class="op-log-stat-name">EXTORTION</div>
+          <div class="op-log-stat-row"><span>N</span><span class="ls-n">0</span></div>
+          <div class="op-log-stat-row"><span>Success</span><span class="ls-sr">--</span></div>
+          <div class="op-log-stat-row"><span>Avg fail $</span><span class="ls-fav">--</span></div>
+          <div class="op-log-stat-row"><span>Empirical fail frac</span><span class="ls-frac">--</span></div>
+          <div class="op-log-stat-row"><span>Default</span><span class="ls-default">0.0</span></div>
+          <div class="op-log-stat-row"><span>Status</span><span class="ls-status">low</span></div>
+        </div>
+        <div class="op-log-stat" id="opStatArms">
+          <div class="op-log-stat-name">ARMS DEAL</div>
+          <div class="op-log-stat-row"><span>N</span><span class="ls-n">0</span></div>
+          <div class="op-log-stat-row"><span>Success</span><span class="ls-sr">--</span></div>
+          <div class="op-log-stat-row"><span>Avg fail $</span><span class="ls-fav">--</span></div>
+          <div class="op-log-stat-row"><span>Empirical fail frac</span><span class="ls-frac">--</span></div>
+          <div class="op-log-stat-row"><span>Default</span><span class="ls-default">0.5</span></div>
+          <div class="op-log-stat-row"><span>Status</span><span class="ls-status">low</span></div>
+        </div>
+        <div class="op-log-stat" id="opStatDrug">
+          <div class="op-log-stat-name">DRUG DEAL</div>
+          <div class="op-log-stat-row"><span>N</span><span class="ls-n">0</span></div>
+          <div class="op-log-stat-row"><span>Success</span><span class="ls-sr">--</span></div>
+          <div class="op-log-stat-row"><span>Avg fail $</span><span class="ls-fav">--</span></div>
+          <div class="op-log-stat-row"><span>Empirical fail frac</span><span class="ls-frac">--</span></div>
+          <div class="op-log-stat-row"><span>Default</span><span class="ls-default">0.5</span></div>
+          <div class="op-log-stat-row"><span>Status</span><span class="ls-status">low</span></div>
+        </div>
+      </div>
+
+      <!-- Recent log -->
+      <div style="margin-top:10px;">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);margin-bottom:4px;">
+          RECENT (last 10)
+        </div>
+        <div id="opLogRecent" class="op-log-recent">
+          <span style="color:var(--dim);font-size:11px;">No outcomes logged yet.</span>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -692,6 +900,134 @@ function toggleSettings() {
 }
 
 // ============================================================
+// OP OUTCOME LOGGER
+// ============================================================
+
+function toggleOpLog() {
+  const body = document.getElementById('opLogBody');
+  const btn = document.getElementById('opLogToggle');
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : 'block';
+  btn.textContent = open ? '▼ Show' : '▲ Hide';
+  if (!open) refreshRecentOpLog();
+}
+
+async function logOpOutcome() {
+  const opType = document.getElementById('opLogType').value;
+  const succeeded = document.getElementById('opLogOutcome').value === 'true';
+  const dirtyEarned = parseFloat(document.getElementById('opLogDirty').value);
+  const baseReward = parseFloat(document.getElementById('opLogBase').value);
+  const status = document.getElementById('opLogStatus');
+
+  if (!Number.isFinite(dirtyEarned) || dirtyEarned < 0) {
+    status.textContent = 'Enter $DIRTY earned (0 if total fail)';
+    status.style.color = 'var(--red)';
+    return;
+  }
+  if (!Number.isFinite(baseReward) || baseReward < 1) {
+    status.textContent = 'Enter base reward (100 at PL1)';
+    status.style.color = 'var(--red)';
+    return;
+  }
+
+  status.textContent = 'Logging...';
+  status.style.color = 'var(--dim)';
+
+  try {
+    const res = await fetch('/api/op-result', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ opType, succeeded, dirtyEarned, baseReward }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.message || 'Failed');
+    status.textContent = `✓ logged #${json.id}`;
+    status.style.color = 'var(--green)';
+    document.getElementById('opLogDirty').value = '';
+    refreshRecentOpLog();
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`;
+    status.style.color = 'var(--red)';
+  }
+}
+
+async function deleteOpOutcome(id) {
+  if (!confirm(`Delete log entry #${id}?`)) return;
+  try {
+    const res = await fetch(`/api/op-result/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('delete failed');
+    refreshRecentOpLog();
+  } catch (err) {
+    alert('Delete failed: ' + err.message);
+  }
+}
+
+async function refreshRecentOpLog() {
+  try {
+    const res = await fetch('/api/op-results?limit=10');
+    const rows = await res.json();
+    const container = document.getElementById('opLogRecent');
+    if (!Array.isArray(rows) || rows.length === 0) {
+      container.innerHTML = '<span style="color:var(--dim);font-size:11px;">No outcomes logged yet.</span>';
+      return;
+    }
+    container.innerHTML = rows.map(r => {
+      const win = r.succeeded === 1;
+      const ago = humanAgo(Date.now() - r.ts);
+      return `<div class="op-log-recent-row">
+        <span class="op-name">${r.opType.toUpperCase()}</span>
+        <span class="op-outcome ${win ? 'win' : 'loss'}">${win ? '✓ WIN' : '✗ FAIL'}</span>
+        <span class="op-amount">${r.dirtyEarned} $</span>
+        <span class="op-time">${ago} ago</span>
+        <button onclick="deleteOpOutcome(${r.id})">×</button>
+      </div>`;
+    }).join('');
+  } catch {}
+}
+
+function humanAgo(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  return `${d}d`;
+}
+
+function renderOpStats(stats) {
+  if (!stats) return;
+  for (const op of ['extortion', 'arms', 'drug']) {
+    const s = stats[op];
+    const card = document.getElementById('opStat' + op[0].toUpperCase() + op.slice(1));
+    if (!card || !s) continue;
+
+    card.classList.toggle('has-override', !!s.shouldOverrideDefault);
+    card.querySelector('.ls-n').textContent = s.nTotal;
+    card.querySelector('.ls-sr').textContent = s.nTotal > 0 ? (s.successRate * 100).toFixed(1) + '%' : '--';
+    card.querySelector('.ls-fav').textContent = s.nFailure > 0 ? `$${s.avgDirtyOnFailure.toFixed(1)}` : '--';
+
+    const fracEl = card.querySelector('.ls-frac');
+    if (s.empiricalFailureFraction != null) {
+      fracEl.textContent = (s.empiricalFailureFraction * 100).toFixed(1) + '%';
+      fracEl.classList.toggle('ls-empirical-active', s.shouldOverrideDefault);
+    } else {
+      fracEl.textContent = '--';
+      fracEl.classList.remove('ls-empirical-active');
+    }
+
+    const statusEl = card.querySelector('.ls-status');
+    statusEl.textContent = s.shouldOverrideDefault ? `${s.confidence.toUpperCase()} ✓ active` : s.confidence.toUpperCase();
+    statusEl.style.color = s.shouldOverrideDefault ? 'var(--cyan)'
+                          : s.confidence === 'high' ? 'var(--green)'
+                          : s.confidence === 'medium' ? 'var(--yellow)'
+                          : 'var(--dim)';
+  }
+}
+
+// ============================================================
 // RENDER
 // ============================================================
 
@@ -745,6 +1081,9 @@ function render(s) {
     renderOp('Arms', 'opArms',      s.scores.arms,      null, false, s.scores.probArms);
     renderOp('Drug', 'opDrug',      s.scores.drug,      null, false, s.scores.probDrug);
   }
+
+  // Op outcome stats (empirical failure fractions)
+  if (s.opStats) renderOpStats(s.opStats);
 
   // CVD
   const fmtUsd = (v) => {

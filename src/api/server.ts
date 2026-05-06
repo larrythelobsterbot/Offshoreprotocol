@@ -61,10 +61,16 @@ export class ApiServer {
   private clientPrevState = new Map<WebSocket, DashboardState>();
   private storage: Storage;
   private getState: () => DashboardState;
+  private onOpStatsChanged?: () => void;
 
-  constructor(storage: Storage, getState: () => DashboardState) {
+  constructor(
+    storage: Storage,
+    getState: () => DashboardState,
+    onOpStatsChanged?: () => void,
+  ) {
     this.storage = storage;
     this.getState = getState;
+    this.onOpStatsChanged = onOpStatsChanged;
   }
 
   async start() {
@@ -160,6 +166,104 @@ export class ApiServer {
     this.app.get('/api/stats', async () => {
       return this.storage.getStats();
     });
+
+    // --- Op outcome logging (used by partial-fraction tracker) ---
+
+    // Log a single op outcome. The user (or a future scraper) POSTs this
+    // when an operation completes in-game. baseReward defaults to PL1=100
+    // if not provided; pass it explicitly when the player has leveled up.
+    this.app.post<{
+      Body: {
+        opType: 'extortion' | 'arms' | 'drug';
+        succeeded: boolean;
+        dirtyEarned: number;
+        baseReward?: number;
+        ts?: number;
+        note?: string;
+      };
+    }>(
+      '/api/op-result',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            required: ['opType', 'succeeded', 'dirtyEarned'],
+            properties: {
+              opType: { type: 'string', enum: ['extortion', 'arms', 'drug'] },
+              succeeded: { type: 'boolean' },
+              dirtyEarned: { type: 'number', minimum: 0, maximum: 10000 },
+              baseReward: { type: 'number', minimum: 1, maximum: 1000 },
+              ts: { type: 'integer', minimum: 1 },
+              note: { type: 'string', maxLength: 500 },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
+      async (req, reply) => {
+        const { opType, succeeded, dirtyEarned, baseReward, ts, note } = req.body;
+        // Sanity: dirtyEarned should not exceed reasonable cap of base; clamp.
+        const base = baseReward ?? 100;
+        if (dirtyEarned > base * 2) {
+          return reply.status(400).send({
+            error: 'Bad Request',
+            message: `dirtyEarned (${dirtyEarned}) exceeds 2x base reward (${base}). Likely a typo.`,
+          });
+        }
+        const id = this.storage.insertOpOutcome({
+          ts: ts ?? Date.now(),
+          opType,
+          succeeded: succeeded ? 1 : 0,
+          dirtyEarned,
+          baseReward: base,
+          note,
+        });
+        this.onOpStatsChanged?.();
+        return { success: true, id };
+      },
+    );
+
+    // Read aggregated stats per op type. The dashboard's op cards consume
+    // this via the WebSocket DashboardState.opStats, but exposing as REST
+    // is useful for debugging and for any downstream tooling.
+    this.app.get('/api/op-stats', async () => {
+      return this.getState().opStats;
+    });
+
+    // List recent outcomes (for verification / undo UI).
+    this.app.get<{ Querystring: { limit?: string; opType?: 'extortion' | 'arms' | 'drug' } }>(
+      '/api/op-results',
+      {
+        schema: {
+          querystring: {
+            type: 'object',
+            properties: {
+              limit: { type: 'integer', minimum: 1, maximum: 1000 },
+              opType: { type: 'string', enum: ['extortion', 'arms', 'drug'] },
+            },
+          },
+        },
+      },
+      async (req) => {
+        const limit = req.query.limit ? Number(req.query.limit) : 50;
+        return this.storage.getOpOutcomes({ opType: req.query.opType, limit });
+      },
+    );
+
+    // Undo a mistakenly logged outcome.
+    this.app.delete<{ Params: { id: string } }>(
+      '/api/op-result/:id',
+      async (req, reply) => {
+        const id = parseInt(req.params.id, 10);
+        if (!Number.isFinite(id) || id < 1) {
+          return reply.status(400).send({ error: 'Bad Request', message: 'Invalid id' });
+        }
+        const deleted = this.storage.deleteOpOutcome(id);
+        if (!deleted) return reply.status(404).send({ error: 'Not Found' });
+        this.onOpStatsChanged?.();
+        return { success: true };
+      },
+    );
 
     // Health check
     this.app.get('/api/health', async () => {

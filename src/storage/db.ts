@@ -7,6 +7,16 @@ import type { StoredTick, StoredIndicator } from '../types';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 
+export interface OpOutcome {
+  id?: number;
+  ts: number;
+  opType: 'extortion' | 'arms' | 'drug';
+  succeeded: 0 | 1;
+  dirtyEarned: number;
+  baseReward: number;
+  note?: string | null;
+}
+
 export class Storage {
   private db: Database.Database;
   private _insertTick!: Database.Statement;
@@ -14,6 +24,8 @@ export class Storage {
   private _insertLiq!: Database.Statement;
   private _insertIndicator!: Database.Statement;
   private _insertAlert!: Database.Statement;
+  private _insertOp!: Database.Statement;
+  private _deleteOp!: Database.Statement;
 
   constructor() {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -83,6 +95,22 @@ export class Storage {
         danger_score REAL
       );
       CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(timestamp);
+
+      -- Per-op outcome log used to fit empirical partial-failure fractions.
+      -- One row per completed operation (success or failure). dirty_earned
+      -- is what the player actually received; base_reward is the full-success
+      -- reward at their Power Level when the op was logged.
+      CREATE TABLE IF NOT EXISTS op_outcomes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        op_type TEXT NOT NULL CHECK(op_type IN ('extortion','arms','drug')),
+        succeeded INTEGER NOT NULL CHECK(succeeded IN (0,1)),
+        dirty_earned REAL NOT NULL,
+        base_reward REAL NOT NULL,
+        note TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_op_ts ON op_outcomes(ts);
+      CREATE INDEX IF NOT EXISTS idx_op_type ON op_outcomes(op_type);
     `);
   }
 
@@ -103,6 +131,12 @@ export class Storage {
     );
     this._insertAlert = this.db.prepare(
       'INSERT INTO alerts (timestamp, type, message, danger_score) VALUES (?, ?, ?, ?)'
+    );
+    this._insertOp = this.db.prepare(
+      'INSERT INTO op_outcomes (ts, op_type, succeeded, dirty_earned, base_reward, note) VALUES (?, ?, ?, ?, ?, ?)'
+    );
+    this._deleteOp = this.db.prepare(
+      'DELETE FROM op_outcomes WHERE id = ?'
     );
   }
 
@@ -135,6 +169,44 @@ export class Storage {
 
   insertAlert(alert: { timestamp: number; type: string; message: string; dangerScore: number }) {
     this._insertAlert.run(alert.timestamp, alert.type, alert.message, alert.dangerScore);
+  }
+
+  // --- Op outcome log ---
+
+  insertOpOutcome(o: OpOutcome): number {
+    const info = this._insertOp.run(
+      o.ts,
+      o.opType,
+      o.succeeded,
+      o.dirtyEarned,
+      o.baseReward,
+      o.note ?? null,
+    );
+    return Number(info.lastInsertRowid);
+  }
+
+  deleteOpOutcome(id: number): boolean {
+    const info = this._deleteOp.run(id);
+    return info.changes > 0;
+  }
+
+  /**
+   * Fetch op outcomes ordered newest first, optionally filtered by op type
+   * and limited to the last `limit` rows. Used by both stats aggregation
+   * and the recent-log UI panel.
+   */
+  getOpOutcomes(opts: { opType?: 'extortion' | 'arms' | 'drug'; limit?: number } = {}): OpOutcome[] {
+    const limit = Math.max(1, Math.min(opts.limit ?? 500, 5000));
+    let sql: string;
+    let params: any[];
+    if (opts.opType) {
+      sql = 'SELECT id, ts, op_type as opType, succeeded, dirty_earned as dirtyEarned, base_reward as baseReward, note FROM op_outcomes WHERE op_type = ? ORDER BY ts DESC LIMIT ?';
+      params = [opts.opType, limit];
+    } else {
+      sql = 'SELECT id, ts, op_type as opType, succeeded, dirty_earned as dirtyEarned, base_reward as baseReward, note FROM op_outcomes ORDER BY ts DESC LIMIT ?';
+      params = [limit];
+    }
+    return this.db.prepare(sql).all(...params) as OpOutcome[];
   }
 
   // --- Queries ---
