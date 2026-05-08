@@ -444,7 +444,7 @@ html,body{
       <span class="sep">·</span>
       <span>ETH <b id="ethSpot">$—</b></span>
       <span class="sep">·</span>
-      <span>CYCLE <b id="cycleId">—</b></span>
+      <span>INF <b id="infSupply">—</b></span>
     </div>
   </div>
 
@@ -656,8 +656,13 @@ async function pollNetwork(){
     const d = await r.json();
     lastNetwork = d;
     if (d.ethPrice) document.getElementById('ethSpot').textContent = '$' + d.ethPrice.toFixed(2);
-    const cid = d?.loadouts?.cycle?.cycleId;
-    if (cid != null) document.getElementById('cycleId').textContent = String(cid).padStart(2,'0');
+    // Network INF supply — exact total in circulation (no abbreviation).
+    const inf = d?.tokenomics?.tokens?.INF?.totalSupply;
+    if (inf != null) {
+      document.getElementById('infSupply').textContent = inf.toLocaleString('en-US', {
+        minimumFractionDigits: 2, maximumFractionDigits: 2,
+      });
+    }
     buildMarquee(d);
   } catch {}
 }
