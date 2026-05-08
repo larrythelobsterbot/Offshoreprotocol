@@ -32,6 +32,8 @@
   --green-glow: rgba(57,255,20,0.40);
   --yellow:     #FFE600;
   --magenta:    #FF2BD6;
+  --red:        #FF1744;       /* Extortion op tone */
+  --purple:     #B388FF;       /* Drug op tone */
 
   --ease-fluid: cubic-bezier(0.32,0.72,0,1);
   --ease-snap:  cubic-bezier(0.16,1,0.3,1);
@@ -257,6 +259,164 @@ html,body{
   color:var(--text-mid);max-width:54ch;
 }
 .lede b{color:var(--text-pure);font-weight:600}
+
+/* ─── Protocol primer (between cabinets and marquee) ─── */
+.primer{ margin: 0 0 56px 0; position: relative; }
+
+.primer-head{
+  text-align:center;margin-bottom:36px;
+  display:flex;flex-direction:column;align-items:center;gap:14px;
+}
+.primer-h2{
+  font-family:var(--pixel);
+  font-size:clamp(20px, 3vw, 30px);
+  line-height:1.2;letter-spacing:0.02em;color:var(--text-pure);
+  text-shadow:0 0 24px rgba(34,240,255,0.18);
+}
+.primer-h2 .grad{
+  background:linear-gradient(105deg,#FF2D7B,#9F8BFF,#22F0FF);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.primer-lede{
+  font-family:var(--space);font-weight:500;
+  font-size:clamp(15px, 1.6vw, 17px);line-height:1.5;
+  color:var(--text-mid);max-width:60ch;letter-spacing:-0.005em;
+}
+
+.primer-row{
+  display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;
+  margin-bottom:0;
+}
+
+/* Flywheel stage card (Mint / Run / Settle) */
+.primer-card{
+  position:relative;padding:5px;
+  background:linear-gradient(180deg,#15082b 0%,#0a0418 100%);
+  border:2px solid var(--card-c, var(--cyan));
+  border-radius:14px;
+  box-shadow:
+    inset 0 0 0 1px rgba(0,0,0,0.6),
+    0 0 16px var(--card-g, var(--cyan-glow)),
+    4px 4px 0 0 rgba(0,0,0,0.55);
+}
+.primer-card.cyan    { --card-c: var(--cyan);    --card-g: var(--cyan-glow); }
+.primer-card.magenta { --card-c: var(--magenta); --card-g: rgba(255,43,214,0.40); }
+.primer-card.pink    { --card-c: var(--pink);    --card-g: var(--pink-glow); }
+
+.primer-card-head{
+  display:flex;align-items:baseline;gap:10px;
+  padding:10px 12px;
+  background:repeating-linear-gradient(
+    90deg, rgba(255,255,255,0.04) 0 4px, transparent 4px 8px),
+    linear-gradient(90deg, var(--card-c) 1a, transparent 100%);
+  border:1px solid rgba(255,255,255,0.06);
+  border-radius:8px 8px 0 0;border-bottom:0;
+}
+.primer-num{
+  font-family:var(--pixel);font-size:13px;color:var(--card-c);
+  text-shadow:0 0 6px var(--card-g);letter-spacing:1px;
+}
+.primer-stage{
+  font-family:var(--mono);font-size:10px;letter-spacing:0.18em;
+  color:var(--text-dim);text-transform:uppercase;
+}
+.primer-card-body{
+  background:rgba(10,4,24,0.75);
+  border:1px solid rgba(255,255,255,0.07);
+  border-radius:0 0 8px 8px;
+  padding:18px 14px 16px;
+  display:flex;flex-direction:column;gap:12px;
+  min-height:160px;
+}
+.primer-formula{
+  font-family:var(--mono);font-size:14px;font-weight:600;
+  color:var(--text-pure);letter-spacing:0.04em;
+  padding:6px 10px;background:rgba(0,0,0,0.4);
+  border:1px solid var(--hairline);border-radius:4px;
+  align-self:flex-start;
+}
+.primer-formula b{color:var(--card-c);text-shadow:0 0 6px var(--card-g)}
+.primer-card-body p{
+  font-family:var(--body);font-size:13px;line-height:1.5;
+  color:var(--text-mid);
+}
+.primer-card-body p b{color:var(--text-pure);font-weight:500}
+
+/* Subhead divider */
+.primer-subhead{
+  display:flex;align-items:center;gap:14px;
+  margin:32px 0 18px;
+}
+.primer-subhead::before,.primer-subhead::after{
+  content:'';flex:1;height:1px;
+  background:linear-gradient(90deg, transparent, var(--hairline-2), transparent);
+}
+.primer-sublabel{
+  font-family:var(--pixel);font-size:9px;letter-spacing:2px;
+  color:var(--text-dim);
+}
+
+/* Op card (Extortion / Arms / Drug) */
+.primer-op{
+  position:relative;padding:18px 16px;
+  background:linear-gradient(180deg, var(--op-c) 08, rgba(8,2,26,0.92) 60%, var(--op-c) 0d);
+  border:2px solid var(--op-c, var(--text-mid));
+  border-radius:10px;
+  box-shadow:
+    inset 0 0 0 1px rgba(0,0,0,0.5),
+    0 0 14px var(--op-g, transparent),
+    3px 3px 0 0 rgba(0,0,0,0.5);
+}
+.primer-op.red    { --op-c: var(--red);    --op-g: rgba(255,23,68,0.30); }
+.primer-op.green  { --op-c: var(--green);  --op-g: rgba(57,255,20,0.25); }
+.primer-op.purple { --op-c: var(--purple); --op-g: rgba(179,136,255,0.30); }
+
+.primer-op-head{
+  display:flex;justify-content:space-between;align-items:baseline;
+  margin-bottom:14px;padding-bottom:10px;
+  border-bottom:1px dashed var(--hairline);
+}
+.primer-op-name{
+  font-family:var(--pixel);font-size:13px;color:var(--op-c);
+  text-shadow:0 0 6px var(--op-g);letter-spacing:1.5px;
+}
+.primer-op-tag{
+  font-family:var(--mono);font-size:10px;letter-spacing:0.14em;
+  color:var(--text-dim);text-transform:uppercase;
+}
+.primer-op-stats{
+  display:flex;flex-direction:column;gap:6px;
+  margin-bottom:14px;padding:10px;
+  background:rgba(0,0,0,0.4);border:1px solid var(--hairline);
+  border-radius:4px;
+}
+.primer-op-stats > div{
+  display:flex;justify-content:space-between;
+  font-family:var(--mono);font-size:12px;
+}
+.primer-stat-lbl{color:var(--text-dim);letter-spacing:0.06em;text-transform:uppercase;font-size:10px;align-self:center}
+.primer-stat-v{
+  color:var(--text-pure);font-weight:500;letter-spacing:0.02em;
+  font-feature-settings:"tnum";
+}
+.primer-stat-v.accent{color:var(--op-c);text-shadow:0 0 6px var(--op-g)}
+.primer-op p{
+  font-family:var(--body);font-size:13px;line-height:1.45;
+  color:var(--text-mid);
+}
+
+/* Closing line */
+.primer-close{
+  margin-top:24px;text-align:center;
+  font-family:var(--mono);font-size:13px;letter-spacing:0.04em;
+  color:var(--text-dim);
+}
+.primer-close b{color:var(--text-pure);font-weight:500}
+
+@media (max-width:900px){
+  .primer-row{grid-template-columns:1fr}
+  .primer-card-body{min-height:0}
+}
 
 /* ─── Cabinet (tool card) ─── */
 .cabinets{
@@ -619,6 +779,105 @@ html,body{
       </div>
     </a>
 
+  </section>
+
+  <!-- ── PROTOCOL // PRIMER ── -->
+  <section class="primer">
+    <div class="primer-head">
+      <span class="eyebrow"><span class="dot"></span>Protocol · Primer</span>
+      <h2 class="primer-h2">How <span class="grad">the dirty</span> flows.</h2>
+      <p class="primer-lede">
+        A laundering simulation on MegaETH. Three steps in the loop.
+        Three risk profiles per round. Eight-hour vault cycles forever.
+      </p>
+    </div>
+
+    <!-- Row 1: 3-stage flywheel -->
+    <div class="primer-row">
+
+      <div class="primer-card cyan">
+        <div class="primer-card-head">
+          <span class="primer-num">01</span>
+          <span class="primer-stage">// Mint</span>
+        </div>
+        <div class="primer-card-body">
+          <div class="primer-formula">USDm <b>→</b> INF</div>
+          <p>Buy <b>Influence</b> with stable USDm. INF is your ammunition — every operation costs <b>5 INF</b>, win or lose.</p>
+        </div>
+      </div>
+
+      <div class="primer-card magenta">
+        <div class="primer-card-head">
+          <span class="primer-num">02</span>
+          <span class="primer-stage">// Run</span>
+        </div>
+        <div class="primer-card-body">
+          <div class="primer-formula">INF <b>→</b> DIRTY</div>
+          <p>Bet on ETH price holding within the operation's band for the full window. Win → <b>DIRTY</b>. Lose → INF burned.</p>
+        </div>
+      </div>
+
+      <div class="primer-card pink">
+        <div class="primer-card-head">
+          <span class="primer-num">03</span>
+          <span class="primer-stage">// Settle</span>
+        </div>
+        <div class="primer-card-body">
+          <div class="primer-formula">DIRTY <b>→</b> USDm</div>
+          <p>Equip assets in a Loadout. The Vault auto-launders for 8h. Pool pays out <b>pro-rata</b> at the bell.</p>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Subhead divider -->
+    <div class="primer-subhead"><span class="primer-sublabel">// THE THREE OPERATIONS</span></div>
+
+    <!-- Row 2: 3 operations -->
+    <div class="primer-row">
+
+      <div class="primer-op red">
+        <div class="primer-op-head">
+          <span class="primer-op-name">EXTORTION</span>
+          <span class="primer-op-tag">razor</span>
+        </div>
+        <div class="primer-op-stats">
+          <div><span class="primer-stat-lbl">Window</span><span class="primer-stat-v">5 min</span></div>
+          <div><span class="primer-stat-lbl">Leverage</span><span class="primer-stat-v">600×</span></div>
+          <div><span class="primer-stat-lbl">Liq band</span><span class="primer-stat-v accent">±0.039%</span></div>
+        </div>
+        <p>Highest payout, liquidates on a sneeze. For the daring or the doomed.</p>
+      </div>
+
+      <div class="primer-op green">
+        <div class="primer-op-head">
+          <span class="primer-op-name">ARMS</span>
+          <span class="primer-op-tag">calm</span>
+        </div>
+        <div class="primer-op-stats">
+          <div><span class="primer-stat-lbl">Window</span><span class="primer-stat-v">30 min</span></div>
+          <div><span class="primer-stat-lbl">Leverage</span><span class="primer-stat-v">140×</span></div>
+          <div><span class="primer-stat-lbl">Liq band</span><span class="primer-stat-v accent">±0.176%</span></div>
+        </div>
+        <p>Three cycles per hour. Best volume in calm markets — the staple op.</p>
+      </div>
+
+      <div class="primer-op purple">
+        <div class="primer-op-head">
+          <span class="primer-op-name">DRUG</span>
+          <span class="primer-op-tag">storm</span>
+        </div>
+        <div class="primer-op-stats">
+          <div><span class="primer-stat-lbl">Window</span><span class="primer-stat-v">90 min</span></div>
+          <div><span class="primer-stat-lbl">Leverage</span><span class="primer-stat-v">50×</span></div>
+          <div><span class="primer-stat-lbl">Liq band</span><span class="primer-stat-v accent">±0.518%</span></div>
+        </div>
+        <p>Widest tolerance, slowest churn. The op that survives volatile sessions.</p>
+      </div>
+
+    </div>
+
+    <p class="primer-close">Three steps. Three operations. <b>Eight-hour vault cycles forever.</b></p>
   </section>
 
   <!-- ── Marquee ── -->
