@@ -1,517 +1,356 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
+<meta charset="UTF-8" />
+<title>FlowDirty.fun — public intel for Offshore Protocol</title>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-<title>FlowDirty.fun — track the dirty</title>
+<meta name="description" content="Cypherpunk arcade for the Offshore Protocol on MegaETH. Live wallet tracking, market intel, op recommendations. Read-only. Unaffiliated. Free." />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Space+Grotesk:wght@500;600;700&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+
 <style>
 :root{
-  --bg-deep:#050505;
-  --bg-elevated:#0A0A0F;
-  --bg-tier-1:#14141B;
-  --bg-tier-2:#1B1B24;
-  --hairline:rgba(255,255,255,0.06);
-  --hairline-2:rgba(255,255,255,0.10);
+  /* Arcade base — deeper than glass, neon-saturated */
+  --bg-0: #06020e;
+  --bg-1: #0c0420;
+  --bg-2: #14082c;
+  --grid: #1f0a47;
+  --line: #3a107a;
+  --hairline: rgba(255,255,255,0.06);
+  --hairline-2: rgba(255,255,255,0.10);
 
-  --text-pure:#F4F4F6;
-  --text-mid:#A1A1AA;
-  --text-dim:#52525B;
+  --text-pure: #F4F4F6;
+  --text-mid:  #A1A1AA;
+  --text-dim:  #6a6a78;
 
-  --pink:#FF2D7B;
-  --pink-glow:rgba(255,45,123,0.45);
-  --cyan:#22F0FF;
-  --cyan-glow:rgba(34,240,255,0.40);
+  --pink:       #FF2D7B;
+  --pink-glow:  rgba(255,45,123,0.45);
+  --cyan:       #22F0FF;
+  --cyan-glow:  rgba(34,240,255,0.40);
+  --green:      #39FF14;
+  --green-glow: rgba(57,255,20,0.40);
+  --yellow:     #FFE600;
+  --magenta:    #FF2BD6;
 
-  --heat-mid:#FFB534;
-  --heat-high:#FF3D3D;
+  --ease-fluid: cubic-bezier(0.32,0.72,0,1);
+  --ease-snap:  cubic-bezier(0.16,1,0.3,1);
+  --ease-pulse: cubic-bezier(0.4,0,0.6,1);
 
-  --ease-fluid:cubic-bezier(0.32,0.72,0,1);
-  --ease-snap:cubic-bezier(0.16,1,0.3,1);
-  --ease-pulse:cubic-bezier(0.4,0,0.6,1);
-
-  --space:'Space Grotesk',sans-serif;
-  --body:'Geist',ui-sans-serif,system-ui,sans-serif;
-  --mono:'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --pixel: 'Press Start 2P', monospace;
+  --term:  'VT323', monospace;
+  --space: 'Space Grotesk', sans-serif;
+  --body:  'Geist', system-ui, sans-serif;
+  --mono:  'Geist Mono', ui-monospace, monospace;
 }
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html,body{background:var(--bg-deep);color:var(--text-pure);font-family:var(--body);font-feature-settings:"ss01","cv11";-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;min-height:100dvh}
-body{overflow-x:hidden;letter-spacing:-0.01em}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html,body{
+  background:var(--bg-0);color:var(--text-pure);
+  font-family:var(--body);font-feature-settings:"ss01","cv11";
+  -webkit-font-smoothing:antialiased;
+  min-height:100dvh;overflow-x:hidden;
+}
 
-/* ─────────── background mesh + grain ─────────── */
-.mesh{position:fixed;inset:0;z-index:-2;pointer-events:none;overflow:hidden}
-.mesh::before,.mesh::after{content:"";position:absolute;width:75vmax;height:75vmax;border-radius:50%;filter:blur(120px);opacity:0.085;animation:drift 60s var(--ease-pulse) infinite alternate}
+/* ─── Background atmosphere: mesh + grid + scanlines ─── */
+.mesh{position:fixed;inset:0;z-index:-3;pointer-events:none;overflow:hidden}
+.mesh::before,.mesh::after{
+  content:"";position:absolute;width:80vmax;height:80vmax;border-radius:50%;
+  filter:blur(120px);opacity:0.18;
+  animation:drift 70s var(--ease-pulse) infinite alternate;
+}
 .mesh::before{background:radial-gradient(circle,#22F0FF 0%,transparent 60%);top:-30vmax;left:-25vmax}
-.mesh::after{background:radial-gradient(circle,#FF2D7B 0%,transparent 60%);bottom:-30vmax;right:-25vmax;animation-delay:-30s}
+.mesh::after {background:radial-gradient(circle,#FF2D7B 0%,transparent 60%);bottom:-35vmax;right:-25vmax;animation-delay:-35s}
 @keyframes drift{0%{transform:translate(0,0) rotate(0)}100%{transform:translate(8vmax,-4vmax) rotate(40deg)}}
-.grain{position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0.03;mix-blend-mode:overlay;
+
+.bg-grid{position:fixed;inset:0;z-index:-2;pointer-events:none}
+.bg-grid::before{
+  content:"";position:absolute;inset:0;
+  background-image:
+    linear-gradient(rgba(58,16,122,0.18) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(58,16,122,0.18) 1px,transparent 1px);
+  background-size:32px 32px;
+  mask-image:radial-gradient(ellipse at center,black 30%,transparent 80%);
+}
+
+.scanlines{
+  position:fixed;inset:0;z-index:1000;pointer-events:none;mix-blend-mode:multiply;
+  background:repeating-linear-gradient(
+    0deg,rgba(0,0,0,0) 0px,rgba(0,0,0,0) 2px,
+    rgba(0,0,0,0.20) 3px,rgba(0,0,0,0) 4px);
+}
+.vignette{
+  position:fixed;inset:0;z-index:999;pointer-events:none;
+  background:radial-gradient(ellipse at center,transparent 60%,rgba(0,0,0,0.55) 100%);
+}
+.grain{
+  position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0.03;mix-blend-mode:overlay;
   background-image:url("data:image/svg+xml;utf8,<svg viewBox='0 0 300 300' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
-  background-size:300px}
+  background-size:300px;
+}
 
-/* hide-scrollbar utility for marquee */
-.no-scroll::-webkit-scrollbar{display:none}
+/* ─── animations ─── */
+@keyframes blink{50%{opacity:0.25}}
+@keyframes blink-fast{50%{opacity:0.35}}
+@keyframes scroll-x{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+@keyframes breath{0%,100%{opacity:1}50%{opacity:0.55}}
+@keyframes rise{from{opacity:0;transform:translateY(48px);filter:blur(8px)}to{opacity:1;transform:none;filter:none}}
+@keyframes glow-pulse{0%,100%{filter:drop-shadow(0 0 8px currentColor)}50%{filter:drop-shadow(0 0 18px currentColor)}}
+.blink{animation:blink 1.05s steps(2,end) infinite}
+.blink-fast{animation:blink-fast 0.45s steps(2,end) infinite}
 
-/* ─────────── shared bezel ─────────── */
-.bezel{
-  background:linear-gradient(180deg,#16161E 0%,#13131B 100%);
-  padding:6px;border-radius:24px;
-  border:1px solid var(--hairline);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,0.04),0 30px 60px -20px rgba(0,0,0,0.55);
+/* ─── Shell + hero ─── */
+.shell{
+  max-width:1280px;margin:0 auto;
+  padding:24px clamp(20px,4vw,48px) 80px;
   position:relative;
 }
-.core{
-  background:var(--bg-elevated);border-radius:18px;padding:32px;
-  box-shadow:inset 0 1px 1px rgba(255,255,255,0.06);
-  position:relative;overflow:hidden;
-}
-.core::before{
-  content:"";position:absolute;inset:0;border-radius:18px;pointer-events:none;
-  background:radial-gradient(120% 80% at 0% 0%,rgba(255,255,255,0.025),transparent 60%);
-}
 
-/* eyebrow pill */
+/* Top brand bar — pixel logo + brandtxt + utc clock */
+.topbar{
+  display:flex;align-items:center;gap:18px;margin-bottom:64px;
+  padding-bottom:18px;border-bottom:1px solid var(--hairline);
+}
+.brandmark{
+  width:38px;height:38px;
+  display:grid;grid-template-columns:repeat(5,1fr);grid-template-rows:repeat(5,1fr);
+  flex-shrink:0;
+}
+.brandmark>div{filter:drop-shadow(0 0 4px currentColor)}
+.brandtxt{font-family:var(--space);font-weight:700;font-size:16px;letter-spacing:-0.02em}
+.brandtxt b{color:var(--text-pure)}
+.brandtxt span{color:var(--text-dim);margin-left:4px;font-weight:400;font-family:var(--mono);font-size:13px;letter-spacing:0}
+.topbar-meta{
+  margin-left:auto;display:flex;align-items:center;gap:18px;
+  font-family:var(--mono);font-size:12px;color:var(--text-dim);letter-spacing:0.04em;
+}
+.topbar-meta b{color:var(--cyan);text-shadow:0 0 8px var(--cyan-glow);font-weight:500}
+.topbar-meta .sep{opacity:0.4}
+
+/* Hero */
+.hero-wrap{
+  margin-bottom:72px;
+  display:flex;flex-direction:column;align-items:flex-start;gap:24px;
+  max-width:920px;
+}
+.hero-wrap>*{opacity:0;animation:rise 900ms var(--ease-snap) forwards}
+.hero-wrap>*:nth-child(1){animation-delay:0ms}
+.hero-wrap>*:nth-child(2){animation-delay:120ms}
+.hero-wrap>*:nth-child(3){animation-delay:240ms}
+.hero-wrap>*:nth-child(4){animation-delay:360ms}
+
 .eyebrow{
   display:inline-flex;align-items:center;gap:10px;
   padding:7px 14px 7px 12px;border-radius:999px;
-  background:rgba(34,240,255,0.04);
-  border:1px solid rgba(34,240,255,0.18);
-  font-family:var(--mono);font-size:11px;letter-spacing:0.14em;text-transform:uppercase;
+  background:rgba(34,240,255,0.05);
+  border:1px solid rgba(34,240,255,0.22);
+  font-family:var(--mono);font-size:11px;letter-spacing:0.16em;text-transform:uppercase;
   color:var(--text-mid);
 }
-.eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 0 3px rgba(34,240,255,0.18),0 0 12px var(--cyan-glow);animation:breath 2.4s var(--ease-pulse) infinite}
-@keyframes breath{0%,100%{opacity:1}50%{opacity:0.55}}
-
-/* ─────────── hero (state 1) ─────────── */
-.shell{max-width:1240px;margin:0 auto;padding:24px clamp(20px,4vw,48px) 80px;position:relative}
-
-.hero{
-  min-height:100dvh;display:flex;flex-direction:column;justify-content:center;
-  padding-top:80px;padding-bottom:120px;position:relative;
-  transition:opacity 600ms var(--ease-fluid),transform 800ms var(--ease-fluid),filter 600ms var(--ease-fluid);
+.eyebrow .dot{
+  width:6px;height:6px;border-radius:50%;background:var(--cyan);
+  box-shadow:0 0 0 3px rgba(34,240,255,0.18),0 0 12px var(--cyan-glow);
+  animation:breath 2.4s var(--ease-pulse) infinite;
 }
-.hero.gone{opacity:0;transform:translateY(-32px) scale(0.985);filter:blur(8px);pointer-events:none;position:absolute;inset:0}
 
-.brandline{display:flex;align-items:center;gap:14px;margin-bottom:32px}
-.brandmark{
-  width:34px;height:34px;border-radius:10px;
-  background:linear-gradient(135deg,#FF2D7B,#22F0FF);
-  position:relative;display:grid;place-items:center;
-  box-shadow:0 0 0 1px rgba(255,255,255,0.06),0 8px 22px -10px rgba(255,45,123,0.45),inset 0 1px 0 rgba(255,255,255,0.2);
-}
-.brandmark::after{content:"";width:14px;height:14px;border-radius:4px;background:#0A0A0F;box-shadow:inset 0 0 0 1.5px rgba(255,255,255,0.85)}
-.brandtxt{font-family:var(--space);font-weight:600;font-size:15px;letter-spacing:-0.02em}
-.brandtxt b{color:var(--text-pure)}
-.brandtxt span{color:var(--text-dim);margin-left:6px;font-weight:400;font-family:var(--mono);font-size:12px;letter-spacing:0}
-
-/* Terminal cross-link — subtle pill in the brand row + sticky band */
-.term-link{
-  margin-left:auto;
-  display:inline-flex;align-items:center;gap:8px;
-  padding:7px 14px 7px 12px;border-radius:999px;
-  background:rgba(255,255,255,0.02);border:1px solid var(--hairline-2);
-  font-family:var(--mono);font-size:11px;letter-spacing:0.14em;text-transform:uppercase;
-  color:var(--text-mid);text-decoration:none;
-  transition:all 240ms var(--ease-fluid);
-}
-.term-link:hover{color:var(--text-pure);border-color:rgba(34,240,255,0.30);background:rgba(34,240,255,0.04);box-shadow:0 0 18px rgba(34,240,255,0.10)}
-.term-link .ico{width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 0 3px rgba(34,240,255,0.18),0 0 10px var(--cyan-glow)}
-.term-link .arr{color:var(--cyan);transition:transform 240ms var(--ease-fluid)}
-.term-link:hover .arr{transform:translateX(3px)}
-.brandline{justify-content:flex-start}    /* allow margin-left:auto to push the link */
-.foot .right .term-link-mini{font-size:10px;letter-spacing:0.12em;padding:6px 12px;margin-bottom:8px}
-
-.hero-content>*{opacity:0;transform:translateY(48px);filter:blur(10px);animation:rise 900ms var(--ease-snap) forwards}
-.hero-content>*:nth-child(1){animation-delay:0ms}
-.hero-content>*:nth-child(2){animation-delay:120ms}
-.hero-content>*:nth-child(3){animation-delay:240ms}
-.hero-content>*:nth-child(4){animation-delay:360ms}
-.hero-content>*:nth-child(5){animation-delay:480ms}
-@keyframes rise{to{opacity:1;transform:none;filter:none}}
-
+/* Hero headline — pixel font for the arcade feel */
 .h1{
-  font-family:var(--space);font-weight:700;
-  font-size:clamp(48px,8.5vw,108px);line-height:0.92;letter-spacing:-0.045em;
-  margin:28px 0 28px;max-width:14ch;color:var(--text-pure);
+  font-family:var(--pixel);
+  font-size:clamp(28px,5.5vw,68px);
+  line-height:1.1;letter-spacing:0.01em;
+  color:var(--text-pure);
+  text-shadow:0 0 40px rgba(255,255,255,0.05);
+  max-width:18ch;
 }
 .h1 .grad{
-  background:linear-gradient(105deg,#FF2D7B 0%,#FF6BA9 28%,#9F8BFF 55%,#22F0FF 95%);
+  background:linear-gradient(105deg,#FF2D7B 0%,#FF6BA9 30%,#9F8BFF 60%,#22F0FF 95%);
   -webkit-background-clip:text;background-clip:text;color:transparent;
-  text-shadow:0 0 80px rgba(255,45,123,0.18);
+  text-shadow:0 0 60px rgba(255,45,123,0.35);
 }
-.h1 .arrow{color:var(--text-pure);font-size:0.55em;margin-left:0.18em;display:inline-block;transform:translateY(-0.05em);opacity:0.5}
+.h1 .arrow{
+  color:var(--cyan);font-size:0.55em;display:inline-block;
+  vertical-align:middle;margin-left:0.18em;opacity:0.7;
+  filter:drop-shadow(0 0 8px var(--cyan-glow));
+}
 
 .lede{
-  font-family:var(--body);font-weight:400;font-size:19px;line-height:1.45;
-  color:var(--text-mid);max-width:30ch;margin-bottom:36px;
+  font-family:var(--space);font-weight:500;
+  font-size:clamp(18px,2.2vw,22px);line-height:1.45;letter-spacing:-0.01em;
+  color:var(--text-mid);max-width:54ch;
 }
-.lede b{color:var(--text-pure);font-weight:500}
+.lede b{color:var(--text-pure);font-weight:600}
 
-/* wallet pill */
-.wallet-row{max-width:720px}
-.pill{
-  display:grid;grid-template-columns:48px 1fr auto 56px;align-items:center;gap:6px;
-  background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02));
-  border:1.5px solid rgba(255,255,255,0.10);
-  border-radius:9999px;padding:8px 8px 8px 18px;
-  backdrop-filter:blur(20px) saturate(120%);
-  -webkit-backdrop-filter:blur(20px) saturate(120%);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,0.05),0 30px 60px -20px rgba(0,0,0,0.6);
-  transition:border-color 240ms var(--ease-fluid),box-shadow 320ms var(--ease-fluid),background 320ms var(--ease-fluid);
+/* ─── Cabinet (tool card) ─── */
+.cabinets{
+  display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:72px;
 }
-.pill:focus-within{
-  border-color:var(--pink);
-  box-shadow:0 0 0 6px rgba(255,45,123,0.18),0 0 30px var(--pink-glow),inset 0 1px 0 rgba(255,255,255,0.05);
-}
-.pill.invalid{
-  border-color:var(--heat-mid);
-  box-shadow:0 0 0 6px rgba(255,181,52,0.14),0 0 24px rgba(255,181,52,0.32),inset 0 1px 0 rgba(255,255,255,0.05);
-}
-.pill .ico{
-  width:34px;height:34px;border-radius:50%;
-  display:grid;place-items:center;
-  background:radial-gradient(circle at 30% 30%,#1F1F2A,#0A0A0F);
-  border:1px solid var(--hairline-2);
-  color:var(--cyan);
-}
-.pill input{
-  background:transparent;border:0;outline:0;
-  font-family:var(--mono);font-size:15px;color:var(--text-pure);
-  width:100%;letter-spacing:0;font-feature-settings:"tnum";
-}
-.pill input::placeholder{color:var(--text-dim);letter-spacing:0}
-.paste-btn{
-  font-family:var(--mono);font-size:11px;letter-spacing:0.12em;text-transform:uppercase;
-  background:rgba(255,255,255,0.04);border:1px solid var(--hairline-2);
-  color:var(--text-mid);padding:7px 12px;border-radius:999px;cursor:pointer;
-  transition:all 180ms var(--ease-fluid);
-}
-.paste-btn:hover{color:var(--text-pure);border-color:rgba(255,255,255,0.22);background:rgba(255,255,255,0.07)}
-.submit-btn{
-  width:48px;height:48px;border-radius:50%;border:0;cursor:pointer;
-  background:linear-gradient(135deg,#FF2D7B,#FF5A99);
-  color:#fff;display:grid;place-items:center;
-  box-shadow:0 8px 24px -6px var(--pink-glow),inset 0 1px 0 rgba(255,255,255,0.25);
-  transition:transform 220ms var(--ease-fluid),box-shadow 220ms var(--ease-fluid);
-  position:relative;overflow:hidden;
-}
-.submit-btn:hover{box-shadow:0 12px 36px -6px var(--pink-glow),0 0 0 6px rgba(255,45,123,0.10),inset 0 1px 0 rgba(255,255,255,0.3)}
-.submit-btn:hover .arr{transform:translate(2px,-2px)}
-.submit-btn:active{transform:scale(0.96)}
-.submit-btn .arr{display:inline-block;transition:transform 220ms var(--ease-fluid)}
-.submit-btn.loading .arr{display:none}
-.submit-btn .loader{display:none;gap:4px}
-.submit-btn.loading .loader{display:inline-flex}
-.submit-btn .loader span{width:5px;height:5px;border-radius:50%;background:#fff;animation:lo 1.05s infinite var(--ease-pulse)}
-.submit-btn .loader span:nth-child(2){animation-delay:0.18s}
-.submit-btn .loader span:nth-child(3){animation-delay:0.36s}
-@keyframes lo{0%,80%,100%{opacity:0.3;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
+@media (max-width:900px){.cabinets{grid-template-columns:1fr}}
 
-.pill-error{
-  font-family:var(--mono);font-size:12px;color:var(--heat-mid);
-  margin:14px 0 0 22px;letter-spacing:0;
-  opacity:0;max-height:0;overflow:hidden;
-  transition:opacity 240ms var(--ease-fluid),max-height 240ms var(--ease-fluid),margin-top 240ms var(--ease-fluid);
-}
-.pill-error.show{opacity:1;max-height:32px}
-
-/* ref link below pill */
-.ref-link{
-  display:inline-flex;align-items:center;gap:10px;margin-top:28px;
-  padding:11px 18px;border-radius:999px;
-  background:transparent;border:1px solid rgba(255,45,123,0.30);
-  color:var(--text-mid);font-family:var(--body);font-weight:500;font-size:14px;
-  text-decoration:none;letter-spacing:-0.005em;
-  transition:all 240ms var(--ease-fluid);
-}
-.ref-link b{color:var(--text-pure);font-weight:600}
-.ref-link .arr{color:var(--pink);transition:transform 240ms var(--ease-fluid)}
-.ref-link:hover{border-color:var(--pink);background:rgba(255,45,123,0.06);box-shadow:0 0 24px rgba(255,45,123,0.18)}
-.ref-link:hover .arr{transform:translateX(4px)}
-
-/* hero ticker */
-.ticker-wrap{
-  position:absolute;bottom:0;left:0;right:0;height:48px;overflow:hidden;
-  border-top:1px solid var(--hairline);
-  background:linear-gradient(180deg,transparent,rgba(0,0,0,0.4));
-  -webkit-mask:linear-gradient(90deg,transparent 0,#000 8%,#000 92%,transparent 100%);
-  mask:linear-gradient(90deg,transparent 0,#000 8%,#000 92%,transparent 100%);
-}
-.ticker{
-  display:flex;gap:48px;align-items:center;height:100%;
-  white-space:nowrap;animation:tick 60s linear infinite;width:max-content;
-}
-.ticker .it{font-family:var(--mono);font-size:12px;color:var(--text-dim);letter-spacing:0.04em;display:inline-flex;gap:10px;align-items:center}
-.ticker .it b{color:var(--text-pure);font-weight:500}
-.ticker .it .c{color:var(--cyan)}
-.ticker .it .p{color:var(--pink)}
-.ticker .it .y{color:var(--heat-mid)}
-.ticker .sep{color:var(--text-dim);opacity:0.5}
-@keyframes tick{from{transform:translateX(0)}to{transform:translateX(-50%)}}
-
-/* ─────────── dashboard (state 2) ─────────── */
-.dash{display:none;padding-top:24px}
-.dash.on{display:block;animation:dashIn 700ms var(--ease-snap)}
-@keyframes dashIn{from{opacity:0}to{opacity:1}}
-
-.sticky-band{
-  position:sticky;top:16px;z-index:50;margin-bottom:24px;
-  display:flex;align-items:center;justify-content:space-between;
-  padding:10px 14px 10px 18px;border-radius:999px;
-  background:rgba(20,20,27,0.70);backdrop-filter:blur(24px) saturate(160%);
-  -webkit-backdrop-filter:blur(24px) saturate(160%);
-  border:1px solid var(--hairline-2);
-  box-shadow:0 16px 40px -16px rgba(0,0,0,0.6);
-}
-.sticky-band .left{display:flex;align-items:center;gap:14px}
-.sticky-band .ico{
-  width:30px;height:30px;border-radius:50%;background:radial-gradient(circle at 30% 30%,#1F1F2A,#0A0A0F);
-  border:1px solid var(--hairline-2);display:grid;place-items:center;color:var(--cyan)
-}
-.sticky-band .addr{font-family:var(--mono);font-size:13px;color:var(--text-pure);letter-spacing:0.02em}
-.sticky-band .live{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;color:var(--text-dim);letter-spacing:0.1em;text-transform:uppercase;margin-left:6px}
-.sticky-band .live .d{width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 0 2px rgba(34,240,255,0.16),0 0 8px var(--cyan-glow);animation:breath 2.4s var(--ease-pulse) infinite}
-.sticky-band .change{
-  font-family:var(--mono);font-size:11px;letter-spacing:0.12em;text-transform:uppercase;
-  color:var(--text-mid);background:transparent;border:1px solid var(--hairline-2);
-  padding:7px 13px;border-radius:999px;cursor:pointer;transition:all 200ms var(--ease-fluid);
-}
-.sticky-band .change:hover{color:var(--text-pure);border-color:rgba(255,255,255,0.22)}
-
-/* bento grid */
-.bento{
-  display:grid;grid-template-columns:repeat(12,1fr);gap:18px;
-}
-.bento>*{
-  opacity:0;transform:translateY(28px);filter:blur(12px);
-  animation:tile 700ms var(--ease-fluid) forwards;
-}
-.bento.on>*:nth-child(1){animation-delay:60ms}
-.bento.on>*:nth-child(2){animation-delay:140ms}
-.bento.on>*:nth-child(3){animation-delay:220ms}
-.bento.on>*:nth-child(4){animation-delay:300ms}
-.bento.on>*:nth-child(5){animation-delay:380ms}
-.bento.on>*:nth-child(6){animation-delay:460ms}
-.bento.on>*:nth-child(7){animation-delay:540ms}
-.bento.on>*:nth-child(8){animation-delay:620ms}
-@keyframes tile{to{opacity:1;transform:none;filter:none}}
-
-.col-12{grid-column:span 12}
-.col-8{grid-column:span 8}
-.col-7{grid-column:span 7}
-.col-5{grid-column:span 5}
-.col-4{grid-column:span 4}
-.col-6{grid-column:span 6}
-
-/* ─────────── headroom hero tile ─────────── */
-.headroom .core{padding:36px 38px 32px;min-height:340px}
-.micro-eyebrow{
-  font-family:var(--mono);font-size:11px;letter-spacing:0.18em;text-transform:uppercase;
-  color:var(--text-dim);display:inline-flex;align-items:center;gap:8px;
-}
-.micro-eyebrow .arr{color:var(--cyan)}
-.headroom-num{
-  font-family:var(--mono);font-weight:600;
-  font-size:clamp(72px,9vw,108px);line-height:1;letter-spacing:-0.045em;
-  font-feature-settings:"tnum";
-  color:var(--cyan);
-  text-shadow:0 0 60px var(--cyan-glow),0 0 20px rgba(34,240,255,0.25);
-  margin:18px 0 24px;display:inline-flex;align-items:flex-start;gap:6px;
-}
-.headroom-num .pct{font-size:0.4em;line-height:1.4;color:var(--text-mid);letter-spacing:-0.02em;text-shadow:none;margin-top:0.2em}
-.headroom .delta{
-  display:inline-flex;align-items:center;gap:6px;
-  font-family:var(--mono);font-size:12px;color:var(--cyan);letter-spacing:0.04em;
-  margin-left:14px;padding:5px 10px;border-radius:999px;
-  background:rgba(34,240,255,0.08);border:1px solid rgba(34,240,255,0.22);
-  vertical-align:middle;text-shadow:none;
-}
-.bar-track{height:8px;border-radius:999px;background:rgba(255,255,255,0.05);overflow:hidden;position:relative;border:1px solid var(--hairline)}
-.bar-fill{
-  height:100%;width:54%;border-radius:inherit;
-  background:linear-gradient(90deg,#22F0FF 0%,#22F0FF 70%,#FFB534 100%);
-  box-shadow:0 0 16px var(--cyan-glow),inset 0 0 0 1px rgba(255,255,255,0.18);
-  transition:width 600ms var(--ease-fluid),background 400ms,box-shadow 400ms;
-}
-.bar-fill.danger{background:linear-gradient(90deg,#FF3D3D,#FF6B6B);box-shadow:0 0 16px rgba(255,61,61,0.55),inset 0 0 0 1px rgba(255,255,255,0.2);animation:heatpulse 1.6s var(--ease-pulse) infinite}
-@keyframes heatpulse{0%,100%{box-shadow:0 0 16px rgba(255,61,61,0.55),inset 0 0 0 1px rgba(255,255,255,0.2)}50%{box-shadow:0 0 32px rgba(255,61,61,0.85),0 0 64px rgba(255,61,61,0.4),inset 0 0 0 1px rgba(255,255,255,0.3)}}
-.headroom-detail{
-  font-family:var(--mono);font-size:13px;color:var(--text-mid);
-  margin-top:18px;letter-spacing:0.01em;line-height:1.6;
-}
-.headroom-detail b{color:var(--text-pure);font-weight:500}
-.headroom-detail .red{color:var(--heat-high)}
-.headroom-detail .cyan{color:var(--cyan)}
-.headroom-detail .y{color:var(--heat-mid)}
-.headroom .ops-row{
-  display:flex;gap:8px;margin-top:22px;padding-top:18px;border-top:1px solid var(--hairline);
-  flex-wrap:wrap;
-}
-.op-chip{
-  display:inline-flex;align-items:center;gap:8px;
-  padding:6px 11px 6px 8px;border-radius:8px;
-  background:rgba(255,255,255,0.03);border:1px solid var(--hairline);
-  font-family:var(--mono);font-size:11px;letter-spacing:0.04em;color:var(--text-mid);
-}
-.op-chip .d{width:6px;height:6px;border-radius:50%}
-.op-chip .d.cy{background:var(--cyan);box-shadow:0 0 6px var(--cyan-glow)}
-.op-chip .d.ye{background:var(--heat-mid);box-shadow:0 0 6px rgba(255,181,52,0.4)}
-.op-chip .d.rd{background:var(--heat-high);box-shadow:0 0 6px rgba(255,61,61,0.5);animation:breath 1.6s var(--ease-pulse) infinite}
-.op-chip b{color:var(--text-pure);font-weight:500}
-
-/* ─────────── wallet status ─────────── */
-.wstatus .core{padding:30px 28px;min-height:340px;display:flex;flex-direction:column;gap:18px}
-.wstatus .tier{
-  font-family:var(--space);font-weight:600;font-size:42px;letter-spacing:-0.03em;
-  display:inline-flex;align-items:baseline;gap:8px;color:var(--text-pure);line-height:1
-}
-.wstatus .tier span{font-family:var(--mono);font-size:13px;color:var(--text-dim);letter-spacing:0.1em;text-transform:uppercase;font-weight:400}
-.wstatus .xp-bar{height:6px;border-radius:999px;background:rgba(255,255,255,0.05);position:relative;overflow:hidden;border:1px solid var(--hairline)}
-.wstatus .xp-fill{height:100%;width:13.5%;background:linear-gradient(90deg,#FF2D7B,#9F8BFF);box-shadow:0 0 14px var(--pink-glow),inset 0 0 0 1px rgba(255,255,255,0.18);border-radius:inherit}
-.wstatus .xp-row{display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--text-mid);font-feature-settings:"tnum"}
-.wstatus .xp-row b{color:var(--text-pure);font-weight:500}
-.wstatus .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.metric{
-  padding:14px;background:rgba(255,255,255,0.02);border:1px solid var(--hairline);
-  border-radius:12px;display:flex;flex-direction:column;gap:6px;
-}
-.metric .lbl{font-family:var(--mono);font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:var(--text-dim)}
-.metric .val{font-family:var(--mono);font-weight:500;font-size:18px;color:var(--text-pure);font-feature-settings:"tnum";letter-spacing:-0.02em}
-.metric .val.cy{color:var(--cyan);text-shadow:0 0 14px var(--cyan-glow)}
-.metric .val.pk{color:var(--pink);text-shadow:0 0 14px var(--pink-glow)}
-.metric .sub{font-family:var(--mono);font-size:11px;color:var(--text-dim)}
-
-/* ─────────── balances strip ─────────── */
-.balances .core{padding:22px 28px;display:grid;grid-template-columns:1.1fr 1fr 1fr 1fr;gap:24px;align-items:center}
-.bal{
-  display:flex;flex-direction:column;gap:4px;
-  padding-left:20px;border-left:1px solid var(--hairline);
+.cabinet{
   position:relative;
+  text-decoration:none;color:inherit;
+  transition:transform 320ms var(--ease-fluid),filter 320ms var(--ease-fluid);
+  opacity:0;animation:rise 1000ms var(--ease-snap) forwards;
+  animation-delay:480ms;
 }
-.bal:first-child{border-left:0;padding-left:0}
-.bal .lbl{font-family:var(--mono);font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:var(--text-dim);display:inline-flex;align-items:center;gap:8px}
-.bal .lbl .tok{
-  width:14px;height:14px;border-radius:50%;display:inline-grid;place-items:center;font-family:var(--space);font-size:8px;font-weight:700;letter-spacing:0;
-}
-.bal .lbl .tok.eth{background:linear-gradient(135deg,#22F0FF,#9F8BFF);color:#0A0A0F}
-.bal .lbl .tok.inf{background:linear-gradient(135deg,#FFB534,#FF8A2E);color:#0A0A0F}
-.bal .lbl .tok.dirty{background:linear-gradient(135deg,#FF2D7B,#FF6B5C);color:#fff}
-.bal .lbl .tok.usdm{background:linear-gradient(135deg,#22F0FF,#9F8BFF);color:#0A0A0F}
-.bal .v{font-family:var(--mono);font-weight:500;font-size:24px;color:var(--text-pure);letter-spacing:-0.025em;font-feature-settings:"tnum";line-height:1;display:inline-flex;align-items:baseline;gap:6px}
-.bal .v.cy{color:var(--cyan);text-shadow:0 0 18px var(--cyan-glow)}
-.bal .v small{font-family:var(--mono);font-size:11px;color:var(--text-dim);letter-spacing:0.08em;text-transform:uppercase;font-weight:400}
-.bal .sub{font-family:var(--mono);font-size:11px;color:var(--text-dim);letter-spacing:0.04em}
-.bal .sub b{color:var(--text-mid);font-weight:500}
+.cabinet:nth-child(2){animation-delay:600ms}
+.cabinet:hover{transform:translateY(-4px)}
 
-/* ─────────── per-corp table ─────────── */
-.corps .core{padding:28px 28px 18px}
-.corps h3, .vault h3, .cycle h3, .flywheel-card h3{
-  font-family:var(--space);font-weight:600;font-size:15px;color:var(--text-pure);letter-spacing:-0.01em;
+/* The arcade-cabinet outer frame */
+.cabinet-frame{
+  position:relative;padding:18px;
+  background:linear-gradient(180deg,#15082b 0%,#0a0418 100%);
+  border:2px solid var(--cabinet-color,var(--cyan));
+  border-radius:18px;
+  box-shadow:
+    inset 0 0 0 1px rgba(0,0,0,0.6),
+    0 0 0 1px rgba(255,255,255,0.04),
+    0 0 28px var(--cabinet-glow,var(--cyan-glow)),
+    6px 6px 0 0 rgba(0,0,0,0.55),
+    0 30px 60px -20px rgba(0,0,0,0.7);
+  transition:box-shadow 320ms var(--ease-fluid),border-color 320ms var(--ease-fluid);
+  overflow:hidden;
 }
-.section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px}
-.section-head .meta{font-family:var(--mono);font-size:11px;color:var(--text-dim);letter-spacing:0.12em;text-transform:uppercase}
-.section-head .meta b{color:var(--cyan);font-weight:500;letter-spacing:0.04em}
-.tbl{width:100%;border-collapse:collapse}
-.tbl thead th{
-  font-family:var(--mono);font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:var(--text-dim);
-  text-align:left;padding:10px 12px;border-bottom:1px solid var(--hairline);font-weight:500;
+.cabinet:hover .cabinet-frame{
+  box-shadow:
+    inset 0 0 0 1px rgba(0,0,0,0.6),
+    0 0 0 1px rgba(255,255,255,0.08),
+    0 0 56px var(--cabinet-glow,var(--cyan-glow)),
+    6px 6px 0 0 rgba(0,0,0,0.55),
+    0 40px 80px -20px rgba(0,0,0,0.85);
 }
-.tbl tbody td{
-  padding:14px 12px;border-bottom:1px solid var(--hairline);font-family:var(--mono);font-size:13px;color:var(--text-pure);font-feature-settings:"tnum";
+
+/* CRT-style top bezel header */
+.cabinet-header{
+  display:flex;align-items:center;gap:10px;
+  padding:8px 12px;margin-bottom:14px;
+  background:repeating-linear-gradient(
+    90deg,rgba(255,255,255,0.04) 0 4px,transparent 4px 8px),
+    linear-gradient(90deg,var(--cabinet-color,var(--cyan))22 0%,transparent 100%);
+  border:1px solid rgba(255,255,255,0.06);
+  border-radius:6px;
+  font-family:var(--pixel);font-size:9px;letter-spacing:1.5px;
+  color:var(--cabinet-color,var(--cyan));
+  text-shadow:0 0 6px var(--cabinet-glow,var(--cyan-glow));
 }
-.tbl tbody tr:last-child td{border-bottom:0}
-.tbl tbody tr{transition:background 200ms var(--ease-fluid)}
-.tbl tbody tr:hover{background:rgba(255,255,255,0.02)}
-.tbl .corp-name{display:flex;align-items:center;gap:12px}
-.tbl .corp-name .flag{
-  width:22px;height:22px;border-radius:6px;display:grid;place-items:center;
-  font-family:var(--mono);font-size:9px;font-weight:600;color:var(--text-pure);letter-spacing:0.04em;
-  background:rgba(255,255,255,0.03);border:1px solid var(--hairline);
+.cabinet-header .led{
+  width:8px;height:8px;border-radius:50%;
+  background:var(--cabinet-color,var(--cyan));
+  box-shadow:0 0 6px var(--cabinet-color,var(--cyan));
+  animation:blink-fast 1.5s var(--ease-pulse) infinite;
 }
-.tbl .corp-name .flag.bvi{background:linear-gradient(135deg,#1B1B24,#2A2335);color:#FF6B9F}
-.tbl .corp-name .flag.cay{background:linear-gradient(135deg,#1B1B24,#1F2A35);color:#7BD8FF}
-.tbl .corp-name .flag.pan{background:linear-gradient(135deg,#1B1B24,#2A281B);color:#FFC97B}
-.tbl .corp-name .flag.dxb{background:linear-gradient(135deg,#1B1B24,#252035);color:#A8A0FF}
-.tbl .corp-name .flag.sgp{background:linear-gradient(135deg,#1B1B24,#2A1F1F);color:#FF9999}
-.tbl .corp-name .meta{font-family:var(--mono);font-size:10px;color:var(--text-dim);letter-spacing:0.08em;text-transform:uppercase;margin-top:2px;display:block}
-.tbl .corp-name b{font-family:var(--space);font-weight:500;font-size:13px;letter-spacing:-0.005em;color:var(--text-pure)}
-.bar-mini{position:relative;height:4px;background:rgba(255,255,255,0.05);border-radius:999px;width:120px;overflow:hidden}
-.bar-mini .f{height:100%;border-radius:inherit;background:var(--cyan);box-shadow:0 0 8px var(--cyan-glow)}
-.bar-mini .f.warn{background:var(--heat-mid);box-shadow:0 0 8px rgba(255,181,52,0.45)}
-.bar-mini .f.danger{background:var(--heat-high);box-shadow:0 0 10px rgba(255,61,61,0.6);animation:heatpulse 1.6s var(--ease-pulse) infinite}
-.tag{
+.cabinet-header .tag{margin-left:auto;color:var(--text-dim);font-size:8px;letter-spacing:1.2px}
+
+/* The "screen" — glass content area */
+.cabinet-screen{
+  background:rgba(10,4,24,0.65);
+  border:1px solid rgba(255,255,255,0.08);
+  border-radius:12px;
+  padding:28px 24px 24px;
+  position:relative;overflow:hidden;
+  /* inner top-edge highlight */
+  box-shadow:inset 0 1px 1px rgba(255,255,255,0.06);
+}
+.cabinet-screen::before{
+  content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:radial-gradient(120% 80% at 0% 0%,rgba(255,255,255,0.025),transparent 60%);
+}
+
+.cabinet-icon{
+  width:54px;height:54px;border-radius:12px;
+  display:grid;place-items:center;color:var(--cabinet-color,var(--cyan));
+  background:radial-gradient(circle at 30% 30%,#1a0a35,#06020e);
+  border:1px solid rgba(255,255,255,0.08);
+  box-shadow:0 0 24px var(--cabinet-glow,var(--cyan-glow));
+  margin-bottom:18px;
+  filter:drop-shadow(0 0 6px var(--cabinet-color,var(--cyan)));
+}
+.cabinet-eyebrow{
+  font-family:var(--mono);font-size:10px;letter-spacing:0.18em;
+  text-transform:uppercase;color:var(--text-dim);margin-bottom:8px;
+}
+.cabinet-title{
+  font-family:var(--space);font-weight:700;
+  font-size:clamp(28px,3.5vw,40px);line-height:1;letter-spacing:-0.03em;
+  color:var(--text-pure);margin-bottom:14px;
+}
+.cabinet-title b{color:var(--cabinet-color,var(--cyan));text-shadow:0 0 18px var(--cabinet-glow,var(--cyan-glow))}
+.cabinet-body{
+  font-family:var(--body);font-size:15px;line-height:1.5;
+  color:var(--text-mid);margin-bottom:22px;max-width:38ch;
+}
+
+/* feature pills */
+.cabinet-feats{
+  display:flex;flex-wrap:wrap;gap:6px;margin-bottom:24px;
+}
+.cabinet-feats span{
   display:inline-flex;align-items:center;gap:6px;
-  padding:3px 8px;border-radius:6px;
-  font-family:var(--mono);font-size:10px;letter-spacing:0.1em;text-transform:uppercase;font-weight:500;
+  padding:5px 10px;border-radius:6px;
+  background:rgba(255,255,255,0.025);border:1px solid var(--hairline);
+  font-family:var(--mono);font-size:10px;letter-spacing:0.06em;color:var(--text-dim);
 }
-.tag.ok{background:rgba(34,240,255,0.08);color:var(--cyan);border:1px solid rgba(34,240,255,0.22)}
-.tag.warn{background:rgba(255,181,52,0.08);color:var(--heat-mid);border:1px solid rgba(255,181,52,0.22)}
-.tag.danger{background:rgba(255,61,61,0.10);color:var(--heat-high);border:1px solid rgba(255,61,61,0.28);animation:breath 1.6s var(--ease-pulse) infinite}
-.tag.idle{background:rgba(255,255,255,0.03);color:var(--text-dim);border:1px solid var(--hairline)}
-
-/* ─────────── vault projections ─────────── */
-.vault .core{padding:24px;display:flex;flex-direction:column;gap:16px;min-height:100%}
-.vault.danger .bezel{box-shadow:inset 0 1px 0 rgba(255,255,255,0.04),0 0 0 1px rgba(255,61,61,0.4),0 30px 60px -20px rgba(0,0,0,0.5),0 0 36px rgba(255,61,61,0.18)}
-.proj-row{
-  display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;
-  padding:14px;border-radius:12px;background:rgba(255,255,255,0.02);
-  border:1px solid var(--hairline);position:relative;
-}
-.proj-row.danger{background:rgba(255,61,61,0.05);border-color:rgba(255,61,61,0.28)}
-.proj-row .name{font-family:var(--space);font-weight:500;font-size:14px;color:var(--text-pure);letter-spacing:-0.005em}
-.proj-row .meta{font-family:var(--mono);font-size:11px;color:var(--text-dim);margin-top:3px;letter-spacing:0.04em}
-.proj-row .v{font-family:var(--mono);font-weight:500;font-size:18px;letter-spacing:-0.02em;font-feature-settings:"tnum";color:var(--text-pure);text-align:right;line-height:1.1}
-.proj-row .v.cy{color:var(--cyan);text-shadow:0 0 12px var(--cyan-glow)}
-.proj-row .v.rd{color:var(--heat-high);text-shadow:0 0 12px rgba(255,61,61,0.45)}
-.proj-row .vs{font-family:var(--mono);font-size:10px;color:var(--text-dim);letter-spacing:0.1em;text-transform:uppercase;display:block;margin-top:2px}
-.proj-row.danger::after{
-  content:"";position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:3px 0 0 3px;
-  background:var(--heat-high);box-shadow:0 0 12px rgba(255,61,61,0.55);
-  animation:heatpulse 1.6s var(--ease-pulse) infinite;
+.cabinet-feats span::before{
+  content:"●";color:var(--cabinet-color,var(--cyan));font-size:6px;
 }
 
-/* ─────────── cycle countdown ─────────── */
-.cycle .core{padding:26px 32px;display:flex;align-items:center;gap:32px;flex-wrap:wrap}
-.cycle .num{
-  font-family:var(--space);font-weight:700;font-size:48px;letter-spacing:-0.04em;color:var(--text-pure);
-  display:inline-flex;align-items:baseline;gap:8px;line-height:1
+/* INSERT COIN button — the big call-to-tap */
+.cabinet-cta{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 18px 14px 20px;
+  background:linear-gradient(135deg,var(--cabinet-color,var(--cyan))08,transparent);
+  border:2px solid var(--cabinet-color,var(--cyan));
+  border-radius:8px;
+  font-family:var(--pixel);font-size:11px;letter-spacing:1.5px;
+  color:var(--cabinet-color,var(--cyan));
+  text-shadow:0 0 6px var(--cabinet-glow,var(--cyan-glow));
+  text-transform:uppercase;
+  box-shadow:3px 3px 0 0 rgba(0,0,0,0.7),inset 0 0 0 1px rgba(0,0,0,0.4);
+  transition:all 200ms var(--ease-fluid);
 }
-.cycle .num span{font-family:var(--mono);font-size:13px;color:var(--text-dim);letter-spacing:0.12em;text-transform:uppercase;font-weight:400}
-.cycle .ttl{font-family:var(--mono);font-size:11px;color:var(--text-dim);letter-spacing:0.16em;text-transform:uppercase;margin-bottom:6px}
-.cycle .progress{flex:1;min-width:280px;display:flex;flex-direction:column;gap:8px}
-.cycle .progress .bar-track{height:6px}
-.cycle .progress .bar-fill{width:78%;background:linear-gradient(90deg,#FF2D7B,#9F8BFF,#22F0FF);box-shadow:0 0 14px var(--pink-glow)}
-.cycle .progress .meta{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px;color:var(--text-dim);letter-spacing:0.04em;font-feature-settings:"tnum"}
-.cycle .progress .meta b{color:var(--text-pure);font-weight:500}
-.cycle .countdown{
-  font-family:var(--mono);font-weight:500;font-size:32px;letter-spacing:-0.02em;color:var(--cyan);text-shadow:0 0 20px var(--cyan-glow);
-  font-feature-settings:"tnum";
+.cabinet:hover .cabinet-cta{
+  background:var(--cabinet-color,var(--cyan));
+  color:#06020e;
+  text-shadow:none;
+  transform:translate(2px,2px);
+  box-shadow:1px 1px 0 0 rgba(0,0,0,0.7),inset 0 0 0 1px rgba(0,0,0,0.4);
 }
+.cabinet-cta .arr{font-size:14px;transition:transform 200ms var(--ease-fluid)}
+.cabinet:hover .cabinet-cta .arr{transform:translateX(4px)}
 
-/* ─────────── ref CTA cards ─────────── */
+/* ─── per-cabinet color theming ─── */
+.cabinet.cyan    {--cabinet-color:var(--cyan);--cabinet-glow:var(--cyan-glow)}
+.cabinet.magenta {--cabinet-color:var(--magenta);--cabinet-glow:rgba(255,43,214,0.40)}
+
+/* ─── REF CTA strip ─── */
 .ref-cta{
-  position:relative;padding:6px;border-radius:24px;
+  position:relative;padding:6px;border-radius:18px;
   background:linear-gradient(135deg,rgba(255,45,123,0.4),rgba(255,45,123,0.06) 60%,rgba(34,240,255,0.18));
   border:1px solid rgba(255,45,123,0.28);
   box-shadow:0 30px 60px -20px rgba(255,45,123,0.25);
   overflow:hidden;
+  margin-bottom:72px;
 }
 .ref-cta::before{
-  content:"";position:absolute;inset:0;border-radius:24px;pointer-events:none;
+  content:"";position:absolute;inset:0;border-radius:18px;pointer-events:none;
   background:radial-gradient(circle at 90% 50%,rgba(255,45,123,0.18),transparent 60%);
 }
 .ref-cta .core{
-  padding:36px 38px;background:linear-gradient(180deg,#0F0A12 0%,#0A0A0F 100%);
+  padding:30px 36px;
+  background:linear-gradient(180deg,#0F0612 0%,#0a0418 100%);
+  border-radius:13px;
   display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;
+  position:relative;
 }
 .ref-cta .copy{max-width:60ch}
-.ref-cta h2{font-family:var(--space);font-weight:600;font-size:28px;letter-spacing:-0.025em;line-height:1.05;margin-bottom:10px;color:var(--text-pure)}
+.ref-cta h2{
+  font-family:var(--space);font-weight:700;font-size:clamp(22px,2.8vw,30px);
+  letter-spacing:-0.025em;line-height:1.05;margin-bottom:8px;color:var(--text-pure);
+}
 .ref-cta p{font-family:var(--body);font-size:15px;color:var(--text-mid);line-height:1.45}
 .ref-cta a.cta{
   display:inline-flex;align-items:center;gap:14px;padding:14px 14px 14px 28px;
   border-radius:999px;background:linear-gradient(135deg,#FF2D7B,#FF5A99);
-  color:#fff;font-family:var(--space);font-weight:600;font-size:15px;letter-spacing:-0.005em;
+  color:#fff;font-family:var(--space);font-weight:700;font-size:15px;letter-spacing:-0.005em;
   text-decoration:none;
   box-shadow:0 18px 40px -10px var(--pink-glow),inset 0 1px 0 rgba(255,255,255,0.25);
   transition:all 240ms var(--ease-fluid);
@@ -524,879 +363,322 @@ body{overflow-x:hidden;letter-spacing:-0.01em}
 .ref-cta a.cta:hover{box-shadow:0 24px 50px -10px var(--pink-glow),0 0 0 6px rgba(255,45,123,0.10),inset 0 1px 0 rgba(255,255,255,0.32)}
 .ref-cta a.cta:hover .arr{transform:translate(3px,-3px)}
 
-/* ─────────── flywheel section ─────────── */
-.flywheel{margin-top:88px}
-.flywheel .head{text-align:center;margin-bottom:36px;display:flex;flex-direction:column;align-items:center;gap:14px}
-.flywheel h2{font-family:var(--space);font-weight:600;font-size:clamp(28px,4vw,40px);letter-spacing:-0.035em;line-height:1.05;max-width:24ch;margin:0 auto}
-.flywheel h2 .grad{background:linear-gradient(105deg,#FF2D7B,#22F0FF);-webkit-background-clip:text;background-clip:text;color:transparent}
-.flywheel .lede{font-family:var(--body);color:var(--text-mid);font-size:16px;line-height:1.5;max-width:52ch;margin:0 auto}
-.flywheel-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;position:relative}
-.flywheel-card .core{padding:28px;height:100%;display:flex;flex-direction:column;gap:14px;min-height:240px}
-.flywheel-card .core{transition:box-shadow 320ms var(--ease-fluid),transform 320ms var(--ease-fluid)}
-.flywheel-card:hover .core{box-shadow:inset 0 1px 1px rgba(255,255,255,0.08),0 0 36px rgba(34,240,255,0.10)}
-.flywheel-card .step{
-  display:inline-flex;align-items:center;gap:8px;
-  font-family:var(--mono);font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--text-dim);
+/* ─── Bottom marquee ─── */
+.marquee{
+  position:relative;margin-bottom:48px;
+  border-block:1px solid var(--hairline);
+  background:linear-gradient(180deg,rgba(34,240,255,0.04),rgba(255,43,214,0.04));
+  overflow:hidden;
+  -webkit-mask:linear-gradient(90deg,transparent 0,#000 6%,#000 94%,transparent 100%);
+  mask:linear-gradient(90deg,transparent 0,#000 6%,#000 94%,transparent 100%);
 }
-.flywheel-card .step b{color:var(--cyan);font-weight:500;letter-spacing:0.04em}
-.flywheel-card .icon{
-  width:44px;height:44px;border-radius:12px;
-  display:grid;place-items:center;color:var(--cyan);
-  background:radial-gradient(circle at 30% 30%,#1F1F2A,#0A0A0F);
-  border:1px solid var(--hairline-2);box-shadow:0 0 24px rgba(34,240,255,0.10);
-  margin-bottom:8px;
+.marquee-track{
+  display:flex;gap:48px;align-items:center;
+  white-space:nowrap;padding:12px 0;
+  animation:scroll-x 80s linear infinite;width:max-content;
 }
-.flywheel-card h3{font-family:var(--space);font-weight:600;font-size:18px;letter-spacing:-0.02em;line-height:1.15;color:var(--text-pure)}
-.flywheel-card p{font-family:var(--body);font-size:14px;line-height:1.5;color:var(--text-mid)}
-.flywheel-card .pink-line{font-family:var(--mono);font-size:12px;color:var(--text-mid);margin-top:auto;padding-top:14px;border-top:1px solid var(--hairline);letter-spacing:0.04em}
-.flywheel-card .pink-line a{color:var(--pink);text-decoration:none;border-bottom:1px solid rgba(255,45,123,0.4);padding-bottom:1px;transition:all 200ms var(--ease-fluid)}
-.flywheel-card .pink-line a:hover{border-bottom-color:var(--pink);text-shadow:0 0 12px var(--pink-glow)}
-.flywheel-grid::after{
-  content:"→";position:absolute;right:-2px;top:50%;transform:translateY(-50%);
-  font-family:var(--mono);font-size:24px;color:var(--pink);opacity:0;
+.marquee-item{
+  font-family:var(--term);font-size:18px;letter-spacing:1px;
+  color:var(--text-pure);display:inline-flex;gap:10px;align-items:center;
 }
+.marquee-item .c{color:var(--cyan);text-shadow:0 0 6px var(--cyan-glow)}
+.marquee-item .p{color:var(--pink);text-shadow:0 0 6px var(--pink-glow)}
+.marquee-item .y{color:var(--yellow)}
+.marquee-item .g{color:var(--green);text-shadow:0 0 6px var(--green-glow)}
+.marquee .sep{color:var(--text-dim);opacity:0.5}
 
-/* ─────────── footer ─────────── */
-.foot{margin-top:88px;padding:36px 0 16px;border-top:1px solid var(--hairline);display:grid;grid-template-columns:1fr auto;gap:24px;align-items:center}
-.foot .left{display:flex;flex-direction:column;gap:8px}
-.foot .brandline{margin:0}
-.foot .live-line{font-family:var(--mono);font-size:13px;color:var(--text-mid);display:inline-flex;align-items:center;gap:8px;letter-spacing:0.01em}
+/* ─── Footer ─── */
+.foot{
+  display:grid;grid-template-columns:1fr auto;gap:24px;align-items:center;
+  padding:28px 0 16px;border-top:1px solid var(--hairline);
+}
+.foot .left{display:flex;flex-direction:column;gap:10px}
+.foot .live-line{
+  font-family:var(--mono);font-size:13px;color:var(--text-mid);
+  display:inline-flex;align-items:center;gap:8px;letter-spacing:0.01em;
+}
 .foot .live-line b{color:var(--cyan);font-weight:500;text-shadow:0 0 12px var(--cyan-glow);font-feature-settings:"tnum"}
-.foot .live-line .d{width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 0 2px rgba(34,240,255,0.16),0 0 8px var(--cyan-glow);animation:breath 2.4s var(--ease-pulse) infinite}
-.foot .right{display:flex;flex-direction:column;align-items:flex-end;gap:14px}
-.foot a.cta{
-  display:inline-flex;align-items:center;gap:12px;padding:11px 12px 11px 22px;
-  border-radius:999px;background:linear-gradient(135deg,#FF2D7B,#FF5A99);
-  color:#fff;font-family:var(--space);font-weight:600;font-size:14px;letter-spacing:-0.005em;
-  text-decoration:none;
-  box-shadow:0 14px 30px -10px var(--pink-glow),inset 0 1px 0 rgba(255,255,255,0.25);
-  transition:all 240ms var(--ease-fluid);
+.foot .live-line .d{
+  width:6px;height:6px;border-radius:50%;background:var(--cyan);
+  box-shadow:0 0 0 2px rgba(34,240,255,0.16),0 0 8px var(--cyan-glow);
+  animation:breath 2.4s var(--ease-pulse) infinite;
 }
-.foot a.cta .arr{width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,0.18);display:grid;place-items:center;transition:transform 240ms var(--ease-fluid)}
-.foot a.cta:hover{box-shadow:0 18px 40px -10px var(--pink-glow),0 0 0 6px rgba(255,45,123,0.10),inset 0 1px 0 rgba(255,255,255,0.32)}
-.foot a.cta:hover .arr{transform:translate(3px,-3px)}
 .foot .credits{font-family:var(--mono);font-size:11px;color:var(--text-dim);letter-spacing:0.04em}
-.foot .credits a{color:var(--text-mid);text-decoration:none;border-bottom:1px solid var(--hairline);padding-bottom:1px;transition:all 200ms var(--ease-fluid)}
-.foot .credits a:hover{color:var(--text-pure);border-bottom-color:rgba(255,255,255,0.4)}
-
-/* number flash */
-@keyframes flashCy{0%{color:var(--cyan);text-shadow:0 0 24px var(--cyan-glow),0 0 8px var(--cyan)}100%{color:var(--text-pure);text-shadow:none}}
-.flash{animation:flashCy 600ms var(--ease-fluid)}
-
-/* ─────────── responsive ─────────── */
-@media (max-width:1080px){
-  .col-8{grid-column:span 12}
-  .col-7{grid-column:span 12}
-  .col-5{grid-column:span 12}
-  .col-4{grid-column:span 12}
-  .col-6{grid-column:span 12}
-  .balances .core{grid-template-columns:1fr 1fr;gap:18px;padding:20px}
-  .bal{padding-left:0;border-left:0;padding-top:14px;border-top:1px solid var(--hairline)}
-  .bal:first-child,.bal:nth-child(2){border-top:0;padding-top:0}
-  .flywheel-grid{grid-template-columns:1fr}
-  .foot{grid-template-columns:1fr;align-items:flex-start}
-  .foot .right{align-items:flex-start}
+.foot .right{display:flex;flex-direction:column;align-items:flex-end;gap:10px}
+.foot .right .term-link{
+  font-family:var(--mono);font-size:11px;letter-spacing:0.12em;text-transform:uppercase;
+  color:var(--text-mid);text-decoration:none;
+  display:inline-flex;align-items:center;gap:8px;
 }
-@media (max-width:640px){
-  .h1{font-size:48px;line-height:0.95}
-  .core{padding:22px}
-  .headroom .core{padding:24px}
-  .ref-cta .core{padding:26px;flex-direction:column;align-items:flex-start}
-  .pill{grid-template-columns:40px 1fr 56px;padding:6px 6px 6px 14px}
-  .pill .paste-btn{display:none}
-  .ticker-wrap{height:40px}
-  .cycle .core{padding:22px;gap:16px}
-  .cycle .num{font-size:36px}
-  .cycle .countdown{font-size:24px}
+.foot .right .term-link:hover{color:var(--cyan)}
+
+@media (max-width:768px){
+  .topbar-meta{display:none}
+  .topbar{margin-bottom:40px}
+  .hero-wrap{margin-bottom:40px;gap:18px}
+  .cabinets{margin-bottom:48px}
+  .cabinet-screen{padding:22px 18px 18px}
+  .ref-cta .core{padding:22px;flex-direction:column;align-items:flex-start}
+  .foot{grid-template-columns:1fr}
+  .foot .right{align-items:flex-start}
 }
 </style>
 </head>
 <body>
 <div class="mesh"></div>
+<div class="bg-grid"></div>
 <div class="grain"></div>
+<div class="vignette"></div>
+<div class="scanlines"></div>
 
 <div class="shell">
-  <!-- ============== STATE 1: HERO ============== -->
-  <section class="hero" id="hero">
-    <div class="brandline">
-      <div class="brandmark"></div>
+
+  <!-- ── Top brand bar ── -->
+  <div class="topbar">
+    <a href="/" style="display:flex;align-items:center;gap:14px;text-decoration:none;color:inherit">
+      <div class="brandmark" id="bmark"></div>
       <div class="brandtxt"><b>FlowDirty</b><span>.fun</span></div>
-      <a class="term-link" href="/terminal" aria-label="Open ops terminal — public market intel view">
-        <span class="ico"></span> Ops Terminal <span class="arr">→</span>
-      </a>
+    </a>
+    <div class="topbar-meta">
+      <span>UTC <b id="utcClock">--:--:--</b></span>
+      <span class="sep">·</span>
+      <span>ETH <b id="ethSpot">$—</b></span>
+      <span class="sep">·</span>
+      <span>CYCLE <b id="cycleId">—</b></span>
     </div>
+  </div>
 
-    <div class="hero-content">
-      <span class="eyebrow"><span class="dot"></span>Offshore Intel · Live</span>
+  <!-- ── Hero ── -->
+  <section class="hero-wrap">
+    <span class="eyebrow"><span class="dot"></span>Offshore Intel · Public · Free</span>
 
-      <h1 class="h1">
-        the dirty <span class="grad">must flow</span>
-        <span class="arrow">◢</span>
-      </h1>
+    <h1 class="h1">
+      THE DIRTY <span class="grad">MUST FLOW</span>
+      <span class="arrow">▰</span>
+    </h1>
 
-      <p class="lede">
-        Live on-chain position monitor for <b>Offshore Protocol</b>.
-        Paste your wallet, see your heat.
-      </p>
+    <p class="lede">
+      Two surfaces. One protocol. Live public intel for the on-chain laundering
+      simulation on <b>MegaETH</b> — read-only, no signup, no wallet connection,
+      no permission required. <b>Pick your screen.</b>
+    </p>
+  </section>
 
-      <div class="wallet-row">
-        <form class="pill" id="walletForm" autocomplete="off" novalidate>
-          <span class="ico">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25">
+  <!-- ── Two cabinets ── -->
+  <section class="cabinets">
+
+    <!-- Wallet Tracker cabinet -->
+    <a class="cabinet cyan" href="/track" aria-label="Open wallet tracker">
+      <div class="cabinet-frame">
+        <div class="cabinet-header">
+          <span class="led"></span>
+          WALLET TRACKER
+          <span class="tag">v1.0 // PUBLIC</span>
+        </div>
+        <div class="cabinet-screen">
+          <div class="cabinet-icon">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <circle cx="12" cy="12" r="9"/>
               <path d="M12 3v18M3 12h18"/>
               <circle cx="12" cy="12" r="3" stroke-width="1"/>
             </svg>
-          </span>
-          <input
-            id="walletInput"
-            type="text"
-            spellcheck="false"
-            placeholder="0x… paste wallet to begin"
-            value=""
-            maxlength="42"
-          />
-          <button type="button" class="paste-btn" id="pasteBtn">▸ paste</button>
-          <button type="submit" class="submit-btn" id="submitBtn" aria-label="Submit wallet">
-            <span class="arr">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-                <path d="M7 17 17 7M17 7H9M17 7v8"/>
-              </svg>
-            </span>
-            <span class="loader"><span></span><span></span><span></span></span>
-          </button>
-        </form>
-        <div class="pill-error" id="pillError">▲ Invalid format. Address must match 0x followed by 40 hex characters.</div>
+          </div>
+          <div class="cabinet-eyebrow">↳ Surface 01</div>
+          <div class="cabinet-title">See <b>your heat.</b></div>
+          <p class="cabinet-body">
+            Paste any wallet address. Live op headroom across active corps,
+            vault cycle suspicion projections, balances, status XP, per-corp
+            P&amp;L. Updates every 5 seconds.
+          </p>
+          <div class="cabinet-feats">
+            <span>0x… validator</span>
+            <span>No connection</span>
+            <span>Glass UI</span>
+          </div>
+          <div class="cabinet-cta">
+            INSERT COIN <span class="arr">→</span>
+          </div>
+        </div>
       </div>
+    </a>
 
-      <a class="ref-link" href="https://app.offshoreprotocol.fun/?ref=BMR6ZA" target="_blank" rel="noopener">
-        Don't have an account? <b>Start playing</b> <span class="arr">→</span>
+    <!-- Market Terminal cabinet -->
+    <a class="cabinet magenta" href="/terminal" aria-label="Open market terminal">
+      <div class="cabinet-frame">
+        <div class="cabinet-header">
+          <span class="led"></span>
+          MARKET TERMINAL
+          <span class="tag">v1.0 // PUBLIC</span>
+        </div>
+        <div class="cabinet-screen">
+          <div class="cabinet-icon">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="3" y="4" width="18" height="13" rx="2"/>
+              <path d="M3 8h18M7 20h10M9 17v3M15 17v3"/>
+              <path d="M7 12h2M11 12h2M15 12h2"/>
+            </svg>
+          </div>
+          <div class="cabinet-eyebrow">↳ Surface 02</div>
+          <div class="cabinet-title">Read <b>the network.</b></div>
+          <p class="cabinet-body">
+            Composite ETH danger score, hourly directive, op-card forecasts
+            for Extortion / Arms / Drug, network pulse, live ETH ticker.
+            CRT scanlines included.
+          </p>
+          <div class="cabinet-feats">
+            <span>1Hz updates</span>
+            <span>No wallet needed</span>
+            <span>Pixel HUD</span>
+          </div>
+          <div class="cabinet-cta">
+            INSERT COIN <span class="arr">→</span>
+          </div>
+        </div>
+      </div>
+    </a>
+
+  </section>
+
+  <!-- ── Marquee ── -->
+  <div class="marquee">
+    <div class="marquee-track" id="marquee"></div>
+  </div>
+
+  <!-- ── Ref CTA ── -->
+  <section class="ref-cta">
+    <div class="core">
+      <div class="copy">
+        <h2>Want to play the game?</h2>
+        <p>Watching is free. Playing is on-chain. Mint USDm, run the wash, settle to vault.</p>
+      </div>
+      <a class="cta" href="https://app.offshoreprotocol.fun/?ref=BMR6ZA&utm_source=flowdirty&utm_medium=landing" target="_blank" rel="noopener">
+        Start playing
+        <span class="arr">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 17 17 7M17 7H9M17 7v8"/></svg>
+        </span>
       </a>
     </div>
-
-    <div class="ticker-wrap">
-      <div class="ticker" id="heroTicker"></div>
-    </div>
   </section>
 
-  <!-- ============== STATE 2: DASHBOARD ============== -->
-  <section class="dash" id="dash">
-    <div class="sticky-band">
-      <div class="left">
-        <span class="ico">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3v18"/></svg>
-        </span>
-        <span class="addr" id="walletAddr">0x30C6···e194</span>
-        <span class="live"><span class="d"></span>Live</span>
+  <!-- ── Footer ── -->
+  <footer class="foot">
+    <div class="left">
+      <a href="/" style="display:flex;align-items:center;gap:14px;text-decoration:none;color:inherit;margin-bottom:6px">
+        <div class="brandmark" id="bmark2"></div>
+        <div class="brandtxt"><b>FlowDirty</b><span>.fun</span></div>
+      </a>
+      <div class="live-line">
+        <span class="d"></span>Tracking <b id="liveWallets">—</b> wallets across <b id="liveVisitors">—</b> visitors right now.
       </div>
-      <button class="change" id="changeBtn">Change</button>
+      <div class="credits">Built by @rustyrocket · Read-only · Unaffiliated · v1.0 · public beta</div>
     </div>
-
-    <div class="bento" id="bento">
-      <!-- 1. HEADROOM HERO -->
-      <div class="bezel headroom col-8" id="headroomTile">
-        <div class="core">
-          <span class="micro-eyebrow"><span class="arr">↳</span> Min headroom across active ops</span>
-          <div class="headroom-num">
-            <span id="hrNum">54</span><span class="pct">%</span>
-            <span class="delta" id="hrDelta">▾ 0.518% margin</span>
-          </div>
-          <div class="bar-track"><div class="bar-fill" id="hrFill" style="width:54%"></div></div>
-          <div class="headroom-detail">
-            Worst: <b>BVI · Drug</b> · ETH <span class="cyan" id="ethSpot">$2,279.00</span> vs anchor
-            <b id="hrAnchor">$2,278.70</b> &nbsp;<span class="y">(+0.011% / ±0.518%)</span>
-          </div>
-          <div class="ops-row">
-            <span class="op-chip"><span class="d cy"></span>BVI · <b>Drug</b> · 54%</span>
-            <span class="op-chip"><span class="d cy"></span>Cayman · <b>Loan</b> · 71%</span>
-            <span class="op-chip"><span class="d ye"></span>Panama · <b>Casino</b> · 38%</span>
-            <span class="op-chip"><span class="d cy"></span>Dubai · <b>Real Estate</b> · 82%</span>
-            <span class="op-chip"><span class="d ye"></span>Singapore · <b>Trade</b> · 29%</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 2. WALLET STATUS -->
-      <div class="bezel wstatus col-4">
-        <div class="core">
-          <span class="micro-eyebrow"><span class="arr">↳</span>Operator status</span>
-          <div class="tier">L4 <span>· Mid-tier</span></div>
-          <div class="xp-row"><span>XP <b id="xpVal">875</b> / 6,500</span><span>Next: <b>L5</b></span></div>
-          <div class="xp-bar"><div class="xp-fill"></div></div>
-          <div class="grid2">
-            <div class="metric"><span class="lbl">Suspicion</span><span class="val cy" id="suspVal">12.4</span><span class="sub">/ 100 · cooldown 4h</span></div>
-            <div class="metric"><span class="lbl">Streak</span><span class="val">17 <small>ops</small></span><span class="sub">no liquidations</span></div>
-            <div class="metric"><span class="lbl">Lifetime PnL</span><span class="val cy">+$48.2k</span><span class="sub">216 cycles</span></div>
-            <div class="metric"><span class="lbl">Rank</span><span class="val pk">#247</span><span class="sub">global</span></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 3. BALANCES STRIP -->
-      <div class="bezel balances col-12">
-        <div class="core">
-          <div class="bal">
-            <span class="lbl"><span class="tok eth">Ξ</span>ETH · Spot</span>
-            <span class="v cy" id="ethBal">2.4187 <small>ETH</small></span>
-            <span class="sub"><b>$5,512.84</b> · last tick 2.1s</span>
-          </div>
-          <div class="bal">
-            <span class="lbl"><span class="tok inf">F</span>INF</span>
-            <span class="v">12,840 <small>INF</small></span>
-            <span class="sub"><b>+842</b> this cycle</span>
-          </div>
-          <div class="bal">
-            <span class="lbl"><span class="tok dirty">D</span>DIRTY</span>
-            <span class="v">3,921 <small>DIRTY</small></span>
-            <span class="sub">tier <b>4</b> wash · 11h to clean</span>
-          </div>
-          <div class="bal">
-            <span class="lbl"><span class="tok usdm">U</span>USDm</span>
-            <span class="v cy" id="usdmBal">8,247.18 <small>USDm</small></span>
-            <span class="sub">vault unlocked · ratio <b>1.024</b></span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 4. PER-CORP TABLE -->
-      <div class="bezel corps col-7">
-        <div class="core">
-          <div class="section-head">
-            <h3>Active corporations</h3>
-            <span class="meta">5 <b>online</b> / 7 total · refresh 1.4s</span>
-          </div>
-          <table class="tbl">
-            <thead>
-              <tr>
-                <th>Jurisdiction</th>
-                <th>Operation</th>
-                <th>Headroom</th>
-                <th style="text-align:right">P&amp;L</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><div class="corp-name"><span class="flag bvi">BVI</span><div><b>Salt Cay Holdings</b><span class="meta">British Virgin Islands</span></div></div></td>
-                <td>Drug · 4.2× lev</td>
-                <td><div style="display:flex;align-items:center;gap:10px"><div class="bar-mini"><div class="f danger" style="width:54%"></div></div><span>54%</span></div></td>
-                <td style="text-align:right"><span style="color:var(--cyan)">+$1,284.40</span></td>
-                <td><span class="tag danger">heat</span></td>
-              </tr>
-              <tr>
-                <td><div class="corp-name"><span class="flag cay">CAY</span><div><b>Atlas Group SEZC</b><span class="meta">Cayman Islands</span></div></div></td>
-                <td>Loan-Back · 2.8× lev</td>
-                <td><div style="display:flex;align-items:center;gap:10px"><div class="bar-mini"><div class="f" style="width:71%"></div></div><span>71%</span></div></td>
-                <td style="text-align:right"><span style="color:var(--cyan)">+$2,841.10</span></td>
-                <td><span class="tag ok">stable</span></td>
-              </tr>
-              <tr>
-                <td><div class="corp-name"><span class="flag pan">PAN</span><div><b>Casa Verde S.A.</b><span class="meta">Panama City</span></div></div></td>
-                <td>Casino · 3.6× lev</td>
-                <td><div style="display:flex;align-items:center;gap:10px"><div class="bar-mini"><div class="f warn" style="width:38%"></div></div><span>38%</span></div></td>
-                <td style="text-align:right"><span style="color:var(--text-pure)">+$418.60</span></td>
-                <td><span class="tag warn">warm</span></td>
-              </tr>
-              <tr>
-                <td><div class="corp-name"><span class="flag dxb">DXB</span><div><b>Marwan Holdings FZE</b><span class="meta">DMCC · Dubai</span></div></div></td>
-                <td>Real Estate · 1.6× lev</td>
-                <td><div style="display:flex;align-items:center;gap:10px"><div class="bar-mini"><div class="f" style="width:82%"></div></div><span>82%</span></div></td>
-                <td style="text-align:right"><span style="color:var(--cyan)">+$1,617.80</span></td>
-                <td><span class="tag ok">stable</span></td>
-              </tr>
-              <tr>
-                <td><div class="corp-name"><span class="flag sgp">SGP</span><div><b>Lion Bay Trading Pte</b><span class="meta">Singapore</span></div></div></td>
-                <td>Trade Mispricing · 5.1×</td>
-                <td><div style="display:flex;align-items:center;gap:10px"><div class="bar-mini"><div class="f danger" style="width:29%"></div></div><span>29%</span></div></td>
-                <td style="text-align:right"><span style="color:var(--heat-high)">−$612.20</span></td>
-                <td><span class="tag danger">cool down</span></td>
-              </tr>
-              <tr>
-                <td><div class="corp-name"><span class="flag" style="opacity:0.5">·</span><div><b>Slot 6</b><span class="meta">Unassigned</span></div></div></td>
-                <td><span style="color:var(--text-dim)">—</span></td>
-                <td><span style="color:var(--text-dim)">—</span></td>
-                <td style="text-align:right"><span style="color:var(--text-dim)">—</span></td>
-                <td><span class="tag idle">idle</span></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- 5. VAULT PROJECTIONS -->
-      <div class="bezel vault col-5">
-        <div class="core">
-          <div class="section-head">
-            <h3>Loadout vault projections</h3>
-            <span class="meta">sim t+<b>320</b>/900</span>
-          </div>
-          <div class="proj-row">
-            <div>
-              <div class="name">Loadout · <span style="color:var(--cyan)">"Quiet Tide"</span></div>
-              <div class="meta">3 corps · 4.4 ETH committed · 92% clean</div>
-            </div>
-            <div>
-              <span class="v cy">+$2,841</span>
-              <span class="vs">at cycle close</span>
-            </div>
-          </div>
-          <div class="proj-row">
-            <div>
-              <div class="name">Loadout · <span style="color:var(--text-pure)">"Cold Iron"</span></div>
-              <div class="meta">2 corps · 1.8 ETH committed · 87% clean</div>
-            </div>
-            <div>
-              <span class="v">+$612</span>
-              <span class="vs">at cycle close</span>
-            </div>
-          </div>
-          <div class="proj-row danger">
-            <div>
-              <div class="name">Loadout · <span style="color:var(--heat-high)">"Coral Run"</span></div>
-              <div class="meta">2 corps · 3.1 ETH · liquidates @ tick 320 of 900</div>
-            </div>
-            <div>
-              <span class="v rd">−$1,920</span>
-              <span class="vs">est. liquidation</span>
-            </div>
-          </div>
-          <div class="proj-row">
-            <div>
-              <div class="name">Loadout · <span style="color:var(--text-pure)">"Long Shore"</span></div>
-              <div class="meta">3 corps · 2.4 ETH committed · 95% clean</div>
-            </div>
-            <div>
-              <span class="v cy">+$1,148</span>
-              <span class="vs">at cycle close</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 6. CYCLE COUNTDOWN -->
-      <div class="bezel cycle col-12">
-        <div class="core">
-          <div>
-            <div class="ttl">Current cycle</div>
-            <div class="num">06<span>// settles 14:42 UTC</span></div>
-          </div>
-          <div class="progress">
-            <div class="bar-track"><div class="bar-fill" id="cycleFill"></div></div>
-            <div class="meta">
-              <span>Tick <b id="cycleTick">702</b> / 900</span>
-              <span>Cycle 6 of season 02</span>
-              <span>Vault snapshot: <b>14:42:00 UTC</b></span>
-            </div>
-          </div>
-          <div>
-            <div class="ttl">Settles in</div>
-            <div class="countdown" id="countdown">02:14:38</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 7. REF CTA #2 -->
-      <div class="ref-cta col-12">
-        <div class="core">
-          <div class="copy">
-            <h2>Want a tracker like this for your own positions?</h2>
-            <p>Wallet stays read-only. Watching is free — playing is on-chain. Sim the cycle, deploy a loadout, watch it print or burn.</p>
-          </div>
-          <a class="cta" href="https://app.offshoreprotocol.fun/?ref=BMR6ZA" target="_blank" rel="noopener">
-            Start playing
-            <span class="arr">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 17 17 7M17 7H9M17 7v8"/></svg>
-            </span>
-          </a>
-        </div>
-      </div>
+    <div class="right">
+      <a class="term-link" href="/track">⌬ Wallet tracker →</a>
+      <a class="term-link" href="/terminal">▥ Market terminal →</a>
+      <a class="term-link" href="https://app.offshoreprotocol.fun/?ref=BMR6ZA" target="_blank" rel="noopener" style="color:var(--pink)">▶ Start playing →</a>
     </div>
+  </footer>
 
-    <!-- ============== FLYWHEEL ============== -->
-    <section class="flywheel">
-      <div class="head">
-        <span class="eyebrow"><span class="dot"></span>How the loop runs</span>
-        <h2>Mint <span class="grad">USDm</span>. Run the wash. Settle to vault.</h2>
-        <p class="lede">Three states, one loop. Capital cycles through influence, ops, and dirty assets — the vault settles every 90 minutes, win or burn.</p>
-      </div>
-
-      <div class="flywheel-grid">
-        <div class="bezel flywheel-card">
-          <div class="core">
-            <span class="step"><b>01</b> · Mint</span>
-            <div class="icon">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25">
-                <rect x="3" y="6" width="18" height="13" rx="2"/>
-                <path d="M3 10h18"/>
-                <circle cx="8" cy="14" r="1"/>
-              </svg>
-            </div>
-            <h3>USDm → INF</h3>
-            <p>Deposit USDm to mint INF — your operating capital. Influence opens up corps, jurisdictions, and operation tiers. The mint ratio shifts with cycle pressure.</p>
-            <div class="pink-line">Need INF to start? <a href="https://app.offshoreprotocol.fun/?ref=BMR6ZA" target="_blank" rel="noopener">Mint via referral →</a></div>
-          </div>
-        </div>
-
-        <div class="bezel flywheel-card">
-          <div class="core">
-            <span class="step"><b>02</b> · Run</span>
-            <div class="icon">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25">
-                <circle cx="12" cy="12" r="9"/>
-                <path d="M12 3v6M12 15v6M3 12h6M15 12h6"/>
-                <circle cx="12" cy="12" r="2"/>
-              </svg>
-            </div>
-            <h3>Ops → DIRTY</h3>
-            <p>Pick a corp, leverage up, run the operation. Each cycle prints DIRTY — but suspicion rises with volume. Manage heat across jurisdictions or get cooled down.</p>
-            <div class="pink-line">Live tracker watches your headroom in real time. <a href="https://app.offshoreprotocol.fun/?ref=BMR6ZA" target="_blank" rel="noopener">Sim it free →</a></div>
-          </div>
-        </div>
-
-        <div class="bezel flywheel-card">
-          <div class="core">
-            <span class="step"><b>03</b> · Settle</span>
-            <div class="icon">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25">
-                <path d="M4 8 12 4l8 4v8l-8 4-8-4V8Z"/>
-                <path d="M12 4v8M4 8l8 4M20 8l-8 4"/>
-              </svg>
-            </div>
-            <h3>DIRTY → Vault</h3>
-            <p>At t=900 the cycle closes. Clean DIRTY converts back to USDm at the season ratio. Surviving loadouts compound. Liquidated ones eat the floor.</p>
-            <div class="pink-line">Vault settles every 90 min. <a href="https://app.offshoreprotocol.fun/?ref=BMR6ZA" target="_blank" rel="noopener">Open the next cycle →</a></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============== FOOTER ============== -->
-    <footer class="foot">
-      <div class="left">
-        <div class="brandline">
-          <div class="brandmark"></div>
-          <div class="brandtxt"><b>FlowDirty</b><span>.fun</span></div>
-        </div>
-        <div class="live-line">
-          <span class="d"></span>Tracking <b id="liveWallets">247</b> wallets across <b id="liveVisitors">89</b> visitors right now.
-        </div>
-        <div class="credits">Built by <a href="#">@rustyrocket</a> · <a href="#">Source on GitHub</a> · Read-only · Not affiliated with Offshore Protocol.</div>
-      </div>
-      <div class="right">
-        <a class="cta" href="https://app.offshoreprotocol.fun/?ref=BMR6ZA" target="_blank" rel="noopener">
-          Start playing
-          <span class="arr">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 17 17 7M17 7H9M17 7v8"/></svg>
-          </span>
-        </a>
-        <a class="term-link term-link-mini" href="/terminal" aria-label="Open ops terminal">
-          <span class="ico"></span> Ops Terminal <span class="arr">→</span>
-        </a>
-        <div class="credits">v1.0 · public beta</div>
-      </div>
-    </footer>
-  </section>
 </div>
 
 <script>
-// ============================================================
-// FlowDirty.fun — live glue between the design and /api/track
-// All data shapes match the WalletTracker TrackResult contract:
-//   GET  /api/track/:wallet
-//   GET  /api/track-stats
-// ============================================================
+// ─── Brand mark (pixel diamond, drawn twice for top + footer) ───
+function drawBrandmark(el){
+  if (!el) return;
+  const grid = ['.ccc.','cmcmc','cmccm','cmcmc','.ccc.'];
+  for (let y = 0; y < 5; y++) {
+    for (let x = 0; x < 5; x++) {
+      const ch = grid[y][x];
+      const c = ch === 'c' ? '#22F0FF' : ch === 'm' ? '#FF2D7B' : null;
+      if (!c) { el.appendChild(document.createElement('div')); continue; }
+      const cell = document.createElement('div');
+      cell.style.background = c;
+      cell.style.color = c;
+      cell.style.gridColumn = (x+1);
+      cell.style.gridRow = (y+1);
+      el.appendChild(cell);
+    }
+  }
+}
+drawBrandmark(document.getElementById('bmark'));
+drawBrandmark(document.getElementById('bmark2'));
 
-const REF_URL = 'https://app.offshoreprotocol.fun/?ref=BMR6ZA';
-const POLL_MS = 5000;             // refresh wallet data every 5s
-const STATS_POLL_MS = 30000;      // refresh footer "Tracking N wallets" every 30s
-const RE = /^0x[a-fA-F0-9]{40}$/;
+// ─── Marquee builder (refreshed on data poll) ───
+function buildMarquee(d){
+  const eth = d?.ethPrice ? '$'+d.ethPrice.toFixed(2) : '—';
+  const cycleId = d?.loadouts?.cycle?.cycleId ?? d?.cycle?.cycleId ?? '—';
+  const cycleSec = d?.loadouts?.cycle?.secondsRemaining ?? d?.cycle?.secondsRemaining ?? null;
+  const cycleStr = cycleSec != null ? fmtTime(cycleSec) : '—';
+  const tok = d?.tokenomics || {};
+  const danger = d?.scores?.dangerScore ?? null;
 
-const $ = (id) => document.getElementById(id);
-const flash = (el) => { if (!el) return; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); };
-const fmt = (n, d=0) => Number(n ?? 0).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
-const fmtUsd = (n, d=2) => '$' + fmt(n, d);
-const fmtTime = (s) => {
+  const items = [
+    `<span class="marquee-item">▶ ETH/USD <b class="c">${eth}</b></span>`,
+    `<span class="sep">·</span>`,
+    `<span class="marquee-item">◆ CYCLE <b>${String(cycleId).padStart(2,'0')}</b> ENDS <b class="c">${cycleStr}</b></span>`,
+    `<span class="sep">·</span>`,
+    `<span class="marquee-item">⚡ DANGER <b ${danger >= 75 ? 'class="p"' : danger >= 50 ? 'class="y"' : 'class="g"'}>${danger != null ? Math.round(danger) : '—'}</b>/100</span>`,
+    `<span class="sep">·</span>`,
+    `<span class="marquee-item">▰ NETWORK <b class="c">MegaETH</b> · MAINNET</span>`,
+    `<span class="sep">·</span>`,
+    `<span class="marquee-item">▰ ACTIVE PLAYERS <b class="c">${tok.activePlayers ?? '—'}</b></span>`,
+    `<span class="sep">·</span>`,
+    `<span class="marquee-item" style="color:var(--text-dim)">READ-ONLY · UNAFFILIATED · NOT FINANCIAL ADVICE</span>`,
+    `<span class="sep">·</span>`,
+  ];
+  document.getElementById('marquee').innerHTML = items.join('') + items.join('');
+}
+buildMarquee(null);
+
+function fmtTime(s){
   s = Math.max(0, Math.floor(s));
   const h = String(Math.floor(s/3600)).padStart(2,'0');
   const m = String(Math.floor((s%3600)/60)).padStart(2,'0');
   const ss = String(s%60).padStart(2,'0');
   return `${h}:${m}:${ss}`;
-};
-const trunc = (a) => a ? a.slice(0,6) + '···' + a.slice(-4) : '';
-const MODE_LABEL = { 0: 'Extortion', 1: 'Arms', 2: 'Drug' };
-
-// ─────────── hero ticker (decorative — refreshed when stats arrive) ───────────
-function buildTicker(d){
-  const ethStr = d?.ethPrice ? fmtUsd(d.ethPrice) : '—';
-  const ethDelta = d?.ethPriceStart && d?.ethPrice
-    ? ((d.ethPrice - d.ethPriceStart) / d.ethPriceStart * 100).toFixed(2) : null;
-  const cycleEnd = d?.cycle?.secondsRemaining != null ? fmtTime(d.cycle.secondsRemaining) : '—';
-  const cycleId = d?.cycle?.cycleId ?? '—';
-
-  const items = [
-    `<span class="it">ETH <b class="c">${ethStr}</b>${ethDelta != null ? ` <span class="y">${parseFloat(ethDelta) >= 0 ? '+' : ''}${ethDelta}%</span>` : ''}</span>`,
-    `<span class="sep">·</span>`,
-    `<span class="it">CYCLE ${String(cycleId).padStart(2,'0')} ENDS <b>${cycleEnd}</b></span>`,
-    `<span class="sep">·</span>`,
-    `<span class="it">MEGAETH MAINNET</span>`,
-    `<span class="sep">·</span>`,
-    `<span class="it">FLOW THE DIRTY</span>`,
-    `<span class="sep">·</span>`,
-    `<span class="it">8H VAULT CYCLES</span>`,
-    `<span class="sep">·</span>`,
-    `<span class="it">READ-ONLY · UNAFFILIATED</span>`,
-    `<span class="sep">·</span>`,
-  ];
-  $('heroTicker').innerHTML = items.join('') + items.join('');
 }
-buildTicker(null);
 
-// ─────────── wallet input ───────────
-const input = $('walletInput');
-const pill = $('walletForm');
-const submitBtn = $('submitBtn');
-const pasteBtn = $('pasteBtn');
-const err = $('pillError');
-const hero = $('hero');
-const dash = $('dash');
-const bento = $('bento');
-const addrEl = $('walletAddr');
-
-let pollTimer = null;
-let currentWallet = null;
-let countdownTimer = null;
-let lastCycle = null;
-let lastSecondsRemaining = null;
-let lastSyncMs = 0;
-
-function clearError(){ pill.classList.remove('invalid'); err.classList.remove('show'); }
-function showError(msg){
-  pill.classList.add('invalid');
-  err.textContent = '▲ ' + msg;
-  err.classList.add('show');
+// ─── UTC clock (1Hz) ───
+function tickClock(){
+  const t = new Date().toUTCString().slice(17,25);
+  const el = document.getElementById('utcClock');
+  if (el) el.textContent = t;
 }
-input.addEventListener('input', clearError);
+tickClock();
+setInterval(tickClock, 1000);
 
-pasteBtn.addEventListener('click', async () => {
+// ─── Public state poll for ETH + cycle (every 4s) ───
+let lastNetwork = null;
+async function pollNetwork(){
   try {
-    const text = await navigator.clipboard.readText();
-    if (text) { input.value = text.trim(); clearError(); input.focus(); }
-  } catch (e) { input.focus(); }
-});
-
-pill.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const v = input.value.trim();
-  if (!RE.test(v)) {
-    showError('Invalid format. Address must match 0x followed by 40 hex characters.');
-    input.focus();
-    return;
-  }
-  submitBtn.classList.add('loading');
-  try {
-    const data = await fetchTrack(v);
-    submitBtn.classList.remove('loading');
-    enterDashboard(v, data);
-  } catch (ex) {
-    submitBtn.classList.remove('loading');
-    showError(ex.message || 'Could not load that wallet. Try again in a moment.');
-  }
-});
-
-$('changeBtn').addEventListener('click', () => {
-  dash.classList.remove('on');
-  bento.classList.remove('on');
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
-  currentWallet = null;
-  const u = new URL(window.location);
-  u.searchParams.delete('wallet');
-  window.history.replaceState(null, '', u.toString());
-  setTimeout(() => {
-    dash.style.display = 'none';
-    hero.classList.remove('gone');
-    hero.style.position = '';
-    hero.style.inset = '';
-    input.focus();
-    input.select();
-  }, 300);
-});
-
-async function fetchTrack(wallet){
-  const r = await fetch(`/api/track/${wallet}`);
-  if (r.status === 429) {
-    const j = await r.json().catch(() => ({}));
-    throw new Error(`Rate limited. Try again in ${j.retryAfterSec ?? 60}s.`);
-  }
-  if (!r.ok) throw new Error(`Could not load wallet (HTTP ${r.status})`);
-  return r.json();
+    const r = await fetch('/api/network/state');
+    if (!r.ok) return;
+    const d = await r.json();
+    lastNetwork = d;
+    if (d.ethPrice) document.getElementById('ethSpot').textContent = '$' + d.ethPrice.toFixed(2);
+    const cid = d?.loadouts?.cycle?.cycleId;
+    if (cid != null) document.getElementById('cycleId').textContent = String(cid).padStart(2,'0');
+    buildMarquee(d);
+  } catch {}
 }
+pollNetwork();
+setInterval(pollNetwork, 4000);
 
-function enterDashboard(wallet, data){
-  currentWallet = wallet;
-  addrEl.textContent = trunc(wallet);
-  populateDashboard(data);
-  hero.classList.add('gone');
-  const u = new URL(window.location);
-  u.searchParams.set('wallet', wallet);
-  window.history.replaceState(null, '', u.toString());
-
-  setTimeout(() => {
-    dash.style.display = 'block';
-    requestAnimationFrame(() => {
-      dash.classList.add('on');
-      bento.classList.add('on');
-    });
-  }, 350);
-
-  if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(async () => {
-    if (!currentWallet) return;
-    try {
-      const d = await fetchTrack(currentWallet);
-      populateDashboard(d);
-    } catch { /* keep stale data */ }
-  }, POLL_MS);
-
-  // 1Hz countdown ticker — interpolates between server polls
-  if (countdownTimer) clearInterval(countdownTimer);
-  countdownTimer = setInterval(tickCountdown, 1000);
-}
-
-function tickCountdown(){
-  if (!lastCycle || lastSecondsRemaining == null) return;
-  const elapsedSinceSync = (Date.now() - lastSyncMs) / 1000;
-  const remaining = Math.max(0, lastSecondsRemaining - elapsedSinceSync);
-  $('countdown').textContent = fmtTime(remaining);
-  // Also tick the cycle progress fill (8h cycle = 28800s)
-  const totalCycleSec = 8 * 3600;
-  const elapsed = totalCycleSec - remaining;
-  const tick = Math.min(900, Math.max(0, Math.floor((elapsed / totalCycleSec) * 900)));
-  const tickEl = $('cycleTick');
-  if (tickEl) tickEl.textContent = tick;
-  const cycleFill = $('cycleFill');
-  if (cycleFill) cycleFill.style.width = ((elapsed / totalCycleSec) * 100).toFixed(2) + '%';
-}
-
-// ─────────── populate the dashboard from a TrackResult ───────────
-function populateDashboard(d){
-  if (!d) return;
-
-  // ── Headroom Hero ──
-  const minHr = d.summary?.minOpHeadroomPct;
-  const hrNum = $('hrNum'), hrFill = $('hrFill'), hrDelta = $('hrDelta'), ethSpot = $('ethSpot'), hrAnchor = $('hrAnchor');
-  if (minHr == null) {
-    hrNum.textContent = '—';
-    hrFill.style.width = '0%';
-    hrDelta.textContent = 'no active ops';
-    hrFill.classList.remove('danger');
-  } else {
-    hrNum.textContent = Math.round(minHr);
-    flash(hrNum);
-    hrFill.style.width = Math.max(0, Math.min(100, minHr)).toFixed(1) + '%';
-    hrFill.classList.toggle('danger', minHr < 25);
-    const worst = (d.corps || []).find(c => c.address === d.summary?.worstOpAddr);
-    if (worst?.opHeadroom) {
-      const dev = worst.opHeadroom.deviationPct;
-      hrDelta.textContent = `${dev >= 0 ? '▴' : '▾'} ${Math.abs(dev).toFixed(3)}% / ±${worst.opHeadroom.thresholdPct.toFixed(3)}% margin`;
-      if (hrAnchor) hrAnchor.textContent = '$' + fmt(worst.opHeadroom.anchorPrice, 2);
-    }
-  }
-  if (d.ethPrice) {
-    ethSpot.textContent = '$' + fmt(d.ethPrice, 2);
-    flash(ethSpot);
-  }
-
-  // Op chips — one per active corp
-  const opsRow = document.querySelector('.headroom .ops-row');
-  if (opsRow) {
-    const active = (d.corps || []).filter(c => c.tradeInfo?.active && c.opHeadroom);
-    opsRow.innerHTML = active.length === 0
-      ? '<span class="op-chip" style="color:var(--text-dim)">No active operations</span>'
-      : active.map(c => {
-          const h = c.opHeadroom;
-          const dotClass = h.alertLevel === 'danger' ? 'rd' : h.alertLevel === 'warn' ? 'ye' : 'cy';
-          const loc = (c.locationLabel || '').split(' ')[0];
-          return `<span class="op-chip"><span class="d ${dotClass}"></span>${loc} · <b>${MODE_LABEL[c.tradeInfo.mode] ?? '?'}</b> · ${Math.round(h.headroomPct)}%</span>`;
-        }).join('');
-  }
-
-  // ── Wallet Status ──
-  const tier = d.status?.level ?? 0;
-  const tierEl = document.querySelector('.wstatus .tier');
-  if (tierEl) tierEl.innerHTML = `L${tier} <span>· ${tier >= 4 ? 'Mid-tier' : tier >= 2 ? 'Operator' : 'Initiate'}</span>`;
-  const xpRow = document.querySelector('.wstatus .xp-row');
-  if (xpRow) xpRow.innerHTML = `<span>XP <b>${fmt(d.status?.xp ?? 0)}</b> / ${fmt(d.status?.nextLevelXp ?? 0)}</span><span>Next: <b>L${tier+1}</b></span>`;
-  const xpFill = document.querySelector('.wstatus .xp-fill');
-  if (xpFill && d.status?.nextLevelXp) {
-    xpFill.style.width = Math.min(100, (d.status.xp / d.status.nextLevelXp) * 100).toFixed(1) + '%';
-  }
-  const metricEls = document.querySelectorAll('.wstatus .metric');
-  if (metricEls[0]) {
-    metricEls[0].querySelector('.lbl').textContent = 'Suspicion peak';
-    const v = metricEls[0].querySelector('.val');
-    v.textContent = d.summary?.maxSuspicionPct != null ? d.summary.maxSuspicionPct.toFixed(0) + '%' : '—';
-    v.classList.toggle('cy', (d.summary?.maxSuspicionPct ?? 0) < 50);
-    metricEls[0].querySelector('.sub').textContent = 'across loadouts';
-  }
-  if (metricEls[1]) {
-    metricEls[1].querySelector('.lbl').textContent = 'Active ops';
-    metricEls[1].querySelector('.val').innerHTML = `${d.summary?.activeCorps ?? 0} <small>/ ${d.summary?.totalCorps ?? 0}</small>`;
-    metricEls[1].querySelector('.sub').textContent = `${d.summary?.cooldownCorps ?? 0} cooling down`;
-  }
-  if (metricEls[2]) {
-    metricEls[2].querySelector('.lbl').textContent = 'Pending DIRTY';
-    metricEls[2].querySelector('.val').textContent = '+' + fmt(d.summary?.pendingDirty ?? 0, 0);
-    metricEls[2].querySelector('.sub').textContent = 'unclaimed';
-  }
-  if (metricEls[3]) {
-    metricEls[3].querySelector('.lbl').textContent = 'Vault projection';
-    const v = metricEls[3].querySelector('.val');
-    v.textContent = d.summary?.projectedVaultOutputUI ? d.summary.projectedVaultOutputUI.toFixed(1) + 'M' : '—';
-    v.classList.toggle('pk', !!d.summary?.projectedVaultOutputUI);
-    metricEls[3].querySelector('.sub').textContent = 'cycle est.';
-  }
-
-  // ── Balances strip ──
-  const bals = document.querySelectorAll('.balances .bal');
-  if (bals[0]) {
-    bals[0].querySelector('.lbl').innerHTML = `<span class="tok eth">Ξ</span>ETH · Spot`;
-    bals[0].querySelector('.v').innerHTML = `${d.ethPrice ? fmt(d.ethPrice,2) : '—'} <small>USD</small>`;
-    bals[0].querySelector('.sub').innerHTML = `live · last sync ${new Date().toUTCString().slice(17,25)} UTC`;
-  }
-  if (bals[1]) {
-    bals[1].querySelector('.v').innerHTML = `${fmt(d.balances?.inf ?? 0, 2)} <small>INF</small>`;
-    bals[1].querySelector('.sub').innerHTML = `${d.summary?.activeCorps ?? 0} active op${d.summary?.activeCorps === 1 ? '' : 's'}`;
-  }
-  if (bals[2]) {
-    bals[2].querySelector('.v').innerHTML = `${fmt(d.balances?.dirty ?? 0, 2)} <small>DIRTY</small>`;
-    bals[2].querySelector('.sub').innerHTML = `tier <b>${tier}</b> wash`;
-  }
-  if (bals[3]) {
-    bals[3].querySelector('.v').innerHTML = `${fmt(d.balances?.usdm ?? 0, 2)} <small>USDm</small>`;
-    bals[3].querySelector('.sub').innerHTML = `vault · pool ${d.cycle?.netPool ? '$'+fmt(d.cycle.netPool,0) : '—'}`;
-  }
-
-  // ── Per-corp table ──
-  const tbody = document.querySelector('.corps .tbl tbody');
-  const sectionMeta = document.querySelector('.corps .section-head .meta');
-  if (sectionMeta) {
-    sectionMeta.innerHTML = `${d.summary?.activeCorps ?? 0} <b>online</b> / ${d.summary?.totalCorps ?? 0} total · refresh ${(POLL_MS/1000).toFixed(0)}s`;
-  }
-  if (tbody) {
-    const corps = d.corps || [];
-    if (corps.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-dim);text-align:center;padding:24px">No corps deployed for this wallet yet.</td></tr>';
-    } else {
-      tbody.innerHTML = corps.slice(0, 6).map(c => {
-        const h = c.opHeadroom;
-        const flagCode = (c.locationLabel || '').slice(0,3).toUpperCase();
-        const mode = c.tradeInfo?.active ? (MODE_LABEL[c.tradeInfo.mode] ?? '—') : (c.modeLabel ?? '—');
-        const headroomPct = h ? Math.round(h.headroomPct) : null;
-        const fillClass = h?.alertLevel === 'danger' ? 'danger' : h?.alertLevel === 'warn' ? 'warn' : '';
-        const headroomCell = headroomPct != null
-          ? `<div style="display:flex;align-items:center;gap:10px"><div class="bar-mini"><div class="f ${fillClass}" style="width:${Math.max(2,headroomPct)}%"></div></div><span>${headroomPct}%</span></div>`
-          : `<span style="color:var(--text-dim)">—</span>`;
-        const pnl = c.pendingReward > 0 ? `+${c.pendingReward.toFixed(2)} DIRTY` : '—';
-        const pnlColor = c.pendingReward > 0 ? 'var(--cyan)' : 'var(--text-dim)';
-        let tagClass = 'idle', tagLabel = c.status || 'idle';
-        if (c.tradeInfo?.active) {
-          if (h?.alertLevel === 'danger') { tagClass = 'danger'; tagLabel = 'heat'; }
-          else if (h?.alertLevel === 'warn') { tagClass = 'warn'; tagLabel = 'warm'; }
-          else { tagClass = 'ok'; tagLabel = 'stable'; }
-        } else if (c.status === 'claimable') { tagClass = 'ok'; tagLabel = 'claim'; }
-        else if (c.status === 'liquidatable') { tagClass = 'danger'; tagLabel = 'liq'; }
-        return `<tr>
-          <td><div class="corp-name"><span class="flag" style="background:linear-gradient(135deg,#1B1B24,#2A2335);color:var(--cyan)">${flagCode}</span><div><b>${c.locationLabel || '—'}</b><span class="meta">${trunc(c.address)}</span></div></div></td>
-          <td>${mode}${c.tradeInfo?.active ? ' · active' : ''}</td>
-          <td>${headroomCell}</td>
-          <td style="text-align:right"><span style="color:${pnlColor}">${pnl}</span></td>
-          <td><span class="tag ${tagClass}">${tagLabel}</span></td>
-        </tr>`;
-      }).join('');
-    }
-  }
-
-  // ── Vault Projections ──
-  const vaultCore = document.querySelector('.vault .core');
-  if (vaultCore) {
-    const headEl = vaultCore.querySelector('.section-head');
-    const loadouts = d.loadouts || [];
-    const ticksElapsedAvg = loadouts[0]?.vaultProjection?.ticksElapsed;
-    if (headEl) {
-      headEl.innerHTML = `<h3>Loadout vault projections</h3><span class="meta">${ticksElapsedAvg != null ? 'sim t+<b>'+ticksElapsedAvg+'</b>/900' : 'no live cycle'}</span>`;
-    }
-    [...vaultCore.querySelectorAll('.proj-row')].forEach(r => r.remove());
-    if (loadouts.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'proj-row';
-      empty.innerHTML = `<div><div class="name" style="color:var(--text-dim)">No loadouts</div><div class="meta">This wallet has no Vault loadouts deployed.</div></div><div></div>`;
-      vaultCore.appendChild(empty);
-    } else {
-      loadouts.forEach((g) => {
-        const p = g.vaultProjection;
-        const danger = p && (p.alertLevel === 'danger' || !p.willSurvive);
-        const row = document.createElement('div');
-        row.className = 'proj-row' + (danger ? ' danger' : '');
-        const projLabel = p ? `${p.projectedOutputUI.toFixed(2)}M` : '—';
-        const meta = p
-          ? (p.willSurvive ? `${p.predictedSurvivalPct.toFixed(0)}% predicted survival · CR ${g.cr}` : `liquidates @ tick ${p.predictedSurvivalTicks} of 900 · CR ${g.cr}`)
-          : `CR ${g.cr} · HP ${g.hp}`;
-        const name = `Loadout · <span style="color:${danger ? 'var(--heat-high)' : 'var(--cyan)'}">"#${g.id}"</span>`;
-        const valClass = danger ? 'rd' : 'cy';
-        const valLabel = danger ? 'sim liquidation' : 'cash @ cycle close';
-        row.innerHTML = `<div><div class="name">${name}</div><div class="meta">${meta}</div></div><div><span class="v ${valClass}">${projLabel}</span><span class="vs">${valLabel}</span></div>`;
-        vaultCore.appendChild(row);
-      });
-    }
-  }
-
-  // ── Cycle Countdown ──
-  const c = d.cycle;
-  if (c) {
-    lastCycle = c;
-    lastSecondsRemaining = c.secondsRemaining;
-    lastSyncMs = Date.now();
-    tickCountdown();
-    const cycleNum = document.querySelector('.cycle .num');
-    if (cycleNum) {
-      const settleStr = new Date((c.endTs ?? 0) * 1000).toUTCString().slice(17,22);
-      cycleNum.innerHTML = `${String(c.cycleId).padStart(2,'0')}<span>// settles ${settleStr} UTC</span>`;
-    }
-    const cycleMeta = document.querySelector('.cycle .progress .meta');
-    if (cycleMeta) {
-      const tick = Math.min(900, Math.floor((c.secondsElapsed / (8*3600)) * 900));
-      cycleMeta.innerHTML = `<span>Tick <b id="cycleTick">${tick}</b> / 900</span><span>Cycle ${c.cycleId} · pool ${c.pool ? '$'+fmt(c.pool,0) : '—'}</span><span>Settles: <b>${new Date((c.endTs ?? 0) * 1000).toUTCString().slice(17,22)} UTC</b></span>`;
-    }
-  }
-
-  // refresh hero ticker with latest network state
-  buildTicker(d);
-}
-
-// ─────────── footer "Tracking N wallets" ───────────
+// ─── Track stats poll for footer (every 30s) ───
 async function pollStats(){
   try {
     const r = await fetch('/api/track-stats');
     if (!r.ok) return;
     const s = await r.json();
-    const lw = $('liveWallets'), lv = $('liveVisitors');
-    if (lw) { lw.textContent = s.cachedWallets ?? 0; flash(lw); }
-    if (lv) { lv.textContent = s.distinctIps ?? 0; flash(lv); }
+    const lw = document.getElementById('liveWallets');
+    const lv = document.getElementById('liveVisitors');
+    if (lw) lw.textContent = s.cachedWallets ?? 0;
+    if (lv) lv.textContent = s.distinctIps ?? 0;
   } catch {}
 }
 pollStats();
-setInterval(pollStats, STATS_POLL_MS);
-
-// ─────────── deep-link: ?wallet=0x... auto-submits ───────────
-(function initFromUrl(){
-  const params = new URLSearchParams(window.location.search);
-  const w = params.get('wallet');
-  if (w && RE.test(w)) {
-    input.value = w;
-    requestAnimationFrame(() => pill.dispatchEvent(new Event('submit', { cancelable: true })));
-  }
-})();
+setInterval(pollStats, 30000);
 </script>
+
 </body>
 </html>

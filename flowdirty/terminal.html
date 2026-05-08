@@ -257,6 +257,7 @@ const { useState, useEffect, useRef, useMemo } = React;
 
 const REF_URL = 'https://app.offshoreprotocol.fun/?ref=BMR6ZA&utm_source=flowdirty&utm_medium=terminal';
 const HOME_URL = '/';
+const TRACKER_URL = '/track';
 
 // ─────────── formatters ───────────
 const fmt = {
@@ -644,7 +645,7 @@ function OracleBanner({ state }) {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <a className="pbtn green" href={REF_URL} target="_blank" rel="noopener noreferrer">▶ DEPLOY</a>
-          <a className="pbtn" href={HOME_URL}>⌬ TRACKER</a>
+          <a className="pbtn" href={TRACKER_URL}>⌬ TRACKER</a>
         </div>
       </div>
       <div style={{ padding: '0 16px 12px', display: 'flex', gap: 2 }}>
@@ -743,7 +744,7 @@ function OpCard({ code, score, prob, players, recent, lifetime, vol5m, cvd, obIm
            style={{ flex: 1, justifyContent: 'center' }}>
           {tone === 'red' ? '⚠ STAND DOWN' : '▶ RUN ' + code}
         </a>
-        <a className="pbtn" href={HOME_URL}>WATCH</a>
+        <a className="pbtn" href={TRACKER_URL}>WATCH</a>
       </div>
     </div>
   );
@@ -900,7 +901,7 @@ function App() {
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <a className="pbtn magenta" href={REF_URL} target="_blank" rel="noopener noreferrer" style={{ flex: 1, justifyContent: 'center' }}>▶ START PLAYING</a>
-              <a className="pbtn" href={HOME_URL}>⌬ WALLET TRACKER</a>
+              <a className="pbtn" href={TRACKER_URL}>⌬ WALLET TRACKER</a>
             </div>
             <div className="caps" style={{ fontSize: 7, color: '#8a6dc6' }}>READ-ONLY · UNAFFILIATED · NOT FINANCIAL ADVICE</div>
           </div>
