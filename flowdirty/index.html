@@ -141,33 +141,35 @@ html,body{
    right side, negative space on the left.                                     */
 .hero-image{
   position:absolute;
-  top:120px;                              /* under the topbar */
-  right:0;                                /* viewport-anchored via fixed positioning below */
+  top:140px;                              /* under the topbar */
+  right:0;
   left:auto;
-  width:min(1080px, 70vw);
-  height:560px;
+  width:min(560px, 42vw);                 /* smaller — atmospheric, not dominating */
+  height:440px;
   background:url('/hero.jpg') center right / cover no-repeat;
   z-index:0;
   pointer-events:none;
+  /* Tighter mask — image only "appears" in the rightmost ~50% of its own
+     bounds so the headline area is fully clean.                                */
   -webkit-mask-image:linear-gradient(
     90deg,
     transparent 0%,
-    rgba(0,0,0,0.05) 12%,
-    rgba(0,0,0,0.45) 30%,
-    #000 55%,
+    rgba(0,0,0,0.10) 25%,
+    rgba(0,0,0,0.55) 50%,
+    #000 75%,
     #000 100%
   );
   mask-image:linear-gradient(
     90deg,
     transparent 0%,
-    rgba(0,0,0,0.05) 12%,
-    rgba(0,0,0,0.45) 30%,
-    #000 55%,
+    rgba(0,0,0,0.10) 25%,
+    rgba(0,0,0,0.55) 50%,
+    #000 75%,
     #000 100%
   );
   opacity:0;
   animation:hero-fade 1800ms var(--ease-snap) 100ms forwards;
-  filter:saturate(1.05) contrast(1.05);
+  filter:saturate(0.92) contrast(0.95) brightness(0.85);
 }
 .hero-image::after{
   /* Scanline overlay restricted to the image — keeps it integrated with
@@ -185,7 +187,7 @@ html,body{
   background:linear-gradient(90deg, rgba(6,2,14,0.85) 60%, transparent 100%);
   padding:6px 12px 6px 0;
 }
-@keyframes hero-fade{to{opacity:1}}
+@keyframes hero-fade{to{opacity:0.65}}
 
 @media (max-width:900px){
   .hero-wrap{min-height:auto}
