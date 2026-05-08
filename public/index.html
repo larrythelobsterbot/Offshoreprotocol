@@ -497,6 +497,68 @@
   .gen-stats { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 4px; }
   .gen-stat-pill { font-size: 10px; }
   .gen-stat-pill .v { color: var(--text); font-weight: 600; }
+
+  /* ─── Vault projection (Phase 1b) ───────────────────────────────
+     Per-loadout live cycle suspicion + projected output. Anchored
+     to CycleRewards.getCycle(currentCycleId).startTime; updated on
+     every state push (~1s). Same green/yellow/red palette as op
+     headroom for visual consistency. */
+  .vault-projection {
+    margin-top: 8px;
+    padding: 6px 8px;
+    background: rgba(255,255,255,0.025);
+    border-left: 2px solid var(--border);
+    border-radius: 3px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 8px 12px;
+    align-items: center;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--dim);
+  }
+  .vault-projection.safe   { border-left-color: var(--green); }
+  .vault-projection.warn   { border-left-color: var(--yellow); }
+  .vault-projection.danger { border-left-color: var(--red); }
+  .vault-projection-label {
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .vault-projection-bar {
+    position: relative;
+    height: 6px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .vault-projection-bar-fill {
+    height: 100%;
+    transition: width 0.4s ease, background-color 0.3s ease;
+    border-radius: 3px;
+  }
+  .vault-projection-bar-fill.safe   { background: var(--green); }
+  .vault-projection-bar-fill.warn   { background: var(--yellow); }
+  .vault-projection-bar-fill.danger { background: var(--red); }
+  .vault-projection-detail {
+    text-align: right;
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  .vault-projection-detail .pct {
+    font-weight: 600; margin-right: 6px;
+  }
+  .vault-projection-detail .pct.safe   { color: var(--green); }
+  .vault-projection-detail .pct.warn   { color: var(--yellow); }
+  .vault-projection-detail .pct.danger { color: var(--red); }
+  .vault-projection-detail .out {
+    color: var(--text); font-weight: 600;
+  }
+  .vault-projection-meta {
+    grid-column: 1 / -1;
+    font-size: 9px;
+    color: var(--dim);
+    margin-top: 2px;
+  }
   .slot-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -1825,6 +1887,42 @@ function renderSlotTile(slot, idx) {
   </div>`;
 }
 
+function fmtVaultTime(secRemain) {
+  if (!secRemain || secRemain <= 0) return 'ended';
+  const h = Math.floor(secRemain / 3600);
+  const m = Math.floor((secRemain % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function fmtMillions(n) {
+  if (!Number.isFinite(n)) return '--';
+  if (n >= 1) return n.toFixed(2) + 'M';
+  return (n * 1000).toFixed(0) + 'K';
+}
+
+function renderVaultProjection(p) {
+  if (!p) return '';
+  const fillPct = Math.max(0, Math.min(100, p.currentSuspicionPct));
+  const willText = p.willSurvive
+    ? `predicted to survive full cycle (${p.predictedSurvivalPct.toFixed(0)}%)`
+    : `simulates to liq at tick ${p.predictedSurvivalTicks}/${900} (${p.predictedSurvivalPct.toFixed(0)}%)`;
+  return `
+    <div class="vault-projection ${p.alertLevel}">
+      <div class="vault-projection-label">↳ vault</div>
+      <div class="vault-projection-bar">
+        <div class="vault-projection-bar-fill ${p.alertLevel}" style="width: ${fillPct.toFixed(1)}%"></div>
+      </div>
+      <div class="vault-projection-detail">
+        <span class="pct ${p.alertLevel}">${p.currentSuspicionPct.toFixed(0)}% suspicion</span>
+        →  proj <span class="out">${fmtMillions(p.projectedOutputUI)}</span> cash
+      </div>
+      <div class="vault-projection-meta">
+        cycle ${p.cycleId} · ${p.progressPct.toFixed(0)}% elapsed (tick ${p.ticksElapsed}/${900}) · ${willText}
+      </div>
+    </div>
+  `;
+}
+
 function renderMyLoadouts(L) {
   const card = document.getElementById('myLoadoutsCard');
   if (!L || !L.user) { card.style.display = 'none'; return; }
@@ -1837,15 +1935,29 @@ function renderMyLoadouts(L) {
   const nextReq = STATUS_XP_REQ[u.statusLevel + 1] ?? cur;
   const pct = Math.min(100, Math.max(0, (cur / nextReq) * 100));
 
+  // Cycle countdown bar — when cycle data is fresh, show "Cycle N · ends in Xh Ym"
+  let cycleHtml = '';
+  if (L.cycle) {
+    const c = L.cycle;
+    const elapsedH = (c.secondsElapsed / 3600).toFixed(1);
+    const remainingH = (c.secondsRemaining / 3600).toFixed(1);
+    const progressPct = Math.min(100, (c.secondsElapsed / (c.secondsElapsed + c.secondsRemaining)) * 100);
+    cycleHtml =
+      ` · <span style="color:#a855f7">Cycle ${c.cycleId}</span>: ` +
+      `<b style="color:var(--text)">${elapsedH}h</b> elapsed, ends in <b style="color:var(--text)">${remainingH}h</b> ` +
+      `<span style="color:#888;font-size:9px;">(${progressPct.toFixed(0)}%)</span>`;
+  }
+
   document.getElementById('myLoadoutsStatus').innerHTML =
     `Status <b style="color:var(--text)">L${u.statusLevel}</b> · ` +
     `XP <b style="color:var(--text)">${cur.toLocaleString()}/${nextReq.toLocaleString()}</b> ` +
     `<span style="color:#a855f7">(${pct.toFixed(0)}%)</span> · ` +
-    `Inventory <b style="color:var(--text)">${u.inventoryCount}</b>`;
+    `Inventory <b style="color:var(--text)">${u.inventoryCount}</b>` +
+    cycleHtml;
 
   const body = document.getElementById('myLoadoutsBody');
 
-  // For each generator, render header meta + 6 slot tiles
+  // For each generator, render header meta + 6 slot tiles + vault projection
   const rows = u.generators.map((g, i) => {
     const meta = `
       <div class="gen-name">Enterprise ${i + 1}</div>
@@ -1858,6 +1970,7 @@ function renderMyLoadouts(L) {
         <span class="gen-stat-pill"><span class="v">${g.bc.toFixed(1)}%</span> BC</span>
         <span class="gen-stat-pill"><span class="v">${g.bm.toFixed(0)}%</span> BM</span>
       </div>
+      ${renderVaultProjection(g.vaultProjection)}
     `;
     const slotsHtml = g.slots.map((s, idx) => renderSlotTile(s, idx)).join('');
     return `<div class="gen-row">

@@ -78,6 +78,35 @@ async function main() {
   // Track the latest corp-address list so the scraper always has fresh inputs.
   let latestCorpAddresses: string[] = [];
 
+  // Per-loadout vault alert state — keyed by `${cycleId}|${genId}` so new
+  // cycle automatically re-arms. Fires once when projection first turns
+  // 'danger' (predicted to liquidate before cycle end with current
+  // suspicion ≥70%).
+  const vaultAlertedKeys = new Set<string>();
+  async function checkVaultAlerts(loadoutBlock: any) {
+    if (!config.operatorChatId) return;
+    if (!loadoutBlock?.user || !loadoutBlock?.cycle) return;
+    const cycleId = loadoutBlock.cycle.cycleId;
+    for (const g of (loadoutBlock.user.generators || [])) {
+      const p = g.vaultProjection;
+      if (!p) continue;
+      const key = `${cycleId}|${g.id}`;
+      if (p.alertLevel !== 'danger') continue;
+      if (vaultAlertedKeys.has(key)) continue;
+      vaultAlertedKeys.add(key);
+      const cycleEndIso = new Date(p.cycleEndTs * 1000).toISOString().slice(11, 16) + ' UTC';
+      const text =
+        `🚨 *VAULT LIQUIDATION RISK*\n` +
+        `Loadout: gen #${g.id} (CR ${g.cr} · HP ${g.hp} · Disc ${g.disc.toFixed(1)}%)\n` +
+        `Cycle ${p.cycleId}: ${p.progressPct.toFixed(0)}% elapsed (ends ${cycleEndIso})\n` +
+        `Current suspicion: *${p.currentSuspicionPct.toFixed(0)}%*\n` +
+        `Predicted survival: ${p.predictedSurvivalPct.toFixed(0)}% (sim liquidates at tick ${p.predictedSurvivalTicks}/900)\n` +
+        `Projected output: *${p.projectedOutputUI.toFixed(2)}M cash*`;
+      try { await bot.sendDm(config.operatorChatId, text, { parseMode: 'Markdown' }); }
+      catch { /* best-effort */ }
+    }
+  }
+
   // Per-corp headroom alert state — tracks the level we last DM'd for each
   // corp so we don't spam on oscillation. Re-arms only after returning to safe.
   const corpHeadroomLastLevel = new Map<string, 'safe' | 'warn' | 'danger'>();
@@ -213,7 +242,14 @@ async function main() {
   dirtyPrice.on('price', (p) => engine.onDirtyPrice(p));
 
   // Enterprise loadout state — own + network meta
-  loadoutScanner.on('user',    () => engine.onLoadouts(loadoutScanner.getSnapshot()));
+  loadoutScanner.on('user',    () => {
+    const snap = loadoutScanner.getSnapshot();
+    engine.onLoadouts(snap);
+    // Per-loadout vault projection alerts (Phase 1b). Fires once per loadout
+    // per cycle when sim crosses into 'danger' mid-cycle. State is keyed by
+    // (cycleId, generatorId) so a new cycle re-arms the alerts naturally.
+    void checkVaultAlerts(snap);
+  });
   loadoutScanner.on('network', () => engine.onLoadouts(loadoutScanner.getSnapshot()));
 
   // On-chain operation outcome scraper. Posts each newly-finalized

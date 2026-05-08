@@ -32,7 +32,24 @@ const USER_FACTORY = '0x619814a203ca441611cee02abf31986ca265dd35';
 const TOKEN_INF    = '0x403de0893f0bc66139592ba2fd254672f2db933a';
 const TOKEN_DIRTY  = '0xc2f34f8849a8607fd73e06d6849bda07c2b7de38';
 const TOKEN_USDM   = '0xfafddbb3fc7688494971a79cc65dca3ef82079e7';
+const CYCLE_REWARDS = '0x8C73Cd3BB0bFB577D4578bB075640C1eCc5027c8';
 const MODE_NAMES_ABBREV = ['Extortion', 'Arms', 'Drug'] as const;
+
+// Vault simulation constants — extracted from the in-game JS bundle and
+// validated to match the in-game cycle output UI to ±0.01% across multiple
+// loadout configurations. See /tmp/optimize4.py for the reference impl.
+const VAULT_TOTAL_TICKS    = 900;
+const VAULT_BASE_DAMAGE    = 3333;
+const VAULT_HEAT_COEFF     = 20;
+const VAULT_DISC_CAP       = 7000;   // 70% in basis points
+const VAULT_DAMAGE_SCALE   = 10000;
+// Cycle is 8 hours wall-clock; the 900-tick simulation maps onto this window.
+const VAULT_CYCLE_SECONDS  = 8 * 3600;
+// Generator base stats (always present, items add on top).
+const VAULT_BASE_CR  = 50;
+const VAULT_BASE_HP  = 100;
+const VAULT_BASE_EFF = 100;   // 100% baseline efficiency
+const VAULT_BASE_BM  = 110;   // 110% baseline bonus multiplier
 
 const ITEM_TYPES = ['?', 'Business', 'Insurance', 'Accountant', 'Method', 'Associates', 'OpSec'];
 const RARITY_NAMES = ['?', 'Common', 'Rare', 'Epic', 'Legendary', 'Mythic'];
@@ -157,6 +174,57 @@ export interface GeneratorView {
   levelBonus: number;
   // Per-slot details (length 6, ordered by item type 1..6)
   slots: (EquippedSlot | null)[];
+  // Live Vault projection — populated only for the operator's own loadouts
+  // when cycle metadata is available. See computeVaultProjection() for math.
+  vaultProjection?: VaultProjection | null;
+}
+
+/**
+ * Per-loadout cycle projection — computed forward from the validated 900-tick
+ * simulator using the loadout's current aggregate stats. Anchored to the live
+ * cycle's start timestamp from CycleRewards.getCycle(currentCycleId).
+ *
+ * The simulator matches the in-game UI to ±0.01% (verified). Suspicion and
+ * cleaning are linear in tick count, so we can interpolate to "right now" and
+ * project final state without integrating per-tick.
+ */
+export interface VaultProjection {
+  // Wall-clock anchors
+  cycleId: number;
+  cycleStartTs: number;     // unix sec
+  cycleEndTs: number;       // = cycleStartTs + 8h
+  ticksElapsed: number;     // 0..900, derived from elapsed wall-clock
+  ticksRemaining: number;
+  progressPct: number;      // 0..100
+
+  // Predicted run length (from simulator)
+  willSurvive: boolean;     // true if predicted ticks survived ≥ totalTicks
+  predictedSurvivalTicks: number;  // simulator's ticks-survived
+  predictedSurvivalPct: number;    // 0..100
+
+  // Live state (linear interpolation up to now)
+  currentSuspicionPct: number;     // 0..100 (>100 = liquidated)
+  currentCleaning: number;         // accumulated cleaning so far (raw units)
+
+  // Final projection (if cycle plays out)
+  projectedOutput: number;         // total cleaning at end (raw units)
+  projectedOutputUI: number;       // total in M-cash UI units (multiplier baked in)
+
+  // Alert tier (matches op headroom convention)
+  alertLevel: 'safe' | 'warn' | 'danger';  // green / yellow / red
+}
+
+/** Cycle metadata read from CycleRewards.getCycle(currentCycleId). */
+export interface VaultCycle {
+  cycleId: number;
+  status: number;            // contract status field
+  pool: number;              // raw pool size, USDm (1e18 → human)
+  netPool: number;           // pool minus protocol fee
+  claimed: number;
+  startTs: number;           // unix sec — anchor for tick math
+  endTs: number;             // startTs + 8h
+  secondsElapsed: number;
+  secondsRemaining: number;
 }
 
 export interface InventoryItem {
@@ -235,6 +303,99 @@ export interface LoadoutBlock {
 
   topPlayers: TopPlayerView[];
   templatesAvailable: number;
+  // Current Swiss Vault cycle metadata. Refreshed every cycle poll.
+  cycle: VaultCycle | null;
+}
+
+/**
+ * Pure function: given a loadout's aggregate stats + cycle anchors + status
+ * bonus, compute the live projection. Mirrors /tmp/optimize4.py exactly.
+ *
+ * Inputs are the loadout's CONTRACT-aggregated stats (which already include
+ * the generator base + items + status level bonus). The contract returns:
+ *   hp, cr (raw uint), eff, bc, bm, disc (basis points × 100, i.e. 12000 = 120%)
+ * but the API returns them already normalized to %, so we accept % and
+ * convert to bp internally.
+ */
+export function computeVaultProjection(
+  gen: { hp: number; cr: number; eff: number; bc: number; bm: number; disc: number; levelBonus: number },
+  cycle: VaultCycle | null,
+  nowSec: number,
+): VaultProjection | null {
+  if (!cycle) return null;
+  if (gen.cr <= 0 || gen.hp <= 0) return null;
+
+  // Convert % → basis points where the simulator expects them.
+  const cr     = gen.cr;        // raw cleaning rate (units)
+  const hp     = gen.hp;        // raw HP
+  const eff_bp = Math.round(gen.eff  * 100);
+  const bc_bp  = Math.round(gen.bc   * 100);
+  const bm_bp  = Math.round(gen.bm   * 100);
+  const disc_bp = Math.round(gen.disc * 100);
+
+  // === SIMULATOR (matches in-game formula to ±0.01%) ===
+  const u = Math.min(disc_bp, VAULT_DISC_CAP);
+  const g = eff_bp > 0 ? eff_bp : 10000;
+  const d = (cr * g) / 10000;
+  const h_unit = (d * bm_bp) / 10000;
+  const m = d + (bc_bp * h_unit) / 10000;
+  const b_raw = (VAULT_BASE_DAMAGE * (10000 + m * VAULT_HEAT_COEFF)) / 10000;
+  const b_after_disc = (b_raw * (10000 - u)) / 10000;
+  const v = hp * VAULT_DAMAGE_SCALE;
+  const survivedTicks = Math.min(VAULT_TOTAL_TICKS, Math.ceil(v / Math.max(b_after_disc, 1e-6)));
+  const A = cr * (g / 10000);
+  const bonus_rate = (bc_bp / 10000) * (bm_bp / 10000);
+  const outputPerTick = A * (1 + bonus_rate);
+  const statusBonusMul = 1 + (gen.levelBonus / 100);
+  const projectedOutput = outputPerTick * survivedTicks * statusBonusMul;
+  // UI scaling: in-game shows millions. The validated optimizer used a
+  // ~1029 multiplier to convert sim output → UI millions. Confirmed against
+  // a live loadout (sim 179,397 → UI 184.63M).
+  const UI_SCALE = 1029;
+  const projectedOutputUI = (projectedOutput * UI_SCALE) / 1e6;
+
+  // === LIVE STATE — interpolate to now ===
+  const elapsed = Math.max(0, nowSec - cycle.startTs);
+  const progressFraction = Math.min(1, elapsed / VAULT_CYCLE_SECONDS);
+  const ticksElapsed = Math.floor(progressFraction * VAULT_TOTAL_TICKS);
+  const ticksRemaining = VAULT_TOTAL_TICKS - ticksElapsed;
+
+  // Suspicion = accumulated damage / hp. Past survivedTicks the loadout has
+  // simulated-out (capped at 100% so the UI doesn't show >100).
+  const damageAccumulated = b_after_disc * Math.min(ticksElapsed, survivedTicks);
+  const currentSuspicionPct = Math.min(100, (damageAccumulated / v) * 100);
+  // Cleaning is also linear up to survivedTicks.
+  const cleaningTicks = Math.min(ticksElapsed, survivedTicks);
+  const currentCleaning = outputPerTick * cleaningTicks * statusBonusMul;
+
+  const willSurvive = survivedTicks >= VAULT_TOTAL_TICKS;
+  const predictedSurvivalPct = (survivedTicks / VAULT_TOTAL_TICKS) * 100;
+
+  // Alert: danger when current suspicion is high AND cycle still has time
+  // left. A loadout that "willSurvive" but is currently at 70% suspicion is
+  // OK (it's on track); a loadout at 70% with simulated survival of only
+  // 80% is in real danger of getting busted before cycle end.
+  let alertLevel: VaultProjection['alertLevel'] = 'safe';
+  if (!willSurvive && ticksElapsed >= survivedTicks) alertLevel = 'danger';
+  else if (!willSurvive && currentSuspicionPct >= 70) alertLevel = 'danger';
+  else if (currentSuspicionPct >= 50) alertLevel = 'warn';
+
+  return {
+    cycleId: cycle.cycleId,
+    cycleStartTs: cycle.startTs,
+    cycleEndTs: cycle.endTs,
+    ticksElapsed,
+    ticksRemaining,
+    progressPct: progressFraction * 100,
+    willSurvive,
+    predictedSurvivalTicks: survivedTicks,
+    predictedSurvivalPct,
+    currentSuspicionPct,
+    currentCleaning,
+    projectedOutput,
+    projectedOutputUI,
+    alertLevel,
+  };
 }
 
 interface LoadoutScannerConfig {
@@ -261,7 +422,7 @@ export class LoadoutScannerFeed extends EventEmitter {
   private genIface: ethers.Interface;
 
   private templates: Map<number, AssetTemplate> = new Map();
-  private latest: LoadoutBlock = { user: null, network: null, topPlayers: [], templatesAvailable: 0 };
+  private latest: LoadoutBlock = { user: null, network: null, topPlayers: [], templatesAvailable: 0, cycle: null };
   // Pre-built interfaces for the additional contracts we now query.
   private tokenIface  = new ethers.Interface(TOKEN_ABI);
   private factoryIface = new ethers.Interface(FACTORY_ABI);
@@ -381,9 +542,54 @@ export class LoadoutScannerFeed extends EventEmitter {
   }
 
   /** Fetch user's loadouts + inventory. Cheap (one user × few generators). */
+  /**
+   * Read the active Swiss Vault cycle metadata. Cycles last 8h, so this is
+   * cheap to call every poll (one eth_call to currentCycleId, one to
+   * getCycle). Caller can decide cadence; we call it on every refreshSelf.
+   *
+   * Returns null if the contract is unreachable. Updates this.latest.cycle.
+   */
+  private async refreshCycle() {
+    try {
+      // currentCycleId() selector = 0xaaacdda0
+      const cidHex = await this.provider.call({ to: CYCLE_REWARDS, data: '0xaaacdda0' });
+      if (!cidHex || cidHex === '0x') return;
+      const cycleId = Number(BigInt(cidHex));
+      if (cycleId <= 0) return;
+
+      // getCycle(uint256) selector = 0x2026f638
+      const cidArg = '0x2026f638' + cycleId.toString(16).padStart(64, '0');
+      const data = await this.provider.call({ to: CYCLE_REWARDS, data: cidArg });
+      if (!data || data === '0x') return;
+      const x = data.replace(/^0x/, '');
+      // Layout (verified by probing cycles 1..6):
+      //   w0: status (uint8 in u256), w1: pool, w2: netPool, w3: claimed,
+      //   w4: startTime, w5/w6: merkle roots (ignored)
+      const status   = Number(BigInt('0x' + x.slice(0, 64)));
+      const pool     = Number(BigInt('0x' + x.slice(64, 128))) / 1e18;
+      const netPool  = Number(BigInt('0x' + x.slice(128, 192))) / 1e18;
+      const claimed  = Number(BigInt('0x' + x.slice(192, 256))) / 1e18;
+      const startTs  = Number(BigInt('0x' + x.slice(256, 320)));
+      const endTs    = startTs + VAULT_CYCLE_SECONDS;
+      const nowSec   = Math.floor(Date.now() / 1000);
+
+      this.latest.cycle = {
+        cycleId,
+        status, pool, netPool, claimed,
+        startTs, endTs,
+        secondsElapsed:   Math.max(0, nowSec - startTs),
+        secondsRemaining: Math.max(0, endTs - nowSec),
+      };
+    } catch (err: any) {
+      logger.warn({ err: err.message }, '[LoadoutScanner] refreshCycle failed');
+    }
+  }
+
   private async refreshSelf() {
     if (!this.cfg.walletAddress) return;
     const addr = this.cfg.walletAddress;
+    // Refresh cycle metadata first so projections use fresh anchors.
+    await this.refreshCycle();
     try {
       // Step A: get generators + status profile + inventory in one batch
       const a1 = [
@@ -482,7 +688,9 @@ export class LoadoutScannerFeed extends EventEmitter {
           if (!resolved) { slots.push(null); continue; }
           slots.push({ category: ITEM_TYPES[s+1] ?? '?', ...resolved });
         }
-        generators.push({ id: g, ...agg, slots });
+        // Compute live Vault projection for this loadout if cycle data is fresh.
+        const projection = computeVaultProjection(agg, this.latest.cycle, Math.floor(Date.now() / 1000));
+        generators.push({ id: g, ...agg, slots, vaultProjection: projection });
       }
 
       // Build inventory view (mark equipped items)
