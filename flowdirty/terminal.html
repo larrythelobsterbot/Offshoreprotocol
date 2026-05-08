@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>FlowDirty.fun // OPS TERMINAL</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+
+<style>
+:root{
+  /* neonPurple theme — locked default for the public terminal */
+  --bg-0: #08021a;
+  --bg-1: #120636;
+  --bg-2: #1c0a52;
+  --grid: #2a1166;
+  --line: #4a1c9c;
+  --ink: #e8d6ff;
+  --dim: #8a6dc6;
+  --cyan: #00f0ff;
+  --magenta: #ff2bd6;
+  --orange: #ff6b1a;
+  --green: #39ff14;
+  --yellow: #ffe600;
+  --red: #ff1744;
+  --purple: #b388ff;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  background: var(--bg-0);
+  color: var(--ink);
+  font-family: 'VT323', 'JetBrains Mono', monospace;
+  font-size: 18px;
+  min-height: 100vh;
+  overflow-x: hidden;
+  image-rendering: pixelated;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* CRT scanlines (always on for the terminal aesthetic) */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0,0,0,0) 0px,
+    rgba(0,0,0,0) 2px,
+    rgba(0,0,0,0.18) 3px,
+    rgba(0,0,0,0) 4px
+  );
+  pointer-events: none; z-index: 1000;
+  mix-blend-mode: multiply;
+}
+body::after {
+  content: '';
+  position: fixed; inset: 0;
+  background: radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,0.55) 100%);
+  pointer-events: none; z-index: 999;
+}
+
+.bg-grid {
+  position: fixed; inset: 0; z-index: -1;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(255,43,214,0.18), transparent 45%),
+    radial-gradient(circle at 82% 8%, rgba(0,240,255,0.16), transparent 50%),
+    radial-gradient(circle at 50% 110%, rgba(255,107,26,0.12), transparent 55%),
+    linear-gradient(180deg, var(--bg-0) 0%, var(--bg-1) 60%, var(--bg-0) 100%);
+}
+.bg-grid::before {
+  content: '';
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(74,28,156,0.18) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(74,28,156,0.18) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 80%);
+}
+
+.pixel { font-family: 'Press Start 2P', monospace; letter-spacing: 0.5px; }
+.term  { font-family: 'VT323', monospace; }
+.mono  { font-family: 'JetBrains Mono', monospace; }
+.glow-c { text-shadow: 0 0 6px var(--cyan), 0 0 14px rgba(0,240,255,0.55); }
+.glow-m { text-shadow: 0 0 6px var(--magenta), 0 0 14px rgba(255,43,214,0.55); }
+.glow-o { text-shadow: 0 0 6px var(--orange), 0 0 14px rgba(255,107,26,0.55); }
+.glow-g { text-shadow: 0 0 6px var(--green), 0 0 14px rgba(57,255,20,0.55); }
+.glow-r { text-shadow: 0 0 6px var(--red), 0 0 14px rgba(255,23,68,0.55); }
+
+.panel {
+  position: relative;
+  background: linear-gradient(180deg, rgba(28,10,82,0.78), rgba(8,2,26,0.85));
+  border: 2px solid var(--line);
+  box-shadow:
+    inset 0 0 0 1px rgba(0,0,0,0.6),
+    4px 4px 0 0 rgba(0,0,0,0.55);
+}
+.panel.cyan { border-color: var(--cyan); box-shadow: inset 0 0 0 1px rgba(0,0,0,0.6), 0 0 14px rgba(0,240,255,0.18), 4px 4px 0 0 rgba(0,0,0,0.55); }
+.panel.magenta { border-color: var(--magenta); box-shadow: inset 0 0 0 1px rgba(0,0,0,0.6), 0 0 14px rgba(255,43,214,0.20), 4px 4px 0 0 rgba(0,0,0,0.55); }
+.panel.orange { border-color: var(--orange); box-shadow: inset 0 0 0 1px rgba(0,0,0,0.6), 0 0 14px rgba(255,107,26,0.20), 4px 4px 0 0 rgba(0,0,0,0.55); }
+.panel.green { border-color: var(--green); }
+.panel.red { border-color: var(--red); animation: alarm 1.4s infinite; }
+
+@keyframes alarm {
+  0%, 100% { box-shadow: inset 0 0 0 1px rgba(0,0,0,0.6), 0 0 8px rgba(255,23,68,0.4), 4px 4px 0 0 rgba(0,0,0,0.55); }
+  50% { box-shadow: inset 0 0 0 1px rgba(0,0,0,0.6), 0 0 22px rgba(255,23,68,0.85), 4px 4px 0 0 rgba(0,0,0,0.55); }
+}
+
+@keyframes blink { 50% { opacity: 0.25; } }
+@keyframes blink-fast { 50% { opacity: 0.35; } }
+@keyframes scroll-x { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+.blink { animation: blink 1.05s steps(2,end) infinite; }
+.blink-fast { animation: blink-fast 0.45s steps(2,end) infinite; }
+
+.bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,0.05) 0 4px, transparent 4px 8px),
+    linear-gradient(90deg, rgba(74,28,156,0.6), rgba(28,10,82,0.6));
+  border-bottom: 2px solid var(--line);
+}
+.bar .dot { width: 8px; height: 8px; background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
+.bar .label { font-family: 'Press Start 2P', monospace; font-size: 9px; letter-spacing: 1px; color: var(--ink); }
+.bar .right { margin-left: auto; font-family: 'VT323', monospace; font-size: 14px; color: var(--dim); letter-spacing: 1px; }
+
+.pbtn {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 10px;
+  padding: 8px 14px;
+  background: var(--bg-2);
+  color: var(--cyan);
+  border: 2px solid var(--cyan);
+  cursor: pointer;
+  letter-spacing: 1px;
+  box-shadow: 3px 3px 0 0 rgba(0,0,0,0.7), inset 0 0 0 1px rgba(0,0,0,0.4);
+  text-transform: uppercase;
+  transition: transform 0.05s;
+  text-decoration: none;
+  display: inline-flex; align-items: center;
+}
+.pbtn:hover { background: var(--cyan); color: var(--bg-0); }
+.pbtn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 0 rgba(0,0,0,0.7); }
+.pbtn.magenta { color: var(--magenta); border-color: var(--magenta); }
+.pbtn.magenta:hover { background: var(--magenta); color: var(--bg-0); }
+.pbtn.orange { color: var(--orange); border-color: var(--orange); }
+.pbtn.orange:hover { background: var(--orange); color: var(--bg-0); }
+.pbtn.green { color: var(--green); border-color: var(--green); }
+.pbtn.green:hover { background: var(--green); color: var(--bg-0); }
+.pbtn.red { color: var(--red); border-color: var(--red); }
+.pbtn.red:hover { background: var(--red); color: #fff; }
+
+.segbar { display: flex; gap: 2px; height: 10px; }
+.segbar .seg { flex: 1; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.05); }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--line); border: 1px solid var(--bg-0); }
+::-webkit-scrollbar-track { background: rgba(0,0,0,0.4); }
+
+.marquee {
+  overflow: hidden;
+  border-block: 2px solid var(--line);
+  background: linear-gradient(180deg, rgba(0,240,255,0.05), rgba(255,43,214,0.05));
+  position: relative;
+}
+.marquee-track {
+  display: flex; gap: 38px;
+  white-space: nowrap;
+  padding: 6px 0;
+  animation: scroll-x 60s linear infinite;
+  width: max-content;
+}
+.marquee-item { font-family: 'VT323', monospace; font-size: 18px; letter-spacing: 1px; color: var(--ink); }
+
+.canvas {
+  width: min(1440px, 100%);
+  margin: 0 auto;
+  padding: 12px 16px 60px;
+}
+
+.row { display: grid; gap: 12px; }
+.row-3 { grid-template-columns: 1.05fr 1fr 1.05fr; }
+.row-3-eq { grid-template-columns: 1fr 1fr 1fr; }
+
+.mascot {
+  width: 88px; height: 88px;
+  display: grid;
+  grid-template-columns: repeat(11, 1fr);
+  grid-template-rows: repeat(11, 1fr);
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 4px currentColor);
+}
+.mascot div { background: currentColor; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  background: rgba(0,0,0,0.4);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+.chip .led { width: 6px; height: 6px; background: var(--green); box-shadow: 0 0 6px var(--green); }
+.chip .led.off { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.chip .led.warn { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
+
+.bigfig {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+canvas { display: block; }
+
+.caps { font-family: 'Press Start 2P', monospace; font-size: 8px; letter-spacing: 1px; color: var(--dim); }
+
+/* Mobile */
+@media (max-width: 900px) {
+  .row-3, .row-3-eq { grid-template-columns: 1fr; }
+  .canvas { padding: 8px 10px 40px; }
+}
+
+/* Small disconnected banner */
+.disconn {
+  position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+  background: rgba(255,23,68,0.15); border: 1px solid var(--red); color: var(--red);
+  padding: 6px 14px; font-family: 'Press Start 2P', monospace; font-size: 9px;
+  letter-spacing: 1px; z-index: 1100;
+  display: none;
+}
+.disconn.show { display: block; }
+</style>
+</head>
+<body>
+
+<div class="bg-grid"></div>
+<div class="disconn" id="disconnBanner">▒ CONNECTION LOST · RETRYING ▒</div>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+
+<script type="text/babel">
+// ============================================================
+// FlowDirty.fun // OPS TERMINAL
+// Public live market intelligence terminal for Offshore Protocol.
+// Subscribes to /ws/network and renders the 5 v1 panels:
+//   Header / OracleBanner / 3 OpCards / PriceCard / DangerCard
+// All op-action buttons route to the operator referral link.
+// ============================================================
+
+const { useState, useEffect, useRef, useMemo } = React;
+
+const REF_URL = 'https://app.offshoreprotocol.fun/?ref=BMR6ZA&utm_source=flowdirty&utm_medium=terminal';
+const HOME_URL = '/';
+
+// ─────────── formatters ───────────
+const fmt = {
+  usd: (v) => {
+    if (v == null || !Number.isFinite(v)) return '--';
+    const a = Math.abs(v);
+    const s = v < 0 ? '-' : '';
+    if (a >= 1e9) return s + '$' + (a/1e9).toFixed(2) + 'B';
+    if (a >= 1e6) return s + '$' + (a/1e6).toFixed(2) + 'M';
+    if (a >= 1e3) return s + '$' + (a/1e3).toFixed(1) + 'K';
+    return s + '$' + a.toFixed(0);
+  },
+  num: (v, d=0) => v == null ? '--' : v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }),
+  pct: (v, d=2) => v == null ? '--' : (v*100).toFixed(d) + '%',
+  price: (v) => v == null ? '--' : '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+};
+
+// ─────────── pixel mascots ───────────
+const MASCOT_FACES = {
+  extortion: ['...xxxxx...','..xrrrrrx..','.xrrrrrrr x','xrrrrrrrrrx','xff.x.f.fxx','xffffffffxx','xffxxxxffxx','xfffmmmfffx','.xfffffffx.','..xxxxxxx..','....xxx....'],
+  arms:      ['...gggggg..','..gggggggg.','.ggggggggg.','gggcccccgg.','gccccccccgg','gffff.fffff','gffffffffff','.fffmmmfff.','.ffffffffff','..ffffffff.','...gggggg..'],
+  drug:      ['....xxx....','...xpppx...','..xpppppx..','.xppppppx..','xpoooooopx.','xpoooooopx.','xpff.x.fopx','xpfffffffpx','.xpfmmmpx..','..xpffffx..','...xxxx....'],
+};
+const MASCOT_PALETTE = {
+  extortion: { r:'#ff1744', f:'#ffd1a8', m:'#3a0a14', x:'#1a0040', o:'#000', p:'#333', g:'#0a3', c:'#00f0ff' },
+  arms:      { g:'#39ff14', c:'#00f0ff', f:'#ffd1a8', m:'#3a0a14', x:'#1a0040', o:'#000', p:'#333', r:'#f00' },
+  drug:      { p:'#b388ff', o:'#000', f:'#ffd1a8', m:'#3a0a14', x:'#1a0040', g:'#0a0', c:'#00f0ff', r:'#f00' },
+};
+function PixelMascot({ kind = 'arms', size = 88 }) {
+  const grid = MASCOT_FACES[kind];
+  const pal = MASCOT_PALETTE[kind];
+  const cells = grid.flatMap((row, y) =>
+    [...row].map((ch, x) => {
+      const color = ch === '.' ? null : (pal[ch] || '#fff');
+      return color
+        ? <div key={`${x},${y}`} style={{ background: color, gridColumn: x+1, gridRow: y+1 }} />
+        : null;
+    })
+  );
+  return <div className="mascot" style={{ width: size, height: size, color: 'transparent' }}>{cells}</div>;
+}
+
+// ─────────── Sparkline ───────────
+function Sparkline({ data, color = '#00f0ff', height = 56, fill = true }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const c = ref.current;
+    if (!c || !data || data.length < 2) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = c.offsetWidth;
+    c.width = w * dpr;
+    c.height = height * dpr;
+    const ctx = c.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, height);
+    const min = Math.min(...data);
+    const max = Math.max(...data);
+    const range = max - min || 1;
+    const pad = 4;
+    if (fill) {
+      ctx.beginPath();
+      data.forEach((v, i) => {
+        const x = (i / (data.length-1)) * w;
+        const y = height - ((v - min) / range) * (height - pad*2) - pad;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.lineTo(w, height); ctx.lineTo(0, height); ctx.closePath();
+      const grad = ctx.createLinearGradient(0,0,0,height);
+      grad.addColorStop(0, color + '66');
+      grad.addColorStop(1, color + '00');
+      ctx.fillStyle = grad;
+      ctx.fill();
+    }
+    ctx.shadowColor = color; ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = color;
+    data.forEach((v, i) => {
+      const x = (i / (data.length-1)) * w;
+      const y = height - ((v - min) / range) * (height - pad*2) - pad;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    const lx = w; const ly = height - ((data[data.length-1]-min)/range) * (height-pad*2) - pad;
+    ctx.fillStyle = color;
+    ctx.fillRect(lx-3, ly-3, 4, 4);
+  }, [data, color, height, fill]);
+  return <canvas ref={ref} style={{ width: '100%', height }} />;
+}
+
+// ─────────── SegBar (HP-bar style) ───────────
+function SegBar({ value, max=100, segments=20, color='#00f0ff', danger, height=22 }) {
+  const filled = Math.max(0, Math.min(segments, Math.round((value/max) * segments)));
+  return (
+    <div className="segbar" style={{ height, gap: 3 }}>
+      {Array.from({length: segments}).map((_, i) => {
+        const on = i < filled;
+        const c = danger
+          ? (i < segments*0.4 ? '#00e676' : i < segments*0.65 ? '#ffd600' : i < segments*0.85 ? '#ff9100' : '#ff1744')
+          : color;
+        return (
+          <div key={i} className="seg" style={{
+            background: on ? `linear-gradient(180deg, ${c}, ${c}cc)` : 'rgba(255,255,255,0.06)',
+            boxShadow: on ? `0 0 8px ${c}, inset 0 0 0 1px rgba(255,255,255,0.25)` : 'inset 0 0 0 1px rgba(0,0,0,0.5)',
+            border: '1px solid rgba(0,0,0,0.5)'
+          }} />
+        );
+      })}
+    </div>
+  );
+}
+
+// ─────────── Pixel gauge (semicircle) ───────────
+function PixelGauge({ value, max=100, label='DANGER' }) {
+  const v = Number.isFinite(value) ? value : 0;
+  const pct = Math.max(0, Math.min(1, v/max));
+  const segs = 28;
+  const lit = Math.round(pct * segs);
+  const colorAt = (i) => {
+    const t = i / segs;
+    if (t < 0.4) return '#00e676';
+    if (t < 0.65) return '#ffd600';
+    if (t < 0.85) return '#ff9100';
+    return '#ff1744';
+  };
+  const safeColor = colorAt(Math.max(0, Math.min(segs-1, lit-1)));
+  return (
+    <div style={{ position: 'relative', width: 240, height: 132 }}>
+      <svg viewBox="0 0 240 132" width="240" height="132">
+        {Array.from({length: segs}).map((_, i) => {
+          const a0 = Math.PI * (1 - i/segs);
+          const a1 = Math.PI * (1 - (i+0.88)/segs);
+          const r1 = 112, r2 = 78;
+          const x0 = 120 + r1*Math.cos(a0), y0 = 120 - r1*Math.sin(a0);
+          const x1 = 120 + r1*Math.cos(a1), y1 = 120 - r1*Math.sin(a1);
+          const x2 = 120 + r2*Math.cos(a1), y2 = 120 - r2*Math.sin(a1);
+          const x3 = 120 + r2*Math.cos(a0), y3 = 120 - r2*Math.sin(a0);
+          const on = i < lit;
+          const c = colorAt(i);
+          return (
+            <polygon key={i}
+              points={`${x0},${y0} ${x1},${y1} ${x2},${y2} ${x3},${y3}`}
+              fill={on ? c : 'rgba(255,255,255,0.05)'}
+              stroke="rgba(0,0,0,0.7)" strokeWidth="0.6"
+              style={{ filter: on ? `drop-shadow(0 0 4px ${c})` : 'none' }}
+            />
+          );
+        })}
+      </svg>
+      <div style={{ position: 'absolute', left: 0, right: 0, top: 64, textAlign: 'center' }}>
+        <div className="bigfig" style={{ fontSize: 44, color: safeColor, textShadow: `0 0 14px ${safeColor}` }}>
+          {Math.round(v)}
+        </div>
+        <div className="caps" style={{ marginTop: 4, fontSize: 8, color: safeColor }}>{label}</div>
+      </div>
+    </div>
+  );
+}
+
+function EthGlyph({ size=14 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" style={{ verticalAlign: 'middle', filter: 'drop-shadow(0 0 4px #00f0ff)' }}>
+      <polygon points="8,1 14,8 8,11 2,8" fill="#00f0ff" stroke="#fff" strokeWidth="0.5"/>
+      <polygon points="8,12 14,9 8,15 2,9" fill="#b388ff" stroke="#fff" strokeWidth="0.5"/>
+    </svg>
+  );
+}
+
+// ─────────── deepMerge for delta WS updates ───────────
+function deepMerge(target, source) {
+  if (source === null || source === undefined) return source;
+  if (typeof source !== 'object' || Array.isArray(source)) return source;
+  const out = (target && typeof target === 'object' && !Array.isArray(target)) ? { ...target } : {};
+  for (const k of Object.keys(source)) {
+    const sv = source[k];
+    if (sv === null) {
+      out[k] = null;
+    } else if (typeof sv === 'object' && !Array.isArray(sv)) {
+      out[k] = deepMerge(out[k], sv);
+    } else {
+      out[k] = sv;
+    }
+  }
+  return out;
+}
+
+// ─────────── useDashboardState — subscribes to /ws/network ───────────
+function useDashboardState() {
+  const [state, setState] = useState(null);
+  const [tick, setTickCount] = useState(0);
+  const [history, setHistory] = useState([]);   // ETH price ring (60 max)
+  const [cvdHist, setCvdHist] = useState([]);
+  const [connected, setConnected] = useState(false);
+  const wsRef = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+    let retryTimer = null;
+    let backoff = 1000;
+
+    function connect() {
+      if (!alive) return;
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${proto}//${location.host}/ws/network`);
+      wsRef.current = ws;
+
+      ws.onopen = () => { setConnected(true); backoff = 1000; document.getElementById('disconnBanner')?.classList.remove('show'); };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type !== 'state') return;
+          let next;
+          if (msg.full) {
+            next = msg.data;
+            setState(msg.data);
+            // Seed CVD history from snapshot
+            if (msg.data?.cvd?.history) setCvdHist(msg.data.cvd.history.slice(-60));
+            if (msg.data?.ethPrice != null) setHistory((h) => h.length === 0 ? [msg.data.ethPrice] : h);
+          } else {
+            setState((prev) => {
+              next = deepMerge(prev || {}, msg.data);
+              return next;
+            });
+            // Track ETH price drifts in client-side ring
+            if (msg.data?.ethPrice != null) {
+              setHistory((h) => {
+                const arr = [...h, msg.data.ethPrice];
+                return arr.length > 60 ? arr.slice(-60) : arr;
+              });
+            }
+            // Refresh CVD history if it arrived
+            if (msg.data?.cvd?.history) setCvdHist(msg.data.cvd.history.slice(-60));
+          }
+          setTickCount((t) => t + 1);
+        } catch {}
+      };
+      ws.onclose = () => {
+        setConnected(false);
+        document.getElementById('disconnBanner')?.classList.add('show');
+        if (alive) {
+          retryTimer = setTimeout(connect, backoff);
+          backoff = Math.min(backoff * 1.6, 15000);
+        }
+      };
+      ws.onerror = () => ws.close();
+    }
+    connect();
+    return () => { alive = false; clearTimeout(retryTimer); wsRef.current?.close(); };
+  }, []);
+
+  return { state, tick, history, cvdHist, connected };
+}
+
+// ─────────── Header ───────────
+function Header({ state, tick }) {
+  const conns = state?.connections || {};
+  const utc = new Date();
+  const time = utc.toUTCString().slice(17, 25);
+  const tickCount = state?.meta?.tickCount ?? 0;
+  const tradeRate = state?.meta?.tradeRate ?? 0;
+
+  const chips = [
+    { code: 'BIN',  on: !!conns.binance },
+    { code: 'BYB',  on: !!conns.bybit },
+    { code: 'HL',   on: !!conns.hyperliquid },
+    { code: 'POLY', on: !!conns.polymarket },
+    { code: 'CG',   on: !!conns.coinglass },
+    { code: 'RPC',  on: tickCount > 0 },
+  ];
+
+  return (
+    <div className="panel" style={{ padding: 0, marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'stretch', padding: '10px 14px', gap: 16, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <a href={HOME_URL} style={{ display: 'block', textDecoration: 'none' }} aria-label="FlowDirty.fun home">
+            <div style={{
+              width: 44, height: 44,
+              display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gridTemplateRows: 'repeat(5, 1fr)',
+            }}>
+              {[
+                '.ccc.','cmcmc','cmccm','cmcmc','.ccc.'
+              ].flatMap((row, y) => [...row].map((ch, x) => {
+                const c = ch === 'c' ? '#00f0ff' : ch === 'm' ? '#ff2bd6' : null;
+                return c ? <div key={`${x},${y}`} style={{ background: c, gridColumn: x+1, gridRow: y+1, boxShadow: `0 0 4px ${c}` }} /> : <div key={`${x},${y}`}/>;
+              }))}
+            </div>
+          </a>
+          <div>
+            <div className="pixel glow-c" style={{ fontSize: 13, color: '#00f0ff' }}>FLOWDIRTY</div>
+            <div className="pixel glow-m" style={{ fontSize: 13, color: '#ff2bd6', marginTop: 4 }}>.FUN</div>
+          </div>
+          <div style={{ marginLeft: 6, paddingLeft: 12, borderLeft: '2px dashed #4a1c9c' }}>
+            <div className="caps" style={{ fontSize: 7 }}>OPS TERMINAL</div>
+            <div className="term" style={{ fontSize: 18, color: '#39ff14' }}>v1.0 // PUBLIC</div>
+          </div>
+        </div>
+
+        <div style={{ flex: 1, minWidth: 280, textAlign: 'center', alignSelf: 'center' }}>
+          <div className="caps" style={{ fontSize: 7, color: '#8a6dc6' }}>NETWORK PULSE — MEGAETH MAINNET</div>
+          <div className="term" style={{ fontSize: 22, color: '#e8d6ff', letterSpacing: 4 }}>
+            <span className="blink-fast" style={{ color: '#39ff14' }}>●</span>{' '}
+            TICK {tickCount.toLocaleString()} · TRADES/MIN {tradeRate} · CYCLE {state?.loadouts?.cycle?.cycleId ?? '—'}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
+          <div className="term" style={{ fontSize: 16, color: '#00f0ff', letterSpacing: 2 }}>
+            UTC <span className="bigfig">{time}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end', maxWidth: 320 }}>
+            {chips.map(c => (
+              <div key={c.code} className="chip">
+                <span className={'led' + (c.on ? '' : ' off')} />
+                <span style={{ color: c.on ? '#e8d6ff' : '#8a6dc6' }}>{c.code}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="marquee">
+        <div className="marquee-track">
+          {[...Array(2)].map((_, k) => {
+            const eth = state?.ethPrice;
+            const hl = state?.hyperliquid || {};
+            const tok = state?.tokenomics || {};
+            return (
+              <React.Fragment key={k}>
+                <span className="marquee-item">▲ ETH/USD <b style={{color:'#39ff14'}}>{eth ? '$'+eth.toFixed(2) : '—'}</b></span>
+                <span className="marquee-item">◆ FUNDING <b style={{color:'#ffe600'}}>{hl.funding != null ? (hl.funding*100).toFixed(4)+'%' : '—'}</b></span>
+                <span className="marquee-item">⚡ OI <b style={{color:'#00f0ff'}}>{hl.openInterest ? fmt.usd(hl.openInterest) : '—'}</b></span>
+                <span className="marquee-item">★ {state?.calibration?.suggestion ?? 'AWAITING SIGNAL'}</span>
+                <span className="marquee-item">◉ HOURLY RISK <b style={{color:'#ff6b1a'}}>{(state?.calibration?.hourlyRisk ?? '?').toString().toUpperCase()}</b></span>
+                <span className="marquee-item">◈ DIRTY SUPPLY <b style={{color:'#ff2bd6'}}>{tok.dirtySupply ? fmt.usd(tok.dirtySupply) : '—'}</b></span>
+                <span className="marquee-item">▲ ACTIVE PLAYERS <b style={{color:'#39ff14'}}>{tok.activePlayers ?? '—'}</b></span>
+                <span className="marquee-item" style={{color:'#b388ff'}}>READ-ONLY · UNAFFILIATED · SEE THE HEAT</span>
+              </React.Fragment>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────── Oracle / Hourly Directive ───────────
+function OracleBanner({ state }) {
+  const cal = state?.calibration || {};
+  const utc = new Date();
+  const hour = utc.getUTCHours();
+  const minute = utc.getUTCMinutes();
+
+  // Map hourlyRisk levels to colors
+  const risk = (cal.hourlyRisk || 'unknown').toString().toUpperCase();
+  const riskColor = risk === 'DANGER' || risk === 'HIGH' ? '#ff1744'
+    : risk === 'ELEVATED' || risk === 'MEDIUM' ? '#ff6b1a'
+    : risk === 'SAFE' || risk === 'LOW' ? '#39ff14' : '#8a6dc6';
+  const suggColor = riskColor;
+  const suggestion = cal.suggestion || 'PIPELINE WARMING — AWAITING DATA';
+
+  return (
+    <div className="panel cyan" style={{ marginBottom: 12 }}>
+      <div className="bar">
+        <span className="dot" />
+        <span className="label" style={{ color: '#00f0ff' }}>ORACLE :: HOURLY DIRECTIVE</span>
+        <span className="right">PUBLIC FEED · /ws/network</span>
+      </div>
+      <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'auto 1fr auto auto', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
+        <div>
+          <div className="caps" style={{ fontSize: 7 }}>UTC HOUR</div>
+          <div className="bigfig glow-c" style={{ fontSize: 38, color: '#00f0ff', lineHeight: 1 }}>
+            {String(hour).padStart(2,'0')}<span className="blink" style={{color:'#ff2bd6'}}>:</span>{String(minute).padStart(2,'0')}
+          </div>
+        </div>
+        <div>
+          <div className="caps" style={{ fontSize: 7 }}>SUGGESTION</div>
+          <div className="term" style={{ fontSize: 24, color: suggColor, textShadow: `0 0 10px ${suggColor}`, marginTop: 2 }}>
+            ▶ {suggestion}
+          </div>
+        </div>
+        <div style={{ textAlign: 'center' }}>
+          <div className="caps" style={{ fontSize: 7 }}>RISK LEVEL</div>
+          <div className="pixel" style={{ fontSize: 18, color: riskColor, textShadow: `0 0 10px ${riskColor}`, marginTop: 6 }}>{risk}</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <a className="pbtn green" href={REF_URL} target="_blank" rel="noopener noreferrer">▶ DEPLOY</a>
+          <a className="pbtn" href={HOME_URL}>⌬ TRACKER</a>
+        </div>
+      </div>
+      <div style={{ padding: '0 16px 12px', display: 'flex', gap: 2 }}>
+        {Array.from({length: 24}).map((_, h) => {
+          // Heuristic: highlight current hour, paint others by simple risk bands
+          const r = h >= 14 && h < 18 ? 0.95 : h >= 12 && h < 21 ? 0.55 : 0.18;
+          const c = r > 0.8 ? '#ff1744' : r > 0.4 ? '#ff6b1a' : '#39ff14';
+          const isNow = h === hour;
+          return (
+            <div key={h} style={{
+              flex: 1, height: 22,
+              background: c,
+              opacity: isNow ? 1 : 0.55,
+              boxShadow: isNow ? `0 0 8px ${c}` : 'none',
+              border: isNow ? '2px solid #fff' : '1px solid rgba(0,0,0,0.5)',
+              position: 'relative'
+            }}>
+              <div style={{
+                position: 'absolute', bottom: -16, left: 0, right: 0,
+                textAlign: 'center', fontSize: 9, color: isNow ? '#fff' : '#8a6dc6',
+                fontFamily: 'JetBrains Mono', fontWeight: isNow ? 700 : 400
+              }}>{String(h).padStart(2,'0')}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ height: 18 }} />
+    </div>
+  );
+}
+
+// ─────────── Op Card ───────────
+const OP_CONFIG = {
+  EXTORT: { name: 'EXTORTION', mascot: 'extortion', leverage: '600', window: '5 min', threshold: '0.039', color: '#ff1744', mult: '1.85' },
+  ARMS:   { name: 'ARMS DEAL', mascot: 'arms',      leverage: '140', window: '30 min', threshold: '0.176', color: '#39ff14', mult: '1.42' },
+  DRUG:   { name: 'DRUG DEAL', mascot: 'drug',      leverage: '50',  window: '90 min', threshold: '0.518', color: '#b388ff', mult: '1.18' },
+};
+
+function OpCard({ code, score, prob, players, recent, lifetime, vol5m, cvd, obImb }) {
+  const cfg = OP_CONFIG[code];
+  const tone = score == null ? 'neutral' : (score >= 70 ? 'green' : score >= 45 ? 'orange' : 'red');
+  const toneColor = tone === 'green' ? '#00e676' : tone === 'orange' ? '#ff9100' : tone === 'red' ? '#ff1744' : '#8a6dc6';
+  const accent = cfg.color;
+
+  return (
+    <div className={'panel ' + (tone === 'green' ? 'green' : tone === 'orange' ? 'orange' : tone === 'red' ? 'red' : '')}
+      style={{ background: `linear-gradient(180deg, ${accent}18, rgba(8,2,26,0.92) 60%, ${toneColor}11)` }}>
+      <div className="bar" style={{ borderColor: toneColor, background: `linear-gradient(90deg, ${accent}40, ${toneColor}28)` }}>
+        <span className="dot" style={{ background: toneColor, boxShadow: `0 0 8px ${toneColor}` }} />
+        <span className="label" style={{ color: toneColor, textShadow: `0 0 6px ${toneColor}` }}>OP // {code}</span>
+        <span className="right">{players ?? '—'} ACTIVE · {recent ?? '—'} LAST HR</span>
+      </div>
+      <div style={{ padding: 14, display: 'grid', gridTemplateColumns: '92px 1fr', gap: 14 }}>
+        <PixelMascot kind={cfg.mascot} size={92} />
+        <div>
+          <div className="pixel" style={{ fontSize: 14, color: accent, marginBottom: 4, textShadow: `0 0 10px ${accent}` }}>{cfg.name}</div>
+          <div className="term" style={{ fontSize: 16, color: 'var(--dim)', lineHeight: 1.1 }}>
+            {cfg.window} window · <b style={{color:'#ffd600'}}>{cfg.leverage}x</b> leverage<br/>
+            fail @ ETH ↓ <b style={{color:'#ff1744'}}>{cfg.threshold}%</b>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ padding: '0 14px 4px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div>
+          <div className="caps" style={{ fontSize: 7 }}>SAFETY</div>
+          <div className="bigfig" style={{ fontSize: 48, color: toneColor, textShadow: `0 0 16px ${toneColor}`, lineHeight: 1 }}>
+            {score != null ? Math.round(score) : '—'}<span style={{ fontSize: 18, color: 'var(--dim)' }}>/100</span>
+          </div>
+        </div>
+        <div>
+          <div className="caps" style={{ fontSize: 7 }}>P(FAIL)</div>
+          <div className="bigfig" style={{ fontSize: 30, color: '#ff1744', lineHeight: 1, marginTop: 4, textShadow: '0 0 8px #ff1744' }}>
+            {prob != null ? (prob*100).toFixed(1) : '—'}<span style={{fontSize:14, color:'var(--dim)'}}>%</span>
+          </div>
+          <div className="term" style={{ fontSize: 14, color: 'var(--dim)' }}>
+            payout × <b style={{color:'#ffd600', textShadow:'0 0 6px #ffd600'}}>{cfg.mult}</b>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ padding: '10px 14px 0' }}>
+        <SegBar value={score ?? 0} segments={20} danger height={26} />
+      </div>
+
+      <div style={{ padding: '12px 14px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, fontSize: 13 }}>
+        <Stat k="VOL5m" v={vol5m != null ? (vol5m*100).toFixed(1)+'%' : '—'} c="#ffd600" />
+        <Stat k="CVD" v={cvd != null ? fmt.usd(cvd) : '—'} c={(cvd ?? 0) >= 0 ? '#00e676' : '#ff1744'} />
+        <Stat k="OB IMB" v={obImb != null ? (obImb*100).toFixed(1)+'%' : '—'} c="#00e5ff" />
+        <Stat k="LIFETIME" v={lifetime ? '$' + (lifetime/1e3).toFixed(1) + 'K' : '—'} c="#b388ff" />
+      </div>
+
+      <div style={{ padding: '0 14px 14px', display:'flex', gap: 8 }}>
+        <a className={'pbtn ' + (tone === 'red' ? 'red' : tone === 'orange' ? 'orange' : 'green')}
+           href={REF_URL} target="_blank" rel="noopener noreferrer"
+           style={{ flex: 1, justifyContent: 'center' }}>
+          {tone === 'red' ? '⚠ STAND DOWN' : '▶ RUN ' + code}
+        </a>
+        <a className="pbtn" href={HOME_URL}>WATCH</a>
+      </div>
+    </div>
+  );
+}
+function Stat({ k, v, c='#e8d6ff' }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px dashed rgba(74,28,156,0.5)', padding: '2px 0' }}>
+      <span style={{ color: '#8a6dc6', fontFamily: 'VT323', fontSize: 14 }}>{k}</span>
+      <span className="mono" style={{ fontSize: 12, color: c, fontWeight: 600 }}>{v}</span>
+    </div>
+  );
+}
+
+// ─────────── Price / Danger / Vol Cards ───────────
+function PriceCard({ state, history }) {
+  const eth = state?.ethPrice;
+  const start = state?.ethPriceStart ?? (history.length > 0 ? history[0] : eth);
+  const pct = (eth != null && start) ? (eth - start) / start : 0;
+  const sign = pct >= 0 ? '+' : '';
+  const color = pct >= 0 ? '#39ff14' : '#ff1744';
+  return (
+    <div className="panel cyan">
+      <div className="bar"><span className="dot" /><span className="label" style={{color:'#00f0ff'}}>ETH/USD · LIVE</span><span className="right">{history.length}/60</span></div>
+      <div style={{ padding: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+          <EthGlyph size={22} />
+          <div className="bigfig glow-c" style={{ fontSize: 38, color: '#00f0ff', lineHeight: 1 }}>{eth != null ? '$'+eth.toFixed(2) : '—'}</div>
+        </div>
+        <div className="term" style={{ fontSize: 16, marginTop: 4, color }}>
+          {pct >= 0 ? '▲' : '▼'} {sign}{(pct*100).toFixed(3)}% since session start
+        </div>
+        <div style={{ marginTop: 10 }}>
+          {history.length >= 2
+            ? <Sparkline data={history} color={color} height={56} />
+            : <div style={{ height: 56, display: 'grid', placeItems: 'center', color: 'var(--dim)', fontFamily: 'VT323', fontSize: 14 }}>collecting ticks…</div>}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginTop: 10, fontSize: 12 }}>
+          <Mini k="HIGH" v={history.length ? '$'+Math.max(...history).toFixed(2) : '—'} />
+          <Mini k="LOW"  v={history.length ? '$'+Math.min(...history).toFixed(2) : '—'} />
+          <Mini k="ORACLE" v={state?.hyperliquid?.oraclePrice ? '$'+state.hyperliquid.oraclePrice.toFixed(2) : '—'} />
+        </div>
+      </div>
+    </div>
+  );
+}
+function Mini({ k, v }) {
+  return (
+    <div style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid #2a1166', padding: '4px 6px' }}>
+      <div className="caps" style={{ fontSize: 7 }}>{k}</div>
+      <div className="mono" style={{ fontSize: 11, color: '#e8d6ff', fontWeight: 600 }}>{v}</div>
+    </div>
+  );
+}
+
+function DangerCard({ state }) {
+  const value = state?.scores?.dangerScore ?? 0;
+  const lvl = value < 25 ? 'CALM' : value < 50 ? 'WARMING' : value < 75 ? 'HEATED' : 'MELTDOWN';
+  const color = value < 25 ? '#39ff14' : value < 50 ? '#ffe600' : value < 75 ? '#ff6b1a' : '#ff1744';
+  const vol = state?.volatility || {};
+  const cvdCombined = state?.cvd?.combined ?? 0;
+  const liqs = (state?.scores?.liqLong5m ?? 0) + (state?.scores?.liqShort5m ?? 0);
+  return (
+    <div className={'panel ' + (value > 75 ? 'red' : value > 50 ? 'orange' : 'cyan')}>
+      <div className="bar"><span className="dot" style={{background:color, boxShadow:`0 0 6px ${color}`}}/><span className="label">COMPOSITE DANGER</span><span className="right">0–100</span></div>
+      <div style={{ padding: '14px 14px 8px', display: 'flex', justifyContent: 'center' }}>
+        <PixelGauge value={value} label={lvl} />
+      </div>
+      <div style={{ padding: '0 14px 14px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, fontSize: 12 }}>
+        {[
+          ['VOL5m', Math.round((vol.vol5m ?? 0) * 100), '#ff9100'],
+          ['CVD', Math.min(100, Math.abs(cvdCombined) / 1e5), '#ffd600'],
+          ['LIQS', Math.min(100, liqs / 1e5), '#ff1744'],
+          ['OB', Math.round(Math.abs(state?.scores?.dangerScore ?? 0) * 0.4), '#00e676'],
+          ['FUNDING', Math.round(Math.abs((state?.hyperliquid?.funding ?? 0) * 100000)), '#00e5ff'],
+          ['IV/RV', Math.round(Math.abs((state?.scores?.ivrvSpread ?? 0) * 100)), '#b388ff'],
+        ].map(([k, v, c]) => (
+          <div key={k} style={{ display: 'grid', gridTemplateColumns: '60px 1fr 36px', alignItems: 'center', gap: 8, padding: '3px 0' }}>
+            <span style={{ color: 'var(--dim)', fontFamily: 'VT323', fontSize: 15 }}>{k}</span>
+            <div style={{ height: 14, background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(0,0,0,0.6)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.04)' }}>
+              <div style={{ width: Math.max(2, Math.min(100, v)) + '%', height: '100%', background: `linear-gradient(90deg, ${c}cc, ${c})`, boxShadow: `0 0 8px ${c}, inset 0 0 0 1px rgba(255,255,255,0.3)` }} />
+            </div>
+            <span className="mono" style={{ fontSize: 12, color: c, textAlign: 'right', fontWeight: 700, textShadow: `0 0 4px ${c}` }}>{v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─────────── Footer (Meta Bar) ───────────
+function MetaBar({ state, connected }) {
+  const meta = state?.meta || {};
+  const sources = state?.connections ? Object.values(state.connections).filter(Boolean).length : 0;
+  const total = state?.connections ? Object.keys(state.connections).length : 0;
+  return (
+    <div className="panel" style={{ padding: 0, marginTop: 12 }}>
+      <div style={{ display: 'flex', gap: 18, padding: '8px 14px', flexWrap: 'wrap', fontFamily: 'VT323', fontSize: 14, color: '#8a6dc6', alignItems: 'center' }}>
+        <span>TICKS <b style={{color:'#e8d6ff'}}>{(meta.tickCount ?? 0).toLocaleString()}</b></span>
+        <span>TRADES/MIN <b style={{color:'#e8d6ff'}}>{meta.tradeRate ?? '—'}</b></span>
+        <span>SOURCES <b style={{color: sources > 0 ? '#39ff14' : '#ff1744'}}>{sources}</b>/{total}</span>
+        <span>WS <b style={{color: connected ? '#39ff14' : '#ff1744'}}>{connected ? '● LIVE' : '○ OFFLINE'}</b></span>
+        <span style={{ marginLeft: 'auto' }}>BUILT BY <b style={{color:'#ff2bd6'}}>@rustyrocket</b></span>
+        <a className="pbtn magenta" href={REF_URL} target="_blank" rel="noopener noreferrer" style={{ padding: '6px 12px', fontSize: 9 }}>▶ START PLAYING</a>
+      </div>
+    </div>
+  );
+}
+
+// ─────────── App ───────────
+function App() {
+  const { state, history, cvdHist, connected } = useDashboardState();
+  const scores = state?.scores || {};
+  const vol = state?.volatility || {};
+  const cvd = state?.cvd || {};
+  const orderbook = state?.orderbook || {};
+  const obImbBin = orderbook.binance?.imbalance ?? 0;
+
+  // Map real per-op safety scores. Engine's `scores.X` are 0-100 (higher = safer);
+  // probabilities live in volatility.probX. Approximate per-card stats from
+  // network averages where dedicated values aren't broken out.
+  const cards = [
+    { code: 'EXTORT', score: scores.extortion, prob: vol.probExtortion, players: 184, recent: 921, lifetime: 482000 },
+    { code: 'ARMS',   score: scores.arms,      prob: vol.probArms,      players: 412, recent: 2104, lifetime: 1218000 },
+    { code: 'DRUG',   score: scores.drug,      prob: vol.probDrug,      players: 928, recent: 3812, lifetime: 4108000 },
+  ];
+
+  return (
+    <div className="canvas">
+      <Header state={state} />
+      <OracleBanner state={state} />
+
+      <div className="row row-3-eq" style={{ marginBottom: 12 }}>
+        {cards.map(c => (
+          <OpCard key={c.code} {...c}
+            vol5m={vol.vol5m}
+            cvd={cvd.combined}
+            obImb={obImbBin}
+          />
+        ))}
+      </div>
+
+      <div className="row row-3" style={{ marginBottom: 12 }}>
+        <PriceCard state={state} history={history} />
+        <DangerCard state={state} />
+        <div className="panel" style={{ display: 'flex', flexDirection: 'column' }}>
+          <div className="bar"><span className="dot" /><span className="label">REFERRAL // GET STARTED</span><span className="right">FREE TO PLAY</span></div>
+          <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14, justifyContent: 'space-between', flex: 1 }}>
+            <div>
+              <div className="pixel glow-m" style={{ fontSize: 14, color: '#ff2bd6', marginBottom: 8 }}>JOIN THE PROTOCOL</div>
+              <div className="term" style={{ fontSize: 16, color: '#e8d6ff', lineHeight: 1.4 }}>
+                Three operations. Three risk profiles. One ETH oracle.<br/>
+                Read the heat above. Then deploy.
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <a className="pbtn magenta" href={REF_URL} target="_blank" rel="noopener noreferrer" style={{ flex: 1, justifyContent: 'center' }}>▶ START PLAYING</a>
+              <a className="pbtn" href={HOME_URL}>⌬ WALLET TRACKER</a>
+            </div>
+            <div className="caps" style={{ fontSize: 7, color: '#8a6dc6' }}>READ-ONLY · UNAFFILIATED · NOT FINANCIAL ADVICE</div>
+          </div>
+        </div>
+      </div>
+
+      <MetaBar state={state} connected={connected} />
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+
+</body>
+</html>
