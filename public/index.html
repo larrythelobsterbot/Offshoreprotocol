@@ -2575,7 +2575,7 @@ function renderCorps(b) {
         <div class="corp-headroom-detail">
           <span class="pct ${h.alertLevel}">${h.headroomPct.toFixed(0)}%</span>
           $${h.ethPrice.toFixed(2)} vs anchor $${h.anchorPrice.toFixed(2)}
-          (${devSign}${h.deviationPct.toFixed(3)}% / ±${h.thresholdPct.toFixed(3)}%)
+          (${devSign}${h.deviationPct.toFixed(3)}% from anchor · liq @ −${h.thresholdPct.toFixed(3)}%)
         </div>
       `;
       table.appendChild(sub);

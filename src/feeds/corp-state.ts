@@ -104,21 +104,27 @@ export interface CorpState {
 /**
  * Real-time liquidation proximity for an active op. The contract pre-computes
  * `liqPrice = entryPrice × (1 − threshold)` at trade start (where threshold is
- * 0.039% / 0.176% / 0.518% for Ext / Arms / Drug). Liquidation is two-sided
- * around the anchor — symmetric upper bound is mirrored. Headroom is the
- * minimum distance to either bound, normalized to [0, 100]:
- *   100% = ETH at anchor (max safety)
- *     0% = ETH at either liq bound (about to liquidate)
- *   <0% = past bound (corp should be marked liquidatable on next tick)
+ * 0.039% / 0.176% / 0.518% for Ext / Arms / Drug).
+ *
+ * Liquidation is ONE-SIDED DOWN: the contract only liquidates when ETH drops
+ * below liqPrice. ETH rising above the anchor is fully safe — there's no
+ * upper bound. (Verified by operator + by inspecting on-chain liquidation
+ * events: every recorded liquidation has ethPriceAtLiq ≤ anchor.)
+ *
+ * Headroom is the percentage of the safety band remaining toward the lower
+ * bound:
+ *   100% = ETH at or above the anchor (max safety, no upside risk)
+ *     0% = ETH at the lower liq bound (about to liquidate)
+ *    <0% = past the lower bound (corp will be marked liquidatable next tick)
  */
 export interface OpHeadroom {
-  headroomPct: number;          // 0-100, lower = more dangerous
+  headroomPct: number;          // 0-100, lower = more dangerous (one-sided down)
   ethPrice: number;             // current live ETH (USD)
   anchorPrice: number;          // entryPrice (USD)
-  lowerBound: number;           // liqPrice (USD)
-  upperBound: number;           // entryPrice + (entryPrice - liqPrice) (USD)
+  lowerBound: number;           // liqPrice (USD) — the only bound that matters
   deviationPct: number;         // (eth - anchor) / anchor * 100, signed
-  thresholdPct: number;         // mode-specific threshold (0.039 / 0.176 / 0.518)
+                                //   positive = ETH rose (safer); negative = ETH dropped (closer to liq)
+  thresholdPct: number;         // mode-specific drop tolerance (0.039 / 0.176 / 0.518)
   secondsElapsed: number;       // since startTime
   secondsRemaining: number;     // until endTime
   alertLevel: 'safe' | 'warn' | 'danger';  // green/yellow/red
@@ -183,16 +189,15 @@ export function computeOpHeadroom(corp: CorpState, ethPrice: number | null): OpH
 
   const anchorPrice = Number(anchor1e18) / 1e18;
   const lowerBound  = Number(lower1e18) / 1e18;
-  // Upper bound mirrors the lower around the anchor (symmetric two-sided liq).
-  const upperBound  = anchorPrice + (anchorPrice - lowerBound);
-  const halfBand    = anchorPrice - lowerBound;
-  if (halfBand <= 0) return null;
+  const fullBand    = anchorPrice - lowerBound;   // = anchorPrice × threshold
+  if (fullBand <= 0) return null;
 
-  const distLower = ethPrice - lowerBound;
-  const distUpper = upperBound - ethPrice;
-  const minDist   = Math.min(distLower, distUpper);
-  // Clamp to [-1, 1] band fraction; multiply by 100 for pct.
-  const headroomPct = Math.max(-100, Math.min(100, (minDist / halfBand) * 100));
+  // ONE-SIDED DOWN. Liquidation only fires when ETH drops below lowerBound
+  // — ETH rising above the anchor is safe, full stop. The headroom is the
+  // fraction of the band remaining (capped at 100% when ETH ≥ anchor; <0
+  // when ETH has already dropped past the bound).
+  const distAbove   = ethPrice - lowerBound;
+  const headroomPct = Math.max(-100, Math.min(100, (distAbove / fullBand) * 100));
 
   const deviationPct = ((ethPrice - anchorPrice) / anchorPrice) * 100;
   const threshold = MODE_LIQ_THRESHOLD[ti.mode] ?? 0;
@@ -207,7 +212,6 @@ export function computeOpHeadroom(corp: CorpState, ethPrice: number | null): OpH
     ethPrice,
     anchorPrice,
     lowerBound,
-    upperBound,
     deviationPct,
     thresholdPct: threshold * 100,
     secondsElapsed:   Math.max(0, nowSec - ti.startTime),

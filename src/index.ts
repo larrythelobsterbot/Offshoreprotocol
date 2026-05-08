@@ -134,7 +134,7 @@ async function main() {
           `Corp: \`${c.address.slice(0, 10)}..\` (${c.locationLabel}, ${c.modeLabel})\n` +
           `Headroom: *${h.headroomPct.toFixed(0)}%*\n` +
           `ETH: $${h.ethPrice.toFixed(2)} (anchor $${h.anchorPrice.toFixed(2)}, ` +
-          `${devSign}${h.deviationPct.toFixed(3)}% / ±${h.thresholdPct.toFixed(3)}%)\n` +
+          `${devSign}${h.deviationPct.toFixed(3)}% from anchor · liq @ −${h.thresholdPct.toFixed(3)}%)\n` +
           `Time left: ${minLeft}m`;
         try { await bot.sendDm(config.operatorChatId, text, { parseMode: 'Markdown' }); }
         catch { /* sendDm swallows errors */ }

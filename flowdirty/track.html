@@ -706,7 +706,7 @@ body{overflow-x:hidden;letter-spacing:-0.01em}
           <div class="bar-track"><div class="bar-fill" id="hrFill" style="width:54%"></div></div>
           <div class="headroom-detail">
             Worst: <b>BVI · Drug</b> · ETH <span class="cyan" id="ethSpot">$2,279.00</span> vs anchor
-            <b id="hrAnchor">$2,278.70</b> &nbsp;<span class="y">(+0.011% / ±0.518%)</span>
+            <b id="hrAnchor">$2,278.70</b> &nbsp;<span class="y">(+0.011% from anchor · liq @ −0.518%)</span>
           </div>
           <div class="ops-row">
             <span class="op-chip"><span class="d cy"></span>BVI · <b>Drug</b> · 54%</span>
@@ -1200,7 +1200,7 @@ function populateDashboard(d){
     const worst = (d.corps || []).find(c => c.address === d.summary?.worstOpAddr);
     if (worst?.opHeadroom) {
       const dev = worst.opHeadroom.deviationPct;
-      hrDelta.textContent = `${dev >= 0 ? '▴' : '▾'} ${Math.abs(dev).toFixed(3)}% / ±${worst.opHeadroom.thresholdPct.toFixed(3)}% margin`;
+      hrDelta.textContent = `${dev >= 0 ? '▴' : '▾'} ${Math.abs(dev).toFixed(3)}% · liq @ −${worst.opHeadroom.thresholdPct.toFixed(3)}%`;
       if (hrAnchor) hrAnchor.textContent = '$' + fmt(worst.opHeadroom.anchorPrice, 2);
     }
   }
