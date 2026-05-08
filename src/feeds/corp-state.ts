@@ -296,7 +296,7 @@ function encodeBalanceOfStyleArg(addr: string): string {
   return addr.toLowerCase().replace(/^0x/, '').padStart(64, '0');
 }
 
-async function fetchUserCompanies(wallet: string): Promise<string[]> {
+export async function fetchUserCompanies(wallet: string): Promise<string[]> {
   const data = SEL.getUserCompanies + encodeBalanceOfStyleArg(wallet);
   const result = await rpcCall<string>('eth_call', [{ to: USER_FACTORY, data }, 'latest']);
   const h = result.replace(/^0x/, '');
@@ -309,6 +309,78 @@ async function fetchUserCompanies(wallet: string): Promise<string[]> {
     addrs.push('0x' + word.slice(24));
   }
   return addrs;
+}
+
+/**
+ * Module-level helper: read full per-corp state for a list of corps in one
+ * multicall round-trip. Reused by both the operator's CorpStateFeed poll
+ * and the public WalletTracker (Phase 2). Returns CorpState[] with
+ * opHeadroom=null — caller enriches with live ETH price.
+ */
+export async function fetchCorpStatesFor(companies: string[]): Promise<CorpState[]> {
+  if (companies.length === 0) return [];
+  const now = Date.now();
+  const calls: { target: string; allowFailure: boolean; callData: string }[] = [];
+  for (const corp of companies) {
+    for (const fn of PER_CORP_READS) {
+      calls.push({ target: corp, allowFailure: true, callData: SEL[fn] });
+    }
+  }
+  const data = encodeMulticall3Aggregate3(calls);
+  const resultHex = await rpcCall<string>('eth_call', [{ to: MULTICALL3, data }, 'latest']);
+  const decoded = decodeMulticall3Aggregate3(resultHex);
+
+  const corps: CorpState[] = [];
+  for (let i = 0; i < companies.length; i++) {
+    const offset = i * PER_CORP_READS.length;
+    const slice = decoded.slice(offset, offset + PER_CORP_READS.length);
+
+    const reads: Record<SelKey, { success: boolean; data: string }> = {} as any;
+    PER_CORP_READS.forEach((k, idx) => { reads[k] = slice[idx]; });
+
+    const tradeInfo = reads.getTradeInfo.success ? decodeTradeInfo(reads.getTradeInfo.data) : null;
+    const cooldownEnd = reads.getCooldownEnd.success ? Number(decodeUint256(reads.getCooldownEnd.data)) : 0;
+    const cooldownRemain = cooldownEnd > 0 ? Math.max(0, cooldownEnd - Math.floor(now / 1000)) : 0;
+    const pendingRewardRaw = reads.pendingReward.success ? decodeUint256(reads.pendingReward.data) : 0n;
+
+    const isCompletable = reads.isCompletable.success ? decodeBool(reads.isCompletable.data) : false;
+    const isLiquidatable = reads.isLiquidatable.success ? decodeBool(reads.isLiquidatable.data) : false;
+    const hasPendingClaim = reads.hasPendingClaim.success ? decodeBool(reads.hasPendingClaim.data) : false;
+
+    const status: CorpState['status'] =
+      isLiquidatable ? 'liquidatable'
+      : isCompletable || hasPendingClaim ? 'claimable'
+      : tradeInfo?.active ? 'running'
+      : reads.autoTradeEnabled.success && decodeBool(reads.autoTradeEnabled.data) ? 'idle'
+      : 'idle';
+
+    const mode = tradeInfo?.mode ?? (reads.autoTradeMode.success ? decodeUint8(reads.autoTradeMode.data) : 0);
+    const locationId = reads.locationId.success ? decodeUint8(reads.locationId.data) : -1;
+    const isIdle = !tradeInfo?.active && !hasPendingClaim && !isCompletable && !isLiquidatable;
+    const modeLabelResolved = isIdle ? 'idle' : (MODE_LABEL[mode] ?? `mode ${mode}`);
+
+    corps.push({
+      address: companies[i],
+      index: i,
+      autoTradeEnabled: reads.autoTradeEnabled.success ? decodeBool(reads.autoTradeEnabled.data) : false,
+      autoTradeMode: reads.autoTradeMode.success ? decodeUint8(reads.autoTradeMode.data) : 0,
+      cooldownEnd,
+      cooldownRemainSec: cooldownRemain,
+      hasPendingClaim,
+      isCompletable,
+      isLiquidatable,
+      pendingReward: Number(pendingRewardRaw) / 1e18,
+      pendingRewardRaw: pendingRewardRaw.toString(),
+      locationId,
+      tradeInfo,
+      opHeadroom: null,
+      modeLabel: modeLabelResolved,
+      locationLabel: LOCATION_LABEL[locationId] ?? `loc ${locationId}`,
+      status,
+      ok: slice.every(s => s.success),
+    });
+  }
+  return corps;
 }
 
 function decodeUint256(hex: string): bigint { return BigInt(hex || '0x0'); }
@@ -395,70 +467,7 @@ export class CorpStateFeed extends EventEmitter {
     if (!this.wallet || this.companies.length === 0) return;
     const now = Date.now();
     try {
-      // Build one big multicall: PER_CORP_READS.length calls per corp.
-      const calls: { target: string; allowFailure: boolean; callData: string }[] = [];
-      for (const corp of this.companies) {
-        for (const fn of PER_CORP_READS) {
-          calls.push({ target: corp, allowFailure: true, callData: SEL[fn] });
-        }
-      }
-      const data = encodeMulticall3Aggregate3(calls);
-      const resultHex = await rpcCall<string>('eth_call', [{ to: MULTICALL3, data }, 'latest']);
-      const decoded = decodeMulticall3Aggregate3(resultHex);
-
-      const corps: CorpState[] = [];
-      for (let i = 0; i < this.companies.length; i++) {
-        const offset = i * PER_CORP_READS.length;
-        const slice = decoded.slice(offset, offset + PER_CORP_READS.length);
-
-        const reads: Record<SelKey, { success: boolean; data: string }> = {} as any;
-        PER_CORP_READS.forEach((k, idx) => { reads[k] = slice[idx]; });
-
-        const tradeInfo = reads.getTradeInfo.success ? decodeTradeInfo(reads.getTradeInfo.data) : null;
-        const cooldownEnd = reads.getCooldownEnd.success ? Number(decodeUint256(reads.getCooldownEnd.data)) : 0;
-        const cooldownRemain = cooldownEnd > 0 ? Math.max(0, cooldownEnd - Math.floor(now / 1000)) : 0;
-        const pendingRewardRaw = reads.pendingReward.success ? decodeUint256(reads.pendingReward.data) : 0n;
-
-        const isCompletable = reads.isCompletable.success ? decodeBool(reads.isCompletable.data) : false;
-        const isLiquidatable = reads.isLiquidatable.success ? decodeBool(reads.isLiquidatable.data) : false;
-        const hasPendingClaim = reads.hasPendingClaim.success ? decodeBool(reads.hasPendingClaim.data) : false;
-
-        const status: CorpState['status'] =
-          isLiquidatable ? 'liquidatable'
-          : isCompletable || hasPendingClaim ? 'claimable'
-          : tradeInfo?.active ? 'running'
-          : reads.autoTradeEnabled.success && decodeBool(reads.autoTradeEnabled.data) ? 'idle'
-          : 'idle';
-
-        const mode = tradeInfo?.mode ?? (reads.autoTradeMode.success ? decodeUint8(reads.autoTradeMode.data) : 0);
-        const locationId = reads.locationId.success ? decodeUint8(reads.locationId.data) : -1;
-        // status='idle' means active=false — disambiguate from mode 0 (Extortion).
-        // Show "idle" when not running, the actual op label when running.
-        const isIdle = !tradeInfo?.active && !hasPendingClaim && !isCompletable && !isLiquidatable;
-        const modeLabelResolved = isIdle ? 'idle' : (MODE_LABEL[mode] ?? `mode ${mode}`);
-
-        corps.push({
-          address: this.companies[i],
-          index: i,
-          autoTradeEnabled: reads.autoTradeEnabled.success ? decodeBool(reads.autoTradeEnabled.data) : false,
-          autoTradeMode: reads.autoTradeMode.success ? decodeUint8(reads.autoTradeMode.data) : 0,
-          cooldownEnd,
-          cooldownRemainSec: cooldownRemain,
-          hasPendingClaim,
-          isCompletable,
-          isLiquidatable,
-          pendingReward: Number(pendingRewardRaw) / 1e18,
-          pendingRewardRaw: pendingRewardRaw.toString(),
-          locationId,
-          tradeInfo,
-          opHeadroom: null,  // enriched in volatility.getState() with live ETH
-          modeLabel: modeLabelResolved,
-          locationLabel: LOCATION_LABEL[locationId] ?? `loc ${locationId}`,
-          status,
-          ok: slice.every(s => s.success),
-        });
-      }
-
+      const corps = await fetchCorpStatesFor(this.companies);
       this.alive = true;
       this.emit('status', true);
       this.emit('corps', {

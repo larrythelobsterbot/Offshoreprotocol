@@ -10,6 +10,7 @@ import type { DashboardState, StoredIndicator } from '../types';
 import { Storage } from '../storage/db';
 import { config } from '../config';
 import { logger } from '../logger';
+import type { WalletTracker } from '../feeds/wallet-tracker';
 
 // --- Deep diff utility for delta-based WS updates ---
 
@@ -64,15 +65,18 @@ export class ApiServer {
   private storage: Storage;
   private getState: () => DashboardState;
   private onOpStatsChanged?: () => void;
+  private walletTracker?: WalletTracker;
 
   constructor(
     storage: Storage,
     getState: () => DashboardState,
     onOpStatsChanged?: () => void,
+    walletTracker?: WalletTracker,
   ) {
     this.storage = storage;
     this.getState = getState;
     this.onOpStatsChanged = onOpStatsChanged;
+    this.walletTracker = walletTracker;
   }
 
   async start() {
@@ -349,6 +353,103 @@ export class ApiServer {
         return { success: true };
       })),
     );
+
+    // ── PUBLIC TRACKER (Phase 2) ──────────────────────────────────────
+    // GET /api/track/:wallet — multi-tenant per-wallet snapshot used by
+    // FlowDirty.fun and any other public consumer. Read-only, all data
+    // is derived from public on-chain state, no operator-private fields.
+    //
+    // Rate limit: token bucket per IP. Distinct-wallet cap stops one IP
+    // from sweeping arbitrary addresses to scrape the network. The
+    // wallet-tracker has its own 30s cache so cache hits don't even hit
+    // the limiter's RPC budget.
+    if (this.walletTracker) {
+      const RL_WINDOW_MS = 60_000;
+      const RL_MAX_REQ_PER_WINDOW = 60;
+      const RL_MAX_DISTINCT_WALLETS = 10;
+      type Bucket = { count: number; windowStart: number; wallets: Set<string> };
+      const buckets = new Map<string, Bucket>();
+
+      const rateLimited = (req: any, wallet: string): { ok: boolean; retryAfter?: number } => {
+        // X-Forwarded-For (set by trusted proxy/CF) takes precedence; fall
+        // back to socket. We only use the FIRST hop so a malicious header
+        // can't inject many fake IPs.
+        const xff = (req.headers['x-forwarded-for'] || '').toString().split(',')[0]?.trim();
+        const ip = xff || req.ip || 'unknown';
+        const now = Date.now();
+        let b = buckets.get(ip);
+        if (!b || now - b.windowStart > RL_WINDOW_MS) {
+          b = { count: 0, windowStart: now, wallets: new Set() };
+          buckets.set(ip, b);
+        }
+        if (b.count >= RL_MAX_REQ_PER_WINDOW) {
+          const retryAfter = Math.ceil((RL_WINDOW_MS - (now - b.windowStart)) / 1000);
+          return { ok: false, retryAfter };
+        }
+        // Distinct-wallet cap is checked AFTER req-count so a flood from
+        // one IP can't ingest 60 unique wallets in a window.
+        if (!b.wallets.has(wallet) && b.wallets.size >= RL_MAX_DISTINCT_WALLETS) {
+          return { ok: false, retryAfter: Math.ceil((RL_WINDOW_MS - (now - b.windowStart)) / 1000) };
+        }
+        b.count++;
+        b.wallets.add(wallet);
+        return { ok: true };
+      };
+
+      // Periodic GC of expired buckets (every 5 min) so the map doesn't
+      // grow unbounded on a public-facing endpoint.
+      setInterval(() => {
+        const cutoff = Date.now() - RL_WINDOW_MS * 2;
+        for (const [ip, b] of buckets) {
+          if (b.windowStart < cutoff) buckets.delete(ip);
+        }
+      }, 5 * 60_000).unref();
+
+      this.app.get<{ Params: { wallet: string } }>(
+        '/api/track/:wallet',
+        {
+          schema: {
+            params: {
+              type: 'object',
+              properties: {
+                wallet: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$' },
+              },
+              required: ['wallet'],
+            },
+          },
+        },
+        async (req, reply) => {
+          const wallet = req.params.wallet.toLowerCase();
+          const limit = rateLimited(req, wallet);
+          if (!limit.ok) {
+            return reply
+              .status(429)
+              .header('Retry-After', String(limit.retryAfter ?? 60))
+              .send({ error: 'Too Many Requests', retryAfterSec: limit.retryAfter });
+          }
+          try {
+            const result = await this.walletTracker!.track(wallet);
+            // Aggressive cache headers — paired with our 30s in-memory cache,
+            // a CDN edge could cache for ~30s safely.
+            reply.header('Cache-Control', 'public, max-age=15, s-maxage=30');
+            return result;
+          } catch (err: any) {
+            logger.warn({ err: err.message, wallet }, '[track] fetch failed');
+            return reply.status(503).send({ error: 'Service Unavailable', message: 'Chain read failed; please retry shortly.' });
+          }
+        },
+      );
+
+      // Companion endpoint: stats about the tracker itself (cache size,
+      // distinct buckets). Useful for debug and the marketing footer
+      // ("currently tracking N wallets across M visitors").
+      this.app.get('/api/track-stats', async () => {
+        return {
+          cachedWallets: this.walletTracker!.size(),
+          distinctIps: buckets.size,
+        };
+      });
+    }
 
     // Health check
     this.app.get('/api/health', async () => {

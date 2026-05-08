@@ -324,7 +324,15 @@ async function main() {
     cachedEmpiricalFractions = getEmpiricalFractions(cachedOpStats);
     cachedActivity = buildSummaryBundle(storage, sessionStartMs);
   };
-  const server = new ApiServer(storage, () => engine.getState(), onOpStatsChanged);
+  // Multi-tenant wallet tracker — powers /api/track/:wallet for FlowDirty.fun.
+  // Reuses operator's cycle metadata + ETH price feed (no extra background load).
+  const { WalletTracker } = await import('./feeds/wallet-tracker');
+  const walletTracker = new WalletTracker({
+    loadoutScanner,
+    getEthPrice: () => engine.getEthPrice(),
+  });
+
+  const server = new ApiServer(storage, () => engine.getState(), onOpStatsChanged, walletTracker);
 
   // --- Periodic tasks ---
 

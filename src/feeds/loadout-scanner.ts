@@ -585,11 +585,19 @@ export class LoadoutScannerFeed extends EventEmitter {
     }
   }
 
-  private async refreshSelf() {
-    if (!this.cfg.walletAddress) return;
-    const addr = this.cfg.walletAddress;
-    // Refresh cycle metadata first so projections use fresh anchors.
-    await this.refreshCycle();
+  /**
+   * Fetch a wallet's full loadout view (status profile + generators with
+   * vault projection + inventory). Public so the multi-wallet tracker can
+   * reuse the same chain-read logic without duplicating multicall wiring.
+   *
+   * Returns null if the wallet has no generators or the chain reads fail.
+   * Does NOT mutate this.latest — callers manage their own caching.
+   *
+   * Cycle metadata is read from this.latest.cycle (refreshed on every
+   * refreshSelf cycle), so projections are anchored to the freshest cycle.
+   */
+  async fetchUserView(addr: string): Promise<LoadoutBlock['user']> {
+    if (!addr || addr.length !== 42) return null;
     try {
       // Step A: get generators + status profile + inventory in one batch
       const a1 = [
@@ -601,7 +609,7 @@ export class LoadoutScannerFeed extends EventEmitter {
           callData: this.genIface.encodeFunctionData('getInventory',      [addr]) },
       ];
       const r1 = await this.mc.aggregate3.staticCall(a1);
-      if (!r1[0].success || !r1[2].success) return;
+      if (!r1[0].success || !r1[2].success) return null;
 
       const gens = this.genIface.decodeFunctionResult('getUserGenerators', r1[0].returnData)[0]
         .map((x: bigint) => Number(x));
@@ -715,7 +723,7 @@ export class LoadoutScannerFeed extends EventEmitter {
         });
       }
 
-      this.latest.user = {
+      return {
         address: addr,
         statusLevel: Number(profile.level),
         statusXp:    Number(profile.xp),
@@ -723,10 +731,20 @@ export class LoadoutScannerFeed extends EventEmitter {
         inventory,
         inventoryCount: invItemIds.length,
       };
-      this.emit('user', this.latest.user);
     } catch (err: any) {
-      logger.warn({ err: err.message }, '[LoadoutScanner] refreshSelf failed');
+      logger.warn({ err: err.message, addr }, '[LoadoutScanner] fetchUserView failed');
+      return null;
     }
+  }
+
+  /** Refresh the operator's own loadout view + cycle metadata; emits 'user'. */
+  private async refreshSelf() {
+    if (!this.cfg.walletAddress) return;
+    await this.refreshCycle();
+    const view = await this.fetchUserView(this.cfg.walletAddress);
+    if (!view) return;
+    this.latest.user = view;
+    this.emit('user', this.latest.user);
   }
 
   /**
