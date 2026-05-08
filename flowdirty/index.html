@@ -128,9 +128,74 @@ html,body{
 
 /* Hero */
 .hero-wrap{
+  position:relative;
   margin-bottom:72px;
   display:flex;flex-direction:column;align-items:flex-start;gap:24px;
   max-width:920px;
+  min-height:560px;             /* anchor height so the image has room to breathe */
+}
+
+/* Hero portrait — bleeds from the right edge of the viewport, fades to
+   transparent on the left so the headline reads cleanly over the dark
+   background mesh. Image is 21:9 (1916x821) with subject anchored on the
+   right side, negative space on the left.                                     */
+.hero-image{
+  position:absolute;
+  top:120px;                              /* under the topbar */
+  right:0;                                /* viewport-anchored via fixed positioning below */
+  left:auto;
+  width:min(1080px, 70vw);
+  height:560px;
+  background:url('/hero.jpg') center right / cover no-repeat;
+  z-index:0;
+  pointer-events:none;
+  -webkit-mask-image:linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(0,0,0,0.05) 12%,
+    rgba(0,0,0,0.45) 30%,
+    #000 55%,
+    #000 100%
+  );
+  mask-image:linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(0,0,0,0.05) 12%,
+    rgba(0,0,0,0.45) 30%,
+    #000 55%,
+    #000 100%
+  );
+  opacity:0;
+  animation:hero-fade 1800ms var(--ease-snap) 100ms forwards;
+  filter:saturate(1.05) contrast(1.05);
+}
+.hero-image::after{
+  /* Scanline overlay restricted to the image — keeps it integrated with
+     the rest of the page's CRT chrome without darkening it too much.       */
+  content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(
+    0deg, transparent 0 2px, rgba(0,0,0,0.10) 3px, transparent 4px);
+  pointer-events:none;
+  mix-blend-mode:multiply;
+}
+/* Lift the hero text above the image */
+.hero-wrap > *:not(.hero-image){position:relative;z-index:2}
+.h1{text-shadow:0 0 40px rgba(5,2,14,0.92)}   /* keep the headline punching through */
+.lede{
+  background:linear-gradient(90deg, rgba(6,2,14,0.85) 60%, transparent 100%);
+  padding:6px 12px 6px 0;
+}
+@keyframes hero-fade{to{opacity:1}}
+
+@media (max-width:900px){
+  .hero-wrap{min-height:auto}
+  .hero-image{
+    top:80px;right:-12%;width:124%;height:480px;
+    opacity:0.32;
+    -webkit-mask-image:linear-gradient(180deg,#000 0%,#000 55%,transparent 100%);
+    mask-image:linear-gradient(180deg,#000 0%,#000 55%,transparent 100%);
+  }
+  .lede{background:none;padding:0}
 }
 .hero-wrap>*{opacity:0;animation:rise 900ms var(--ease-snap) forwards}
 .hero-wrap>*:nth-child(1){animation-delay:0ms}
@@ -447,6 +512,9 @@ html,body{
       <span>INF <b id="infSupply">—</b></span>
     </div>
   </div>
+
+  <!-- Hero portrait (anchored to shell, bleeds into hero area) -->
+  <div class="hero-image" aria-hidden="true"></div>
 
   <!-- ── Hero ── -->
   <section class="hero-wrap">
