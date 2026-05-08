@@ -12,6 +12,52 @@ import { config } from '../config';
 import { logger } from '../logger';
 import type { WalletTracker } from '../feeds/wallet-tracker';
 
+// --- Public-safe state picker (FlowDirty.fun) ---
+// Strips operator-private fields from DashboardState before broadcasting on
+// the public /ws/network endpoint or returning from /api/network/state.
+// Defense in depth: the nginx vhost for flowdirty.fun also whitelists paths,
+// so even a bug here can't surface walletBalances on the public domain.
+function pickPublicState(state: DashboardState): any {
+  if (!state) return null;
+  // Strip the operator's user-side loadouts; keep network-wide loadout meta
+  // (top equipped assets, leaderboard) which is just chain-aggregated stats.
+  const loadouts = state.loadouts
+    ? {
+        user: null,                 // operator's own loadouts removed
+        network: state.loadouts.network ?? null,
+        topPlayers: state.loadouts.topPlayers ?? [],
+        templatesAvailable: state.loadouts.templatesAvailable ?? 0,
+        cycle: state.loadouts.cycle ?? null,
+      }
+    : null;
+
+  return {
+    publicMode: true,
+    ethPrice: state.ethPrice,
+    ethPriceStart: state.ethPriceStart,
+    volatility: state.volatility,
+    scores: state.scores,
+    economics: state.economics,
+    opStats: state.opStats,
+    ammRate: state.ammRate,
+    dirtyPrice: state.dirtyPrice,
+    loadouts,
+    tokenomics: state.tokenomics,
+    activity: state.activity,
+    orderbook: (state as any).orderbook,
+    cvd: (state as any).cvd,
+    hyperliquid: (state as any).hyperliquid,
+    heatmap: (state as any).heatmap,
+    liquidations: (state as any).liquidations,
+    alerts: (state as any).alerts,
+    connections: (state as any).connections,
+    meta: (state as any).meta,
+    calibration: (state as any).calibration,
+    // EXPLICITLY OMITTED — never reach the public stream:
+    //   walletBalances, corpState, loadouts.user
+  };
+}
+
 // --- Deep diff utility for delta-based WS updates ---
 
 function deepDiff(prev: any, next: any): any | null {
@@ -62,6 +108,10 @@ export class ApiServer {
   });
   private clients = new Set<WebSocket>();
   private clientPrevState = new Map<WebSocket, DashboardState>();
+  // FlowDirty.fun public WS subscribers — receive only the public-safe slice
+  // (no walletBalances, no corpState, no operator's loadouts.user, no bot).
+  private publicClients = new Set<WebSocket>();
+  private publicClientPrevState = new Map<WebSocket, any>();
   private storage: Storage;
   private getState: () => DashboardState;
   private onOpStatsChanged?: () => void;
@@ -100,6 +150,12 @@ export class ApiServer {
       'http://127.0.0.1:3000',
       'http://localhost:3456',
       'http://127.0.0.1:3456',
+      // FlowDirty.fun — public landing/terminal/tracker. CF proxied, both
+      // schemes allowed (CF strips http→https but origin header may vary).
+      'https://flowdirty.fun',
+      'http://flowdirty.fun',
+      'https://www.flowdirty.fun',
+      'http://www.flowdirty.fun',
       ...dashboardVariants,
     ].filter(Boolean);
     const extraOrigins = config.corsOrigins
@@ -121,7 +177,9 @@ export class ApiServer {
       prefix: '/',
     });
 
-    // --- WebSocket endpoint ---
+    // --- WebSocket endpoints ---
+    // /ws         — full operator state (private dashboard)
+    // /ws/network — public-safe slice (FlowDirty.fun terminal page)
     this.app.register(async (app) => {
       app.get('/ws', { websocket: true }, (socket, _req) => {
         this.clients.add(socket);
@@ -145,6 +203,25 @@ export class ApiServer {
           this.clientPrevState.delete(socket);
         });
       });
+
+      app.get('/ws/network', { websocket: true }, (socket, _req) => {
+        this.publicClients.add(socket);
+        logger.info({ clientCount: this.publicClients.size }, '[WS-PUBLIC] Client connected');
+        try {
+          const state = pickPublicState(this.getState());
+          socket.send(JSON.stringify({ type: 'state', full: true, data: state }));
+          this.publicClientPrevState.set(socket, structuredClone(state));
+        } catch {}
+        socket.on('close', () => {
+          this.publicClients.delete(socket);
+          this.publicClientPrevState.delete(socket);
+          logger.info({ clientCount: this.publicClients.size }, '[WS-PUBLIC] Client disconnected');
+        });
+        socket.on('error', () => {
+          this.publicClients.delete(socket);
+          this.publicClientPrevState.delete(socket);
+        });
+      });
     });
 
     // --- REST endpoints ---
@@ -152,6 +229,14 @@ export class ApiServer {
     // Current state snapshot
     this.app.get('/api/state', async () => {
       return this.getState();
+    });
+
+    // Public-safe REST snapshot — what FlowDirty.fun's terminal page uses on
+    // first load before the WS subscription kicks in. Stripped of operator's
+    // wallet, corps, bot, and private loadout fields.
+    this.app.get('/api/network/state', async (_req, reply) => {
+      reply.header('Cache-Control', 'public, max-age=2, s-maxage=4');
+      return pickPublicState(this.getState());
     });
 
     // Historical indicators (Improvement 7: schema validation)
@@ -480,26 +565,50 @@ export class ApiServer {
     logger.info({ port: config.port, host: config.host }, `[API] Server running at http://${config.host}:${config.port}`);
   }
 
-  // Broadcast state to all WS clients (delta-based)
+  // Broadcast state to all WS clients (delta-based) — both private /ws and
+  // public /ws/network. The public stream gets a stripped state.
   broadcast(state: DashboardState) {
+    // Private operator stream
     for (const client of this.clients) {
       try {
         if (client.readyState !== 1) continue;
         const prev = this.clientPrevState.get(client);
         if (!prev) {
-          // No previous state — send full
           client.send(JSON.stringify({ type: 'state', full: true, data: state }));
         } else {
           const diff = deepDiff(prev, state);
           if (diff !== null) {
             client.send(JSON.stringify({ type: 'state', full: false, data: diff }));
           }
-          // else: no changes, skip send
         }
         this.clientPrevState.set(client, structuredClone(state));
       } catch {
         this.clients.delete(client);
         this.clientPrevState.delete(client);
+      }
+    }
+
+    // Public stream — pick the safe slice once per broadcast, then delta-diff
+    // against each public client's previous public-slice snapshot.
+    if (this.publicClients.size > 0) {
+      const publicState = pickPublicState(state);
+      for (const client of this.publicClients) {
+        try {
+          if (client.readyState !== 1) continue;
+          const prev = this.publicClientPrevState.get(client);
+          if (!prev) {
+            client.send(JSON.stringify({ type: 'state', full: true, data: publicState }));
+          } else {
+            const diff = deepDiff(prev, publicState);
+            if (diff !== null) {
+              client.send(JSON.stringify({ type: 'state', full: false, data: diff }));
+            }
+          }
+          this.publicClientPrevState.set(client, structuredClone(publicState));
+        } catch {
+          this.publicClients.delete(client);
+          this.publicClientPrevState.delete(client);
+        }
       }
     }
   }
