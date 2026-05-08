@@ -326,6 +326,56 @@
   .corp-row .col-auto.on { color: var(--green); font-weight: 600; }
   .corp-row .col-auto.off { color: var(--dim); }
   .corp-row .col-pending.has { color: var(--green); font-weight: 600; }
+
+  /* ─── Liquidation headroom bar (Phase 1a) ─────────────────────────
+     Sub-row attached beneath an active corp, showing how close ETH
+     price is to the corp's pre-computed liquidation bounds. Anchored
+     to the same colors as alert levels: safe (green), warn (yellow),
+     danger (red). The bar fill shrinks from 100% to 0% as headroom
+     erodes. */
+  .corp-headroom {
+    grid-column: 1 / -1;
+    margin: -2px 0 6px 38px;
+    padding: 4px 8px 4px 6px;
+    display: grid;
+    grid-template-columns: 110px 1fr 220px;
+    gap: 8px;
+    align-items: center;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--dim);
+  }
+  .corp-headroom-label {
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .corp-headroom-bar {
+    position: relative;
+    height: 6px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .corp-headroom-bar-fill {
+    height: 100%;
+    transition: width 0.3s ease, background-color 0.3s ease;
+    border-radius: 3px;
+  }
+  .corp-headroom-bar-fill.safe   { background: var(--green); }
+  .corp-headroom-bar-fill.warn   { background: var(--yellow); }
+  .corp-headroom-bar-fill.danger { background: var(--red); }
+  .corp-headroom-detail {
+    text-align: right;
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  .corp-headroom-detail .pct {
+    font-weight: 600;
+    margin-right: 6px;
+  }
+  .corp-headroom-detail .pct.safe   { color: var(--green); }
+  .corp-headroom-detail .pct.warn   { color: var(--yellow); }
+  .corp-headroom-detail .pct.danger { color: var(--red); }
   .corp-alert {
     margin-top: 10px;
     padding: 8px 12px;
@@ -356,8 +406,11 @@
   .wallet-dot.stale { background: var(--red); }
   .wallet-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 16px;
+  }
+  @media (max-width: 1100px) {
+    .wallet-grid { grid-template-columns: repeat(3, 1fr); }
   }
   .wallet-cell {
     background: var(--bg);
@@ -387,6 +440,267 @@
   }
   .wallet-rate.pos { color: var(--green); }
   .wallet-rate.neg { color: var(--red); }
+
+  /* --- Tab nav --- */
+  .tabs {
+    display: flex;
+    gap: 0;
+    padding: 0 24px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    background: rgba(0,0,0,0.4);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab-btn {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--dim);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    padding: 10px 16px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active {
+    color: var(--cyan);
+    border-bottom-color: var(--cyan);
+  }
+  /* Hide section panels not in active tab. Section panels use data-pane
+     (NOT data-tab) so they don't collide with the tab BUTTONS' data-tab.
+     We only set display:none for non-matching panes — the original display
+     value (block/grid/flex) is preserved for active panes. */
+  body[data-active-tab="ops"]        [data-pane]:not([data-pane~="ops"])        { display: none !important; }
+  body[data-active-tab="market"]     [data-pane]:not([data-pane~="market"])     { display: none !important; }
+  body[data-active-tab="wallet"]     [data-pane]:not([data-pane~="wallet"])     { display: none !important; }
+  body[data-active-tab="enterprise"] [data-pane]:not([data-pane~="enterprise"]) { display: none !important; }
+  body[data-active-tab="network"]    [data-pane]:not([data-pane~="network"])    { display: none !important; }
+
+  /* --- Loadout panels --- */
+  .loadout-card .gen-row {
+    display: grid;
+    grid-template-columns: minmax(160px, 220px) 1fr;
+    gap: 16px;
+    align-items: start;
+    padding: 10px 0;
+    border-top: 1px dashed rgba(255,255,255,0.08);
+  }
+  .loadout-card .gen-row:first-child { border-top: none; }
+  .gen-meta { font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.6; color: var(--dim); }
+  .gen-meta b { color: var(--text); font-weight: 600; }
+  .gen-meta .gen-name { font-size: 13px; color: #a855f7; font-weight: 700; }
+  .gen-stats { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 4px; }
+  .gen-stat-pill { font-size: 10px; }
+  .gen-stat-pill .v { color: var(--text); font-weight: 600; }
+  .slot-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  @media (max-width: 800px) { .slot-grid { grid-template-columns: repeat(2, 1fr); } }
+  .slot-tile {
+    border: 1.5px solid #6b7280;
+    border-radius: 4px;
+    padding: 6px 8px;
+    background: rgba(255,255,255,0.02);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    line-height: 1.4;
+    position: relative;
+  }
+  .slot-tile.empty {
+    border-style: dashed;
+    border-color: rgba(255,255,255,0.15);
+    color: rgba(255,255,255,0.3);
+  }
+  .slot-tile.r-1 { border-color: #6b7280; }       /* Common */
+  .slot-tile.r-2 { border-color: #3b82f6; }       /* Rare */
+  .slot-tile.r-3 { border-color: #a855f7; }       /* Epic */
+  .slot-tile.r-4 { border-color: #fbbf24; box-shadow: 0 0 8px rgba(251,191,36,0.25); }  /* Legendary */
+  .slot-tile.r-5 { border-color: #ec4899; box-shadow: 0 0 10px rgba(236,72,153,0.35); } /* Mythic */
+  .slot-tile .slot-cat {
+    font-size: 9px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .slot-tile .slot-name { color: var(--text); font-weight: 700; font-size: 11px; margin: 2px 0; }
+  .slot-tile.r-1 .slot-name { color: #d1d5db; }
+  .slot-tile.r-2 .slot-name { color: #60a5fa; }
+  .slot-tile.r-3 .slot-name { color: #c084fc; }
+  .slot-tile.r-4 .slot-name { color: #fcd34d; }
+  .slot-tile.r-5 .slot-name { color: #f472b6; }
+  .slot-tile .slot-stats { color: var(--dim); font-size: 9px; }
+
+  /* Asset meta bars */
+  .asset-bar-row {
+    display: grid;
+    grid-template-columns: 28px 200px 1fr 60px;
+    gap: 10px;
+    align-items: center;
+    padding: 4px 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+  }
+  .asset-bar-row .rank { color: var(--dim); text-align: right; }
+  .asset-bar-row .name { color: var(--text); }
+  .asset-bar-row .name .type { color: var(--dim); font-size: 9px; margin-left: 4px; }
+  .asset-bar-row .total { color: #fbbf24; text-align: right; font-weight: 700; }
+  .asset-bar { display: flex; height: 12px; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,0.06); }
+  .asset-bar > span { display: block; height: 100%; }
+  .asset-bar .b1 { background: #6b7280; }
+  .asset-bar .b2 { background: #3b82f6; }
+  .asset-bar .b3 { background: #a855f7; }
+  .asset-bar .b4 { background: #fbbf24; }
+  .asset-bar .b5 { background: #ec4899; }
+
+  .meta-cat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+  }
+  .meta-cat {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 4px;
+    padding: 8px 10px;
+  }
+  .meta-cat .cat-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: #fbbf24;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .meta-cat .cat-asset {
+    display: flex; justify-content: space-between;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    padding: 2px 0;
+  }
+  .meta-cat .cat-asset .n { color: var(--text); }
+  .meta-cat .cat-asset .c { color: var(--dim); }
+
+  /* Top players */
+  .player-row {
+    border-top: 1px dashed rgba(255,255,255,0.08);
+    padding: 10px 0;
+  }
+  .player-row:first-child { border-top: none; }
+  .player-header {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+    flex-wrap: wrap; margin-bottom: 6px;
+  }
+  .player-rank {
+    font-family: 'JetBrains Mono', monospace; font-size: 14px;
+    color: #22d3ee; font-weight: 700;
+  }
+  .player-addr { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--cyan); text-decoration: none; }
+  .player-stats { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--dim); }
+  .player-loadouts { display: grid; grid-template-columns: 1fr; gap: 8px; }
+  @media (min-width: 900px) { .player-loadouts { grid-template-columns: 1fr 1fr; } }
+  .mini-loadout {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 3px;
+    padding: 6px 8px;
+  }
+  .mini-loadout .ml-title {
+    font-family: 'JetBrains Mono', monospace; font-size: 9px;
+    color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .mini-slots {
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px;
+  }
+  .mini-slot {
+    border: 1.5px solid #6b7280; border-radius: 2px;
+    padding: 3px 4px;
+    font-family: 'JetBrains Mono', monospace; font-size: 8.5px;
+    line-height: 1.3;
+    text-align: center;
+    aspect-ratio: 1.6;
+    overflow: hidden;
+  }
+  .mini-slot.r-1 { border-color: #6b7280; color: #d1d5db; }
+  .mini-slot.r-2 { border-color: #3b82f6; color: #60a5fa; }
+  .mini-slot.r-3 { border-color: #a855f7; color: #c084fc; }
+  .mini-slot.r-4 { border-color: #fbbf24; color: #fcd34d; box-shadow: 0 0 4px rgba(251,191,36,0.3); }
+  .mini-slot.r-5 { border-color: #ec4899; color: #f472b6; box-shadow: 0 0 5px rgba(236,72,153,0.4); }
+  .mini-slot.empty { border-style: dashed; opacity: 0.3; }
+
+  /* --- Whale rows (collapsible) --- */
+  .whale-row {
+    border-top: 1px dashed rgba(255,255,255,0.08);
+    transition: background 0.15s;
+  }
+  .whale-row:first-child { border-top: none; }
+  .whale-row.expanded { background: rgba(34, 211, 238, 0.04); }
+  .whale-compact {
+    display: grid;
+    grid-template-columns: 32px minmax(80px, 1fr) auto 16px;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 8px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.1s;
+  }
+  .whale-compact:hover { background: rgba(255,255,255,0.04); }
+  .whale-rank {
+    font-family: 'JetBrains Mono', monospace; font-size: 14px;
+    color: #22d3ee; font-weight: 700;
+  }
+  .whale-stats {
+    display: flex; gap: 14px; flex-wrap: wrap; justify-content: flex-end;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    color: var(--dim); white-space: nowrap;
+  }
+  .whale-stats span { display: inline-flex; align-items: center; gap: 4px; }
+  .whale-stats span:last-child { color: var(--green); }
+  .whale-toggle {
+    color: var(--dim);
+    font-size: 12px;
+    transition: transform 0.2s;
+    text-align: center;
+  }
+  .whale-row.expanded .whale-toggle { transform: rotate(180deg); }
+
+  .whale-expanded {
+    padding: 8px 16px 16px;
+    border-top: 1px solid rgba(34, 211, 238, 0.15);
+  }
+  .whale-section-title {
+    font-family: 'JetBrains Mono', monospace; font-size: 9px;
+    color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px;
+    margin: 6px 0 6px;
+  }
+  .whale-corps-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  }
+  .whale-corps-table th {
+    text-align: left;
+    color: var(--dim);
+    font-weight: 500;
+    text-transform: uppercase;
+    font-size: 9px;
+    padding: 4px 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  .whale-corps-table td {
+    padding: 4px 6px;
+    color: var(--text);
+    border-bottom: 1px dashed rgba(255,255,255,0.04);
+  }
+  .whale-corps-table tr:last-child td { border-bottom: none; }
 
   /* --- Op outcome logger panel --- */
   .op-log-toggle {
@@ -780,7 +1094,7 @@
   }
 </style>
 </head>
-<body>
+<body data-active-tab="ops">
 
 <div class="header">
   <div class="header-left">
@@ -803,8 +1117,18 @@
   </label>
 </div>
 
+<!-- Tab navigation. Each tab shows a subset of the section/card containers below
+     based on their data-tab attribute. Active tab is persisted in localStorage. -->
+<nav class="tabs" id="tabsNav">
+  <button class="tab-btn active" data-tab="ops">⚡ OPS</button>
+  <button class="tab-btn"        data-tab="market">📈 MARKET</button>
+  <button class="tab-btn"        data-tab="wallet">💰 WALLET</button>
+  <button class="tab-btn"        data-tab="enterprise">🏢 ENTERPRISE</button>
+  <button class="tab-btn"        data-tab="network">🌐 NETWORK</button>
+</nav>
+
 <!-- Tokenomics panel (always visible — public network data, no PII) -->
-<div style="padding: 0 24px 8px;">
+<div style="padding: 0 24px 8px;" data-pane="network">
   <div class="card tokenomics-card" id="tokenomicsCard" style="display:none;padding:12px 16px;">
     <div class="tokenomics-header">
       <div>
@@ -821,8 +1145,74 @@
   </div>
 </div>
 
+<!-- Loadout panels (My Loadouts + Network Meta + Top Players) -->
+<div style="padding: 0 24px 8px;" data-pane="enterprise">
+  <div class="card loadout-card" id="myLoadoutsCard" style="display:none;padding:12px 16px;border-color:#a855f7;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#a855f7">MY ENTERPRISES</span>
+        <span class="info-pill" title="Your equipped loadouts pulled live from the on-chain Enterprise contract. Each loadout is an independent laundering Front in the Swiss Vault — they cycle separately. Rarity color: gray Common / blue Rare / purple Epic / gold Legendary / pink Mythic.">?</span>
+      </div>
+      <div id="myLoadoutsStatus" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);"></div>
+    </div>
+    <div id="myLoadoutsBody"></div>
+  </div>
+</div>
+
+<div style="padding: 0 24px 8px;" data-pane="enterprise network">
+  <div class="card loadout-card" id="assetMetaCard" style="display:none;padding:12px 16px;border-color:#fbbf24;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#fbbf24">ASSET META</span>
+        <span class="info-pill" title="Network-wide popularity of equipped assets. Bars stack rarity (Common/Rare/Epic/Legendary). Shows what other players are converging on. Refreshes every 15 minutes.">?</span>
+      </div>
+      <div id="assetMetaStatus" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);"></div>
+    </div>
+    <div id="assetMetaBody"></div>
+  </div>
+</div>
+
+<div style="padding: 0 24px 8px;" data-pane="enterprise network">
+  <div class="card loadout-card" id="topPlayersCard" style="display:none;padding:12px 16px;border-color:#22d3ee;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#22d3ee">WHALE WATCH</span>
+        <span class="info-pill" title="Top 5 most-active wallets and their equipped loadouts. Watch what whales are running. Click a wallet to view on the explorer.">?</span>
+      </div>
+      <div id="topPlayersStatus" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);"></div>
+    </div>
+    <div id="topPlayersBody"></div>
+  </div>
+</div>
+
+<!-- $DIRTY price chart (Kumbaya DEX history) -->
+<div style="padding: 0 24px 8px;" data-pane="wallet network">
+  <div class="card" id="dirtyPriceCard" style="display:none;padding:12px 16px;border-color:var(--magenta);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <div>
+        <span class="card-title" style="margin:0">$DIRTY PRICE</span>
+        <span class="info-pill" title="Live $DIRTY price from Kumbaya DEX (kumbaya.exchange). Daily candles since launch. Falls below $0.073 launch price = below presale-LP seed level.">?</span>
+        <a href="https://kumbaya.exchange" target="_blank" rel="noopener" style="margin-left:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--cyan);text-decoration:none;">kumbaya.exchange ↗</a>
+      </div>
+      <div style="display:flex;align-items:baseline;gap:14px;font-family:'JetBrains Mono',monospace;">
+        <span id="dirtyPriceNow" style="font-size:22px;font-weight:bold;color:var(--magenta);">$--</span>
+        <span id="dirtyPrice24h" style="font-size:12px;">--</span>
+      </div>
+    </div>
+    <div style="position:relative;height:180px;">
+      <canvas id="dirtyPriceChart" style="width:100%;height:100%;display:block;"></canvas>
+    </div>
+    <div style="display:flex;gap:24px;margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);flex-wrap:wrap;">
+      <span>Launch: <span style="color:var(--text)">$0.073</span></span>
+      <span>vs Launch: <span id="dirtyVsLaunch">--</span></span>
+      <span>24h vol: <span id="dirty24hVol" style="color:var(--text)">$--</span></span>
+      <span>TVL: <span id="dirtyTvl" style="color:var(--text)">$--</span></span>
+    </div>
+  </div>
+</div>
+
 <!-- Hero card (only shown in PUBLIC_MODE) -->
-<div id="heroCard" class="hero-card" style="display:none;">
+<div id="heroCard" class="hero-card" style="display:none;" data-pane="ops market wallet enterprise network">
   <div class="hero-row">
     <div>
       <div class="hero-headline">Live ETH risk intelligence for Offshore Protocol</div>
@@ -861,7 +1251,7 @@
 </div>
 
 <!-- Per-corporation on-chain state -->
-<div style="padding: 0 24px 8px;">
+<div style="padding: 0 24px 8px;" data-pane="ops">
   <div class="card corp-card" id="corpCard" style="display:none;padding:12px 16px;">
     <div class="corp-header">
       <div>
@@ -889,7 +1279,7 @@
 </div>
 
 <!-- Live wallet balances (on-chain) -->
-<div style="padding: 8px 24px 0;">
+<div style="padding: 8px 24px 0;" data-pane="wallet ops">
   <div class="card wallet-card" id="walletCard" style="display:none;padding:12px 16px;">
     <div class="wallet-header">
       <div>
@@ -922,12 +1312,17 @@
         <div class="wallet-value" id="walletNet">--</div>
         <div class="wallet-rate" id="walletNetSub">$DIRTY @ live rate − INF burn</div>
       </div>
+      <div class="wallet-cell" title="Hours until INF balance reaches the 25 floor at current burn rate. The bot pauses ops below 25 to leave room for restarts.">
+        <div class="wallet-label">INF RUNWAY</div>
+        <div class="wallet-value" id="walletRunway">--</div>
+        <div class="wallet-rate" id="walletRunwaySub">to 25 floor</div>
+      </div>
     </div>
   </div>
 </div>
 
 <!-- Activity rollup (mirrors the in-game Activity Log) -->
-<div style="padding: 0 24px 8px;">
+<div style="padding: 0 24px 8px;" data-pane="ops">
   <div class="card activity-card" id="activityCard" style="display:none;padding:12px 16px;">
     <div class="activity-header">
       <div style="display:flex;align-items:center;gap:10px;">
@@ -946,7 +1341,7 @@
 </div>
 
 <!-- Calibration context bar -->
-<div style="padding: 8px 24px;">
+<div style="padding: 8px 24px;" data-pane="ops market">
   <div class="card" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;">
     <div style="display:flex;align-items:center;gap:12px;">
       <span class="card-title" style="margin:0">SUGGESTION</span><span class="info-pill" title="Real-time recommendation based on calibrated probability of operation failure under current ETH conditions. Updated every second.">?</span>
@@ -968,7 +1363,7 @@
 <!-- Op outcome logger: capture observed in-game results so the
      economics module can replace the placeholder failure-reward
      fractions with empirical values. -->
-<div style="padding: 0 24px 8px;">
+<div style="padding: 0 24px 8px;" data-pane="ops">
   <div class="card" style="padding:12px 16px;">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:10px;">
@@ -1055,7 +1450,7 @@
 </div>
 
 <!-- Operation safety cards -->
-<div class="ops-grid">
+<div class="ops-grid" data-pane="ops market">
   <div class="op-card" id="opExtortion">
     <div class="op-name">EXTORTION<span class="info-pill" title="5-minute leveraged short on ETH at 2,565x. Fails if ETH drops &gt;0.039% within the window. Binary outcome: full reward (100 $DIRTY at PL1) on success, ZERO on failure.">?</span></div>
     <div class="op-meta">5 min • 2,565x • 0.039% • binary</div>
@@ -1082,7 +1477,7 @@
   </div>
 </div>
 
-<div class="grid">
+<div class="grid" data-pane="market">
   <!-- ETH Price -->
   <div class="card">
     <div class="card-title">ETH PRICE<span class="info-pill" title="Live ETH spot price from Hyperliquid. Operations fail when ETH drops past their threshold within the operation window.">?</span></div>
@@ -1339,6 +1734,39 @@ function setServerStatus(on) {
   label.textContent = on ? 'CONNECTED' : 'DISCONNECTED';
 }
 
+// ============================================================
+// TAB NAVIGATION — show/hide card containers via body[data-active-tab]
+// Active tab persists in localStorage so refreshes preserve view.
+// ============================================================
+(function setupTabs() {
+  const STORAGE_KEY = 'offshore-active-tab';
+  const VALID = ['ops', 'market', 'wallet', 'enterprise', 'network'];
+  const stored = localStorage.getItem(STORAGE_KEY);
+  const initial = VALID.includes(stored) ? stored : 'ops';
+  setTab(initial);
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn');
+    if (!btn) return;
+    const tab = btn.dataset.tab;
+    if (!VALID.includes(tab)) return;
+    setTab(tab);
+  });
+
+  function setTab(tab) {
+    document.body.dataset.activeTab = tab;
+    document.querySelectorAll('.tab-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.tab === tab);
+    });
+    localStorage.setItem(STORAGE_KEY, tab);
+    // After tab change, redraw the DIRTY chart since canvas dimensions
+    // may have been zero while hidden — wait one frame, then redraw.
+    requestAnimationFrame(() => {
+      if (window._lastDirtyPriceData) drawDirtyChart(window._lastDirtyPriceData);
+    });
+  }
+})();
+
 function toggleSettings() {
   document.getElementById('settingsPanel').classList.toggle('open');
 }
@@ -1358,6 +1786,442 @@ function fmtSignedDelta(value, decimals = 0) {
   if (value == null || !Number.isFinite(value)) return null;
   const sign = value >= 0 ? '+' : '';
   return sign + (Math.abs(value) >= 1e3 ? (value / 1e3).toFixed(1) + 'K' : value.toFixed(decimals));
+}
+
+// ============================================================
+// LOADOUT PANELS — my loadouts, network meta, top players
+// ============================================================
+const RARITY_LABEL = ['?', 'C', 'R', 'E', 'L', 'M'];
+const ITEM_TYPE_ORDER = ['Business','Insurance','Accountant','Method','Associates','OpSec'];
+
+function fmtPct(n, dec = 1) {
+  if (n == null || !Number.isFinite(n)) return '–';
+  return (n >= 0 ? '' : '') + n.toFixed(dec) + '%';
+}
+function fmtN(n, dec = 0) {
+  if (n == null || !Number.isFinite(n)) return '–';
+  return n.toFixed(dec);
+}
+
+function renderSlotTile(slot, idx) {
+  if (!slot || !slot.itemId) {
+    return `<div class="slot-tile empty">
+      <div class="slot-cat">${ITEM_TYPE_ORDER[idx] ?? 'slot'}</div>
+      <div class="slot-name">— empty —</div>
+    </div>`;
+  }
+  const r = slot.rarity || 1;
+  const stats = [];
+  if (slot.cr   > 0) stats.push(`CR ${slot.cr.toFixed(0)}`);
+  if (slot.hp   > 0) stats.push(`HP ${slot.hp.toFixed(0)}`);
+  if (slot.eff  > 0) stats.push(`Eff ${slot.eff.toFixed(0)}%`);
+  if (slot.disc > 0) stats.push(`Disc ${slot.disc.toFixed(0)}%`);
+  if (slot.bc   > 0) stats.push(`BC ${slot.bc.toFixed(0)}%`);
+  if (slot.bm   > 0) stats.push(`BM ${slot.bm.toFixed(0)}%`);
+  return `<div class="slot-tile r-${r}" title="${slot.name} (${slot.rarityName}) — ${stats.join(', ')}">
+    <div class="slot-cat">${slot.category} · ${slot.rarityName}${slot.rarityMult > 1 ? ` ×${slot.rarityMult}` : ''}</div>
+    <div class="slot-name">${slot.name}</div>
+    <div class="slot-stats">${stats.join(' · ')}</div>
+  </div>`;
+}
+
+function renderMyLoadouts(L) {
+  const card = document.getElementById('myLoadoutsCard');
+  if (!L || !L.user) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  const u = L.user;
+
+  // Status XP progress bar — Status 4 needs 3,900 XP per docs
+  const STATUS_XP_REQ = [0, 0, 650, 1950, 3900, 6500, 10400, 15600, 23400, 35100, 52000];
+  const cur = u.statusXp;
+  const nextReq = STATUS_XP_REQ[u.statusLevel + 1] ?? cur;
+  const pct = Math.min(100, Math.max(0, (cur / nextReq) * 100));
+
+  document.getElementById('myLoadoutsStatus').innerHTML =
+    `Status <b style="color:var(--text)">L${u.statusLevel}</b> · ` +
+    `XP <b style="color:var(--text)">${cur.toLocaleString()}/${nextReq.toLocaleString()}</b> ` +
+    `<span style="color:#a855f7">(${pct.toFixed(0)}%)</span> · ` +
+    `Inventory <b style="color:var(--text)">${u.inventoryCount}</b>`;
+
+  const body = document.getElementById('myLoadoutsBody');
+
+  // For each generator, render header meta + 6 slot tiles
+  const rows = u.generators.map((g, i) => {
+    const meta = `
+      <div class="gen-name">Enterprise ${i + 1}</div>
+      <div style="font-size:9px;color:var(--dim);margin-bottom:4px;">gen #${g.id}</div>
+      <div class="gen-stats">
+        <span class="gen-stat-pill"><span class="v">${g.hp.toFixed(0)}</span> HP</span>
+        <span class="gen-stat-pill"><span class="v">${g.cr.toFixed(0)}</span> CR</span>
+        <span class="gen-stat-pill"><span class="v">${g.eff.toFixed(0)}%</span> Eff</span>
+        <span class="gen-stat-pill"><span class="v">${g.disc.toFixed(1)}%</span> Disc</span>
+        <span class="gen-stat-pill"><span class="v">${g.bc.toFixed(1)}%</span> BC</span>
+        <span class="gen-stat-pill"><span class="v">${g.bm.toFixed(0)}%</span> BM</span>
+      </div>
+    `;
+    const slotsHtml = g.slots.map((s, idx) => renderSlotTile(s, idx)).join('');
+    return `<div class="gen-row">
+      <div class="gen-meta">${meta}</div>
+      <div class="slot-grid">${slotsHtml}</div>
+    </div>`;
+  }).join('');
+
+  body.innerHTML = rows || '<div style="color:var(--dim);font-size:11px;">No generators owned yet.</div>';
+}
+
+function renderAssetMeta(L) {
+  const card = document.getElementById('assetMetaCard');
+  if (!L || !L.network) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = '';
+  const N = L.network;
+
+  const ageMin = Math.max(0, (Date.now() - N.lastScanTs) / 60000);
+  document.getElementById('assetMetaStatus').innerHTML =
+    `<b style="color:var(--text)">${N.totalLoadouts}</b> loadouts scanned · ` +
+    `last scan ${ageMin < 1 ? 'just now' : ageMin.toFixed(0) + 'm ago'}`;
+
+  const body = document.getElementById('assetMetaBody');
+  const top10 = N.topEquipped.slice(0, 10);
+  const maxTotal = top10.length > 0 ? top10[0].total : 1;
+
+  const barRows = top10.map((a, i) => {
+    const segs = a.byRarity.slice(1, 6).map((c, idx) => {
+      if (c === 0) return '';
+      const pct = (c / maxTotal) * 100;
+      return `<span class="b${idx+1}" style="width:${pct.toFixed(2)}%;" title="${RARITY_LABEL[idx+1]} × ${c}"></span>`;
+    }).join('');
+    return `<div class="asset-bar-row">
+      <div class="rank">#${i+1}</div>
+      <div class="name">${a.name} <span class="type">[${a.type}]</span></div>
+      <div class="asset-bar">${segs}</div>
+      <div class="total">${a.total}</div>
+    </div>`;
+  }).join('');
+
+  // Per-category top picks (small grids)
+  const catBlocks = ITEM_TYPE_ORDER.map(cat => {
+    const list = (N.topByCategory[cat] || []).slice(0, 4);
+    if (list.length === 0) return '';
+    const items = list.map(s => `<div class="cat-asset"><span class="n">${s.name}</span><span class="c">${s.total}</span></div>`).join('');
+    return `<div class="meta-cat"><div class="cat-name">${cat}</div>${items}</div>`;
+  }).join('');
+
+  // Top legendaries strip
+  const legs = (N.topLegendaries || []).slice(0, 8).map(L =>
+    `<span style="display:inline-block;border:1px solid #fbbf24;padding:2px 6px;margin:2px;font-size:10px;color:#fcd34d;border-radius:2px;">
+       ${L.name} <span style="color:#888">×${L.total}</span>
+     </span>`
+  ).join('');
+
+  body.innerHTML = `
+    <div style="margin-bottom:12px;">${barRows}</div>
+    <div style="font-size:10px;color:var(--dim);margin-top:4px;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Top per category</div>
+    <div class="meta-cat-grid">${catBlocks}</div>
+    ${legs ? `<div style="font-size:10px;color:var(--dim);margin:14px 0 4px;text-transform:uppercase;letter-spacing:0.5px;">Top Legendaries equipped</div><div>${legs}</div>` : ''}
+  `;
+}
+
+// Track which whale rows are expanded across re-renders. Persist in localStorage
+// so collapsing a row stays collapsed when the WS state updates.
+const _expandedWhales = new Set(JSON.parse(localStorage.getItem('whales-expanded') || '[]'));
+function _saveExpanded() {
+  localStorage.setItem('whales-expanded', JSON.stringify([..._expandedWhales]));
+}
+
+function fmtBig(n, suffix = '') {
+  if (n == null || !Number.isFinite(n)) return '—';
+  if (n >= 1e6)  return (n/1e6).toFixed(1) + 'M' + suffix;
+  if (n >= 1e3)  return (n/1e3).toFixed(1) + 'k' + suffix;
+  return n.toFixed(0) + suffix;
+}
+
+function renderTopPlayers(L) {
+  const card = document.getElementById('topPlayersCard');
+  if (!L || !L.topPlayers || L.topPlayers.length === 0) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = '';
+  document.getElementById('topPlayersStatus').innerHTML =
+    `Top <b style="color:var(--text)">${L.topPlayers.length}</b> by activity (last 28h) · click any row to expand`;
+
+  const body = document.getElementById('topPlayersBody');
+  const html = L.topPlayers.map(p => renderWhaleRow(p)).join('');
+  body.innerHTML = html;
+
+  // Bind click handlers on each row's compact header to toggle expansion
+  body.querySelectorAll('.whale-row').forEach(row => {
+    row.querySelector('.whale-compact').addEventListener('click', (e) => {
+      // Don't expand when clicking the explorer link itself
+      if (e.target.closest('a')) return;
+      const addr = row.dataset.addr;
+      if (_expandedWhales.has(addr)) _expandedWhales.delete(addr);
+      else _expandedWhales.add(addr);
+      _saveExpanded();
+      row.classList.toggle('expanded');
+      row.querySelector('.whale-expanded').style.display =
+        _expandedWhales.has(addr) ? 'block' : 'none';
+    });
+  });
+}
+
+function renderWhaleRow(p) {
+  const trunc = p.address.slice(0, 6) + '..' + p.address.slice(-4);
+  const explorerUrl = `https://www.megaexplorer.xyz/address/${p.address}`;
+  const isExpanded = _expandedWhales.has(p.address.toLowerCase()) || _expandedWhales.has(p.address);
+  // Compact summary line
+  const bal = p.balances || { inf: 0, dirty: 0, usdm: 0 };
+
+  const compact = `
+    <div class="whale-compact">
+      <span class="whale-rank">#${p.rank}</span>
+      <a class="player-addr" href="${explorerUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${trunc}</a>
+      <span class="whale-stats">
+        <span title="DIRTY balance">💸 ${fmtBig(bal.dirty)}</span>
+        <span title="INF balance">⚡ ${fmtBig(bal.inf)}</span>
+        <span title="USDM balance">💵 ${fmtBig(bal.usdm)}</span>
+        <span title="Total active corps (PL indicator)">🏢 ${p.corpCount || 0}</span>
+        <span title="Operations in last 28h">📊 ${p.opsCount.toLocaleString()}</span>
+        <span title="DIRTY earned in last 28h">+${fmtBig(p.dirtyEarned)}</span>
+      </span>
+      <span class="whale-toggle">▾</span>
+    </div>
+  `;
+
+  // Expanded details: loadouts + corp ops table
+  const loadouts = (p.generators || []).map((g, i) => {
+    const slotsHtml = g.slots.map(s => {
+      if (!s) return `<div class="mini-slot empty">—</div>`;
+      const shortName = s.name.length > 14 ? s.name.slice(0, 13) + '…' : s.name;
+      return `<div class="mini-slot r-${s.rarity}" title="${s.name} (${s.rarityName})">${shortName}</div>`;
+    }).join('');
+    return `<div class="mini-loadout">
+      <div class="ml-title">E${i+1} · HP ${g.hp.toFixed(0)} · CR ${g.cr.toFixed(0)} · Eff ${g.eff.toFixed(0)}% · Disc ${g.disc.toFixed(1)}% · BC ${g.bc.toFixed(1)}% · BM ${g.bm.toFixed(0)}%</div>
+      <div class="mini-slots">${slotsHtml}</div>
+    </div>`;
+  }).join('');
+
+  const corpsTable = (p.corps || []).length === 0
+    ? '<div style="color:var(--dim);font-size:11px;padding:8px;">No corp ops data.</div>'
+    : `
+      <table class="whale-corps-table">
+        <thead>
+          <tr>
+            <th>#</th><th>Corp</th><th>Mode</th><th>Auto</th><th>Status</th>
+            <th>Ends in</th><th>INF staked</th><th>Pending DIRTY</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${p.corps.map((c, idx) => {
+            const now = Math.floor(Date.now() / 1000);
+            const endsIn = c.tradeEndTs > now ? c.tradeEndTs - now : 0;
+            const endsInStr = c.active && endsIn > 0
+              ? (endsIn >= 3600 ? `${(endsIn/60).toFixed(0)}m` : `${Math.floor(endsIn/60)}m ${endsIn%60}s`)
+              : '—';
+            const status = c.active ? '🟢 RUNNING' : (c.pendingDirty > 0 ? '🔵 CLAIMABLE' : '⚫ IDLE');
+            return `<tr>
+              <td>${idx+1}</td>
+              <td><a href="https://www.megaexplorer.xyz/address/${c.address}" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none;font-family:'JetBrains Mono',monospace;font-size:9px;">${c.address.slice(0,6)}..</a></td>
+              <td>${c.modeName}</td>
+              <td>${c.autoEnabled ? '✓' : '✗'}</td>
+              <td>${status}</td>
+              <td>${endsInStr}</td>
+              <td>${c.influence.toFixed(0)}</td>
+              <td>${c.pendingDirty > 0 ? c.pendingDirty.toFixed(1) : '—'}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
+
+  const expanded = `
+    <div class="whale-expanded" style="display: ${isExpanded ? 'block' : 'none'};">
+      <div class="whale-section-title">Loadouts</div>
+      <div class="player-loadouts">${loadouts || '<i style="color:var(--dim);font-size:11px;">No loadouts.</i>'}</div>
+      <div class="whale-section-title" style="margin-top:14px;">Active Corps (${p.corpCount || 0})</div>
+      ${corpsTable}
+    </div>
+  `;
+
+  return `<div class="whale-row${isExpanded ? ' expanded' : ''}" data-addr="${p.address}">${compact}${expanded}</div>`;
+}
+
+function renderLoadouts(L) {
+  renderMyLoadouts(L);
+  renderAssetMeta(L);
+  renderTopPlayers(L);
+}
+
+// ============================================================
+// $DIRTY PRICE CARD — daily candles from Kumbaya DEX
+// ============================================================
+function renderDirtyPrice(p) {
+  const card = document.getElementById('dirtyPriceCard');
+  if (!p || !p.ok) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  window._lastDirtyPriceData = p;  // cache for redraw on tab switch
+
+  const price = p.priceUSD;
+  document.getElementById('dirtyPriceNow').textContent = '$' + price.toFixed(price < 1 ? 4 : 2);
+
+  // 24h change pill
+  const ch24 = p.change24h;
+  const el24 = document.getElementById('dirtyPrice24h');
+  if (ch24 != null) {
+    el24.textContent = (ch24 >= 0 ? '+' : '') + ch24.toFixed(2) + '% 24h';
+    el24.style.color = ch24 >= 0 ? 'var(--green)' : 'var(--red)';
+  } else {
+    el24.textContent = '--';
+    el24.style.color = 'var(--dim)';
+  }
+
+  // Footer stats
+  const launchPrice = 0.073;
+  const vsLaunch    = (price - launchPrice) / launchPrice * 100;
+  const elLaunch    = document.getElementById('dirtyVsLaunch');
+  elLaunch.textContent = (vsLaunch >= 0 ? '+' : '') + vsLaunch.toFixed(1) + '%';
+  elLaunch.style.color = vsLaunch >= 0 ? 'var(--green)' : 'var(--red)';
+
+  // Latest candle gives us 24h volume + current TVL
+  const last = p.history && p.history.length > 0 ? p.history[p.history.length - 1] : null;
+  document.getElementById('dirty24hVol').textContent = last
+    ? '$' + (last.volumeUSD >= 1000 ? (last.volumeUSD/1000).toFixed(1) + 'k' : last.volumeUSD.toFixed(0))
+    : '$--';
+  document.getElementById('dirtyTvl').textContent = last
+    ? '$' + (last.tvlUSD >= 1000 ? (last.tvlUSD/1000).toFixed(1) + 'k' : last.tvlUSD.toFixed(0))
+    : '$--';
+
+  drawDirtyChart(p);
+}
+
+function drawDirtyChart(p) {
+  const canvas = document.getElementById('dirtyPriceChart');
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.offsetWidth;
+  const cssH = canvas.offsetHeight;
+  canvas.width  = cssW * dpr;
+  canvas.height = cssH * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  // Build the data series:
+  //   - Kumbaya history (daily OHLC, oldest → newest)
+  //   - Append "now" point with current spot price for an up-to-the-minute tail
+  const series = [];
+  for (const c of (p.history || [])) {
+    series.push({ ts: c.ts * 1000, price: c.close });
+  }
+  // Append current spot if we have it
+  if (p.priceUSD > 0) {
+    const nowMs = Date.now();
+    // Skip duplicate if last candle close is essentially the live price
+    const last = series[series.length - 1];
+    if (!last || Math.abs(last.price - p.priceUSD) > 1e-6 || (nowMs - last.ts) > 6 * 3600_000) {
+      series.push({ ts: nowMs, price: p.priceUSD });
+    }
+  }
+
+  if (series.length < 2) {
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.font = '11px JetBrains Mono, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Building history... (need 2+ daily candles)', cssW/2, cssH/2);
+    return;
+  }
+
+  // Compute axis bounds
+  const tMin = series[0].ts;
+  const tMax = series[series.length - 1].ts;
+  let pMin = Math.min(...series.map(s => s.price));
+  let pMax = Math.max(...series.map(s => s.price));
+  // Include launch price as a horizontal reference line
+  const launch = 0.073;
+  pMin = Math.min(pMin, launch);
+  pMax = Math.max(pMax, launch);
+  const pRange = pMax - pMin;
+  // 10% padding on the price axis
+  pMin -= pRange * 0.1;
+  pMax += pRange * 0.1;
+
+  const padL = 50, padR = 16, padT = 10, padB = 22;
+  const plotW = cssW - padL - padR;
+  const plotH = cssH - padT - padB;
+
+  const xFor = (t) => padL + ((t - tMin) / Math.max(tMax - tMin, 1)) * plotW;
+  const yFor = (price) => padT + (1 - (price - pMin) / Math.max(pMax - pMin, 1e-9)) * plotH;
+
+  // Grid + Y axis labels (5 horizontal lines)
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.font = '10px JetBrains Mono, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < 5; i++) {
+    const yPrice = pMin + (pMax - pMin) * (i / 4);
+    const y = yFor(yPrice);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    ctx.fillText('$' + yPrice.toFixed(yPrice < 0.01 ? 5 : 4), padL - 4, y);
+  }
+
+  // Launch price reference line (yellow dashed)
+  ctx.strokeStyle = 'rgba(255, 215, 0, 0.6)';
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  const yLaunch = yFor(launch);
+  ctx.moveTo(padL, yLaunch); ctx.lineTo(padL + plotW, yLaunch); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(255, 215, 0, 0.7)';
+  ctx.textAlign = 'left';
+  ctx.fillText('launch', padL + 4, yLaunch - 7);
+
+  // Price line — last segment uses live spot price
+  ctx.strokeStyle = '#ff66ff'; // magenta
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i < series.length; i++) {
+    const x = xFor(series[i].ts);
+    const y = yFor(series[i].price);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Fill area under the curve (subtle)
+  ctx.fillStyle = 'rgba(255, 102, 255, 0.10)';
+  ctx.beginPath();
+  ctx.moveTo(xFor(series[0].ts), padT + plotH);
+  for (const s of series) ctx.lineTo(xFor(s.ts), yFor(s.price));
+  ctx.lineTo(xFor(series[series.length - 1].ts), padT + plotH);
+  ctx.closePath();
+  ctx.fill();
+
+  // Data points
+  ctx.fillStyle = '#ff66ff';
+  for (const s of series) {
+    ctx.beginPath();
+    ctx.arc(xFor(s.ts), yFor(s.price), 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // X axis date labels — first, middle, last
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const fmtDate = (t) => {
+    const d = new Date(t);
+    return `${d.getMonth()+1}/${d.getDate()}`;
+  };
+  ctx.fillText(fmtDate(series[0].ts),                            xFor(series[0].ts), padT + plotH + 4);
+  if (series.length > 2) {
+    const mid = Math.floor(series.length / 2);
+    ctx.fillText(fmtDate(series[mid].ts), xFor(series[mid].ts), padT + plotH + 4);
+  }
+  ctx.fillText(fmtDate(series[series.length - 1].ts),            xFor(series[series.length - 1].ts), padT + plotH + 4);
 }
 
 function renderTokenomics(t) {
@@ -1580,6 +2444,29 @@ function renderCorps(b) {
       </div>
     `;
     table.appendChild(row);
+
+    // Headroom sub-row (only for actively-running ops with live ETH price).
+    // Shows distance to either liquidation bound as a fillbar plus the live
+    // numbers. Color-coded green/yellow/red by alertLevel from backend.
+    if (c.opHeadroom) {
+      const h = c.opHeadroom;
+      const fillPct = Math.max(0, Math.min(100, h.headroomPct));
+      const sub = document.createElement('div');
+      sub.className = 'corp-headroom';
+      const devSign = h.deviationPct >= 0 ? '+' : '';
+      sub.innerHTML = `
+        <div class="corp-headroom-label">↳ headroom</div>
+        <div class="corp-headroom-bar">
+          <div class="corp-headroom-bar-fill ${h.alertLevel}" style="width: ${fillPct.toFixed(1)}%"></div>
+        </div>
+        <div class="corp-headroom-detail">
+          <span class="pct ${h.alertLevel}">${h.headroomPct.toFixed(0)}%</span>
+          $${h.ethPrice.toFixed(2)} vs anchor $${h.anchorPrice.toFixed(2)}
+          (${devSign}${h.deviationPct.toFixed(3)}% / ±${h.thresholdPct.toFixed(3)}%)
+        </div>
+      `;
+      table.appendChild(sub);
+    }
   }
 
   // Alerts
@@ -1680,6 +2567,40 @@ function renderWallet(b, amm) {
   } else {
     document.getElementById('walletNet').textContent = obs < 60 ? 'warming up...' : '--';
     document.getElementById('walletNet').style.color = 'var(--dim)';
+  }
+
+  // INF runway projection — hours until INF hits the 25 floor at current burn.
+  // The bot pauses below 25 to leave room for restart costs.
+  const runwayEl    = document.getElementById('walletRunway');
+  const runwaySubEl = document.getElementById('walletRunwaySub');
+  const FLOOR = 25;
+  if (rateInf == null) {
+    runwayEl.textContent = obs < 60 ? '...' : '—';
+    runwayEl.style.color = 'var(--dim)';
+    runwaySubEl.textContent = 'rate warming up';
+  } else if (b.inf <= FLOOR) {
+    runwayEl.textContent = 'AT FLOOR';
+    runwayEl.style.color = 'var(--red)';
+    runwaySubEl.textContent = 'Top up now';
+  } else if (rateInf >= 0) {
+    // Net positive — INF is being added (or steady)
+    runwayEl.textContent = '∞';
+    runwayEl.style.color = 'var(--green)';
+    runwaySubEl.textContent = 'INF stable / growing';
+  } else {
+    // burning — runway = (current - 25) / |rate|
+    const hoursLeft = (b.inf - FLOOR) / Math.abs(rateInf);
+    let label, color;
+    if (hoursLeft < 1)        { label = `${(hoursLeft * 60).toFixed(0)}m`; color = 'var(--red)'; }
+    else if (hoursLeft < 24)  { label = `${hoursLeft.toFixed(1)}h`;        color = hoursLeft < 4 ? 'var(--red)' : 'var(--text)'; }
+    else                       { label = `${(hoursLeft / 24).toFixed(1)}d`; color = 'var(--green)'; }
+    runwayEl.textContent = label;
+    runwayEl.style.color = color;
+    // ETA timestamp
+    const eta = new Date(Date.now() + hoursLeft * 3600 * 1000);
+    const hh = eta.getHours().toString().padStart(2,'0');
+    const mm = eta.getMinutes().toString().padStart(2,'0');
+    runwaySubEl.textContent = `to 25 floor · ETA ${hh}:${mm}`;
   }
 }
 
@@ -1891,6 +2812,8 @@ function render(s) {
 
   // Network-wide tokenomics + active player count (public, always visible)
   if (s.tokenomics) renderTokenomics(s.tokenomics);
+  if (s.dirtyPrice) renderDirtyPrice(s.dirtyPrice);
+  if (s.loadouts)   renderLoadouts(s.loadouts);
 
   // On-chain wallet + corp state + activity rollups
   if (s.walletBalances) renderWallet(s.walletBalances, s.ammRate);

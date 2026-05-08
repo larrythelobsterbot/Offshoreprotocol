@@ -9,6 +9,8 @@ import type { CorpStateBlock } from './feeds/corp-state';
 import type { AmmRate } from './feeds/amm-rate';
 import type { OpSummary } from './engine/op-summary';
 import type { TokenomicsBlock } from './feeds/tokenomics';
+import type { KumbayaPriceSnapshot } from './feeds/kumbaya-price';
+import type { LoadoutBlock } from './feeds/loadout-scanner';
 
 export interface Tick {
   t: number;   // timestamp ms
@@ -112,6 +114,10 @@ export interface DashboardState {
   walletBalances: WalletBalances | null;
   corpState: CorpStateBlock | null;
   ammRate: AmmRate | null;
+  // Kumbaya DEX price feed for $DIRTY (daily candles + 24h change)
+  dirtyPrice: KumbayaPriceSnapshot | null;
+  // Enterprise loadout state — operator's gens + inventory + network meta + top players
+  loadouts: LoadoutBlock | null;
   tokenomics: TokenomicsBlock | null;
   activity: {
     last1h: OpSummary;

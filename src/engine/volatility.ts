@@ -13,6 +13,7 @@ import type { OpType } from './economics';
 import type { OpSummary } from './op-summary';
 import type { WalletBalances } from '../feeds/onchain-balances';
 import type { CorpStateBlock } from '../feeds/corp-state';
+import { computeOpHeadroom } from '../feeds/corp-state';
 import type { AmmRate } from '../feeds/amm-rate';
 import type { TokenomicsBlock } from '../feeds/tokenomics';
 
@@ -109,6 +110,8 @@ export class VolatilityEngine extends EventEmitter {
   private latestCorpState: CorpStateBlock | null = null;
   private latestAmmRate: AmmRate | null = null;
   private latestTokenomics: TokenomicsBlock | null = null;
+  private latestDirtyPrice: import('../feeds/kumbaya-price').KumbayaPriceSnapshot | null = null;
+  private latestLoadouts: import('../feeds/loadout-scanner').LoadoutBlock | null = null;
 
   setOpStatsProvider(
     statsFn: () => OpStatsBlock,
@@ -135,6 +138,17 @@ export class VolatilityEngine extends EventEmitter {
   onTokenomics(t: TokenomicsBlock) {
     this.latestTokenomics = t;
   }
+
+  onDirtyPrice(p: import('../feeds/kumbaya-price').KumbayaPriceSnapshot) {
+    this.latestDirtyPrice = p;
+  }
+
+  onLoadouts(l: import('../feeds/loadout-scanner').LoadoutBlock) {
+    this.latestLoadouts = l;
+  }
+
+  /** Most recent ETH price observed (USD). Null until first tick. */
+  getEthPrice(): number | null { return this.ethPrice; }
 
   // --- Feed handlers ---
 
@@ -507,8 +521,21 @@ export class VolatilityEngine extends EventEmitter {
       },
       opStats,
       walletBalances: this.latestWalletBalances,
-      corpState: this.latestCorpState,
+      // Enrich corp state with live op-headroom — computed here (not in the
+      // feed) because it requires the current ETH price, which lives in this
+      // engine. Pure function; safe to call every getState().
+      corpState: this.latestCorpState
+        ? {
+            ...this.latestCorpState,
+            corps: this.latestCorpState.corps.map(c => ({
+              ...c,
+              opHeadroom: computeOpHeadroom(c, this.ethPrice ?? null),
+            })),
+          }
+        : null,
       ammRate: this.latestAmmRate,
+      dirtyPrice: this.latestDirtyPrice,
+      loadouts: this.latestLoadouts,
       tokenomics: this.latestTokenomics,
       activity,
     } as any;

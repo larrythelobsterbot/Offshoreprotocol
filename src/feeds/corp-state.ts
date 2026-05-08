@@ -82,19 +82,46 @@ export interface CorpState {
   tradeInfo: {
     active: boolean;
     mode: number;
-    entryPrice: string;       // raw string (uint256)
-    liqPrice: string;
+    entryPrice: string;       // raw string (uint256) — anchor ETH price at trade start, 1e18-scaled
+    liqPrice: string;         // pre-computed lower liquidation bound = entryPrice * (1 - threshold)
     startTime: number;        // unix sec
     endTime: number;
     influence: string;        // raw INF (18 decimals)
     pending: string;          // some pending amount, format unclear
   } | null;
+  // Per-op liquidation headroom — populated by enrichCorpStateWithHeadroom()
+  // when the dashboard state is assembled (needs live ETH price). Null when
+  // op is not active or ETH price is unavailable.
+  opHeadroom: OpHeadroom | null;
   // Friendly labels
   modeLabel: string;          // "idle", "extortion?", "arms?", "drug?", or numeric
   locationLabel: string;
   // Status summary
   status: 'idle' | 'running' | 'claimable' | 'liquidatable' | 'unknown';
   ok: boolean;
+}
+
+/**
+ * Real-time liquidation proximity for an active op. The contract pre-computes
+ * `liqPrice = entryPrice × (1 − threshold)` at trade start (where threshold is
+ * 0.039% / 0.176% / 0.518% for Ext / Arms / Drug). Liquidation is two-sided
+ * around the anchor — symmetric upper bound is mirrored. Headroom is the
+ * minimum distance to either bound, normalized to [0, 100]:
+ *   100% = ETH at anchor (max safety)
+ *     0% = ETH at either liq bound (about to liquidate)
+ *   <0% = past bound (corp should be marked liquidatable on next tick)
+ */
+export interface OpHeadroom {
+  headroomPct: number;          // 0-100, lower = more dangerous
+  ethPrice: number;             // current live ETH (USD)
+  anchorPrice: number;          // entryPrice (USD)
+  lowerBound: number;           // liqPrice (USD)
+  upperBound: number;           // entryPrice + (entryPrice - liqPrice) (USD)
+  deviationPct: number;         // (eth - anchor) / anchor * 100, signed
+  thresholdPct: number;         // mode-specific threshold (0.039 / 0.176 / 0.518)
+  secondsElapsed: number;       // since startTime
+  secondsRemaining: number;     // until endTime
+  alertLevel: 'safe' | 'warn' | 'danger';  // green/yellow/red
 }
 
 export interface CorpStateBlock {
@@ -124,6 +151,70 @@ const MODE_WINDOW_SEC: Record<number, number> = {
   1: 1800,   // 30 min — Arms
   2: 5400,   // 90 min — Drug
 };
+
+// Per-mode liquidation threshold (deviation % from anchor). Verified against
+// `getTradeInfo()` word 3 (pre-computed lower bound) on all 6 active corps —
+// matches to 4 decimals.
+const MODE_LIQ_THRESHOLD: Record<number, number> = {
+  0: 0.00039,  // Extortion 0.039%
+  1: 0.00176,  // Arms 0.176%
+  2: 0.00518,  // Drug 0.518%
+};
+
+// Headroom alert levels. Tunable; defaults below match the planned
+// dashboard color coding (green / yellow / red).
+const HEADROOM_WARN  = 50;  // below 50% → yellow
+const HEADROOM_DANGER = 25;  // below 25% → red
+
+/**
+ * Compute live op headroom for a corp given the current ETH price (USD).
+ * Returns null when the op is not active. Pure function — no side effects,
+ * no IO. Called from the dashboard state assembler in volatility.getState().
+ */
+export function computeOpHeadroom(corp: CorpState, ethPrice: number | null): OpHeadroom | null {
+  const ti = corp.tradeInfo;
+  if (!ti || !ti.active) return null;
+  if (ethPrice == null || !Number.isFinite(ethPrice) || ethPrice <= 0) return null;
+
+  // entryPrice / liqPrice are 1e18-scaled raw bigint hex strings.
+  const anchor1e18 = BigInt(ti.entryPrice || '0x0');
+  const lower1e18  = BigInt(ti.liqPrice  || '0x0');
+  if (anchor1e18 === 0n || lower1e18 === 0n) return null;
+
+  const anchorPrice = Number(anchor1e18) / 1e18;
+  const lowerBound  = Number(lower1e18) / 1e18;
+  // Upper bound mirrors the lower around the anchor (symmetric two-sided liq).
+  const upperBound  = anchorPrice + (anchorPrice - lowerBound);
+  const halfBand    = anchorPrice - lowerBound;
+  if (halfBand <= 0) return null;
+
+  const distLower = ethPrice - lowerBound;
+  const distUpper = upperBound - ethPrice;
+  const minDist   = Math.min(distLower, distUpper);
+  // Clamp to [-1, 1] band fraction; multiply by 100 for pct.
+  const headroomPct = Math.max(-100, Math.min(100, (minDist / halfBand) * 100));
+
+  const deviationPct = ((ethPrice - anchorPrice) / anchorPrice) * 100;
+  const threshold = MODE_LIQ_THRESHOLD[ti.mode] ?? 0;
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  let alertLevel: OpHeadroom['alertLevel'] = 'safe';
+  if (headroomPct < HEADROOM_DANGER) alertLevel = 'danger';
+  else if (headroomPct < HEADROOM_WARN) alertLevel = 'warn';
+
+  return {
+    headroomPct,
+    ethPrice,
+    anchorPrice,
+    lowerBound,
+    upperBound,
+    deviationPct,
+    thresholdPct: threshold * 100,
+    secondsElapsed:   Math.max(0, nowSec - ti.startTime),
+    secondsRemaining: Math.max(0, ti.endTime - nowSec),
+    alertLevel,
+  };
+}
 
 // LocationId → human-readable name. Pulled from the public Supabase
 // locations table; only Caribbean / Europe / Indian Ocean tier (PL≤3)
@@ -360,6 +451,7 @@ export class CorpStateFeed extends EventEmitter {
           pendingRewardRaw: pendingRewardRaw.toString(),
           locationId,
           tradeInfo,
+          opHeadroom: null,  // enriched in volatility.getState() with live ETH
           modeLabel: modeLabelResolved,
           locationLabel: LOCATION_LABEL[locationId] ?? `loc ${locationId}`,
           status,
