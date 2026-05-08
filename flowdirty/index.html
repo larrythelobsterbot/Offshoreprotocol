@@ -105,6 +105,23 @@ body{overflow-x:hidden;letter-spacing:-0.01em}
 .brandtxt b{color:var(--text-pure)}
 .brandtxt span{color:var(--text-dim);margin-left:6px;font-weight:400;font-family:var(--mono);font-size:12px;letter-spacing:0}
 
+/* Terminal cross-link — subtle pill in the brand row + sticky band */
+.term-link{
+  margin-left:auto;
+  display:inline-flex;align-items:center;gap:8px;
+  padding:7px 14px 7px 12px;border-radius:999px;
+  background:rgba(255,255,255,0.02);border:1px solid var(--hairline-2);
+  font-family:var(--mono);font-size:11px;letter-spacing:0.14em;text-transform:uppercase;
+  color:var(--text-mid);text-decoration:none;
+  transition:all 240ms var(--ease-fluid);
+}
+.term-link:hover{color:var(--text-pure);border-color:rgba(34,240,255,0.30);background:rgba(34,240,255,0.04);box-shadow:0 0 18px rgba(34,240,255,0.10)}
+.term-link .ico{width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 0 3px rgba(34,240,255,0.18),0 0 10px var(--cyan-glow)}
+.term-link .arr{color:var(--cyan);transition:transform 240ms var(--ease-fluid)}
+.term-link:hover .arr{transform:translateX(3px)}
+.brandline{justify-content:flex-start}    /* allow margin-left:auto to push the link */
+.foot .right .term-link-mini{font-size:10px;letter-spacing:0.12em;padding:6px 12px;margin-bottom:8px}
+
 .hero-content>*{opacity:0;transform:translateY(48px);filter:blur(10px);animation:rise 900ms var(--ease-snap) forwards}
 .hero-content>*:nth-child(1){animation-delay:0ms}
 .hero-content>*:nth-child(2){animation-delay:120ms}
@@ -604,6 +621,9 @@ body{overflow-x:hidden;letter-spacing:-0.01em}
     <div class="brandline">
       <div class="brandmark"></div>
       <div class="brandtxt"><b>FlowDirty</b><span>.fun</span></div>
+      <a class="term-link" href="/terminal" aria-label="Open ops terminal — public market intel view">
+        <span class="ico"></span> Ops Terminal <span class="arr">→</span>
+      </a>
     </div>
 
     <div class="hero-content">
@@ -969,7 +989,10 @@ body{overflow-x:hidden;letter-spacing:-0.01em}
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 17 17 7M17 7H9M17 7v8"/></svg>
           </span>
         </a>
-        <div class="credits">v0.4 · cycle 6 · season 02</div>
+        <a class="term-link term-link-mini" href="/terminal" aria-label="Open ops terminal">
+          <span class="ico"></span> Ops Terminal <span class="arr">→</span>
+        </a>
+        <div class="credits">v1.0 · public beta</div>
       </div>
     </footer>
   </section>
