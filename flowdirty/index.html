@@ -523,7 +523,7 @@ html,body{
       <span class="sep">·</span>
       <span>ETH <b id="ethSpot">$—</b></span>
       <span class="sep">·</span>
-      <span>INF <b id="infSupply">—</b></span>
+      <span>INF/OP <b id="opCost">—</b></span>
     </div>
   </div>
 
@@ -738,10 +738,12 @@ async function pollNetwork(){
     const d = await r.json();
     lastNetwork = d;
     if (d.ethPrice) document.getElementById('ethSpot').textContent = '$' + d.ethPrice.toFixed(2);
-    // Network INF supply — exact total in circulation (no abbreviation).
-    const inf = d?.tokenomics?.tokens?.INF?.totalSupply;
-    if (inf != null) {
-      document.getElementById('infSupply').textContent = inf.toLocaleString('en-US', {
+    // Per-op INF stake — sampled from any active corp on the network. Stays
+    // showing the last known good value when the API briefly returns null
+    // (e.g. all corps paused between cycles).
+    const cost = d?.opCostInf;
+    if (cost != null && Number.isFinite(cost)) {
+      document.getElementById('opCost').textContent = cost.toLocaleString('en-US', {
         minimumFractionDigits: 2, maximumFractionDigits: 2,
       });
     }

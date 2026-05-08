@@ -31,6 +31,22 @@ function pickPublicState(state: DashboardState): any {
       }
     : null;
 
+  // Sample the current per-op INF stake from any active corp's tradeInfo.
+  // This is a network parameter (game contract-decided cost — same for any
+  // wallet running the same op mode), not operator-specific. We just happen
+  // to have it readily available because we already poll our own corps.
+  // Falls through to null if no corps are currently active.
+  let opCostInf: number | null = null;
+  try {
+    const corps = (state as any).corpState?.corps;
+    if (Array.isArray(corps)) {
+      const active = corps.find((c: any) => c?.tradeInfo?.active && c?.tradeInfo?.influence);
+      if (active) {
+        opCostInf = Number(BigInt(active.tradeInfo.influence)) / 1e18;
+      }
+    }
+  } catch { /* swallow */ }
+
   return {
     publicMode: true,
     ethPrice: state.ethPrice,
@@ -53,6 +69,7 @@ function pickPublicState(state: DashboardState): any {
     connections: (state as any).connections,
     meta: (state as any).meta,
     calibration: (state as any).calibration,
+    opCostInf,                     // current INF stake per op (FlowDirty topbar)
     // EXPLICITLY OMITTED — never reach the public stream:
     //   walletBalances, corpState, loadouts.user
   };
