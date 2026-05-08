@@ -225,11 +225,12 @@ async function main() {
     engine.onCorpState(b);
     // Feed the live address list to the scraper.
     latestCorpAddresses = b.corps.map((c: any) => c.address.toLowerCase());
-    // Per-op liquidation headroom DM alerts (Phase 1a).
-    // Fires once when a corp first crosses into 'danger' (<25% headroom),
-    // then re-arms only after the corp returns to 'safe' (>=50%) — prevents
-    // spam during oscillating prices, while still catching repeated risks.
-    void checkHeadroomAlerts(b);
+    // Per-op liquidation headroom DM alerts (Phase 1a) — DISABLED 2026-05-08
+    // per operator request: "way too loud". Predictive alerts fired too often
+    // during normal ETH volatility. Re-enable by uncommenting the call below.
+    // The actual circuit-breaker trip notification (when real liquidations
+    // occur) is unaffected and still fires from corp-bot.ts.
+    // void checkHeadroomAlerts(b);
   });
 
   // Live $DIRTY ↔ USDM AMM rate from the in-game Uniswap V3 pool
@@ -245,10 +246,12 @@ async function main() {
   loadoutScanner.on('user',    () => {
     const snap = loadoutScanner.getSnapshot();
     engine.onLoadouts(snap);
-    // Per-loadout vault projection alerts (Phase 1b). Fires once per loadout
-    // per cycle when sim crosses into 'danger' mid-cycle. State is keyed by
-    // (cycleId, generatorId) so a new cycle re-arms the alerts naturally.
-    void checkVaultAlerts(snap);
+    // Per-loadout vault projection alerts (Phase 1b) — DISABLED 2026-05-08
+    // alongside the headroom alerts above (same "too loud" feedback).
+    // Re-enable by uncommenting the call below. Vault projection itself is
+    // still computed and surfaced in the dashboard / API — only the DM
+    // notification is silenced.
+    // void checkVaultAlerts(snap);
   });
   loadoutScanner.on('network', () => engine.onLoadouts(loadoutScanner.getSnapshot()));
 
