@@ -3,8 +3,17 @@ dotenv.config();
 
 export const config = {
   port: parseInt(process.env.PORT || '3000'),
-  host: process.env.HOST || '0.0.0.0',
+  // Default to loopback. Public deploys must explicitly set HOST=0.0.0.0 in .env.
+  // Anything non-loopback is required to also set OPERATOR_API_TOKEN before
+  // mutating endpoints will accept writes (see api/server.ts).
+  host: process.env.HOST || '127.0.0.1',
   logLevel: process.env.LOG_LEVEL || 'info',
+  // Operator API token. Required for write endpoints when host is non-loopback
+  // and PUBLIC_MODE is false. Generate with `openssl rand -hex 32`.
+  operatorApiToken: (process.env.OPERATOR_API_TOKEN || '').trim(),
+  // Allowed dashboard origins for CORS. Comma-separated. Empty = same-origin only.
+  // Defaults include localhost dev origins + the public dashboard URL.
+  corsOrigins: (process.env.CORS_ORIGINS || '').trim(),
 
   coinglassApiKey: process.env.COINGLASS_API_KEY || '',
   polymarketTokenId: process.env.POLYMARKET_TOKEN_ID || '',
@@ -39,7 +48,15 @@ export const config = {
   refLink: process.env.OFFSHORE_REF_LINK || '',
   // Operator's TG user ID — receives admin pings (e.g. new subscriber notification).
   // Optional. When unset, admin pings are no-op.
-  operatorChatId: parseInt(process.env.TG_OPERATOR_CHAT_ID || '0') || null,
+  // Strict integer validation: parseInt('123abc') silently returns 123, so we
+  // require the env var to be a clean integer string (positive or negative)
+  // before accepting it. Anything malformed becomes null and disables DMs.
+  operatorChatId: (() => {
+    const raw = (process.env.TG_OPERATOR_CHAT_ID || '').trim();
+    if (!/^-?\d+$/.test(raw)) return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n !== 0 ? n : null;
+  })(),
   // Public dashboard URL surfaced via /help and channel alerts.
   dashboardUrl: process.env.DASHBOARD_URL || 'https://offshore.lekker.design',
   // Subscriber poller cadence (multi-tenant, per-subscriber alert checks).

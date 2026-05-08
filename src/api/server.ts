@@ -3,6 +3,7 @@ import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyCors from '@fastify/cors';
 import path from 'path';
+import { timingSafeEqual } from 'crypto';
 import type { WebSocket } from 'ws';
 import type { DashboardState, StoredIndicator } from '../types';
 // (config used at runtime to gate operator-only endpoints in PUBLIC_MODE)
@@ -76,7 +77,40 @@ export class ApiServer {
 
   async start() {
     // Plugins
-    await this.app.register(fastifyCors, { origin: true });
+    // CORS: allow same-origin (no Origin header) + explicit allow list.
+    // Defaults: localhost dev ports + the operator's public dashboard URL.
+    // Include both http:// and https:// variants of the dashboard URL — nginx
+    // may terminate at either, and the browser's Origin header reflects the
+    // scheme it actually loaded the page over.
+    const dashboardVariants: string[] = [];
+    if (config.dashboardUrl) {
+      dashboardVariants.push(config.dashboardUrl);
+      if (config.dashboardUrl.startsWith('https://')) {
+        dashboardVariants.push('http://' + config.dashboardUrl.slice(8));
+      } else if (config.dashboardUrl.startsWith('http://')) {
+        dashboardVariants.push('https://' + config.dashboardUrl.slice(7));
+      }
+    }
+    const defaultOrigins = [
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      'http://localhost:3456',
+      'http://127.0.0.1:3456',
+      ...dashboardVariants,
+    ].filter(Boolean);
+    const extraOrigins = config.corsOrigins
+      ? config.corsOrigins.split(',').map((s) => s.trim()).filter(Boolean)
+      : [];
+    const allowedOrigins = new Set([...defaultOrigins, ...extraOrigins]);
+    await this.app.register(fastifyCors, {
+      origin: (origin, cb) => {
+        // No Origin header = same-origin or non-browser (curl, server-side); allow.
+        if (!origin) return cb(null, true);
+        if (allowedOrigins.has(origin)) return cb(null, true);
+        return cb(new Error('CORS: origin not allowed'), false);
+      },
+      credentials: false,
+    });
     await this.app.register(fastifyWebsocket);
     await this.app.register(fastifyStatic, {
       root: path.join(process.cwd(), 'public'),
@@ -178,6 +212,42 @@ export class ApiServer {
       return handler(req, reply);
     };
 
+    // Operator gate for mutating endpoints (POST/DELETE /api/op-result).
+    // Loopback hosts (127.0.0.1, ::1) are trusted without a token (operator dev).
+    // Non-loopback binds REQUIRE OPERATOR_API_TOKEN and a matching
+    // `Authorization: Bearer <token>` (or `?token=<token>`) on every request.
+    const isLoopbackHost = config.host === '127.0.0.1' || config.host === '::1' || config.host === 'localhost';
+    if (!isLoopbackHost && !config.operatorApiToken && !config.publicMode) {
+      logger.warn(
+        { host: config.host },
+        '[API] Non-loopback host without OPERATOR_API_TOKEN — mutating endpoints will be REJECTED. Set OPERATOR_API_TOKEN in .env or bind HOST=127.0.0.1.',
+      );
+    }
+    const operatorGate = (handler: any) => async (req: any, reply: any) => {
+      if (isLoopbackHost && !config.operatorApiToken) {
+        // Loopback dev: allow without token.
+        return handler(req, reply);
+      }
+      if (!config.operatorApiToken) {
+        return reply.status(503).send({
+          error: 'Service Unavailable',
+          message: 'OPERATOR_API_TOKEN not configured; mutating endpoints disabled.',
+        });
+      }
+      const auth = (req.headers.authorization || '') as string;
+      const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+      const queryToken = (req.query?.token || '') as string;
+      const provided = bearer || queryToken;
+      // Constant-time comparison to avoid timing leaks on the token.
+      const a = Buffer.from(provided);
+      const b = Buffer.from(config.operatorApiToken);
+      const ok = a.length === b.length && a.length > 0 && timingSafeEqual(a, b);
+      if (!ok) {
+        return reply.status(401).send({ error: 'Unauthorized' });
+      }
+      return handler(req, reply);
+    };
+
     // Log a single op outcome. The user (or a future scraper) POSTs this
     // when an operation completes in-game. baseReward defaults to PL1=100
     // if not provided; pass it explicitly when the player has leveled up.
@@ -209,7 +279,7 @@ export class ApiServer {
           },
         },
       },
-      publicGate(async (req: any, reply: any) => {
+      publicGate(operatorGate(async (req: any, reply: any) => {
         const { opType, succeeded, dirtyEarned, baseReward, ts, note } = req.body;
         // Sanity: dirtyEarned should not exceed reasonable cap of base; clamp.
         const base = baseReward ?? 100;
@@ -229,7 +299,7 @@ export class ApiServer {
         });
         this.onOpStatsChanged?.();
         return { success: true, id };
-      }),
+      })),
     );
 
     // Read aggregated stats per op type. The dashboard's op cards consume
@@ -268,7 +338,7 @@ export class ApiServer {
     // Undo a mistakenly logged outcome.
     this.app.delete<{ Params: { id: string } }>(
       '/api/op-result/:id',
-      publicGate(async (req: any, reply: any) => {
+      publicGate(operatorGate(async (req: any, reply: any) => {
         const id = parseInt(req.params.id, 10);
         if (!Number.isFinite(id) || id < 1) {
           return reply.status(400).send({ error: 'Bad Request', message: 'Invalid id' });
@@ -277,7 +347,7 @@ export class ApiServer {
         if (!deleted) return reply.status(404).send({ error: 'Not Found' });
         this.onOpStatsChanged?.();
         return { success: true };
-      }),
+      })),
     );
 
     // Health check

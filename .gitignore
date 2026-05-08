@@ -21,8 +21,9 @@ data/*.db-wal
 data/*.json
 .playwright-cli/
 
-# Editor
+# Editor / agent state
 .vscode/
 .idea/
+.claude/
 *.swp
 .DS_Store

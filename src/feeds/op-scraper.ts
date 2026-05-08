@@ -57,14 +57,29 @@ const TRADE_LIQUIDATED_TOPIC = '0xbc95a830b1019b9734680ca35152c5632ef54d080bfa3a
 const SEL_GET_TRADE_INFO = '0xd6694027';
 
 const DEFAULT_POLL_MS = 30_000;
-const DEFAULT_LOOKBACK_BLOCKS = 100_000; // ~17 minutes at MegaETH 10ms blocks
+// MegaETH may produce mini-blocks faster internally, but on-chain
+// `block.timestamp` quantizes to 1s and empirically 100k blocks span exactly
+// 100k seconds (verified with eth_getBlockByNumber sampling). So 1 block ≈ 1s
+// for delta-math purposes; 100k blocks ≈ 27.7h of lookback for first-run.
+const DEFAULT_LOOKBACK_BLOCKS = 100_000;
+// Wall-clock time per block, used to translate `latest-block` deltas into
+// approximate event timestamps so the circuit breaker can tell live
+// liquidations apart from backfilled ones. Anchored to chain-reported
+// timestamps (1s); a future refinement would query the actual block timestamp
+// per event to absorb any sub-second skew.
+const MS_PER_BLOCK = 1000;
+// eth_getLogs response size limit. Chunk wide ranges so first-run / long-
+// downtime resume doesn't trip the RPC's 413 / range-too-large errors.
+const MAX_BLOCKS_PER_CHUNK = 5_000;
+// Recent txHash dedup ring — survives crashes via cursor file, bounds memory.
+const TXHASH_DEDUP_LIMIT = 500;
 
 export type ScrapedOpType = 'extortion' | 'arms' | 'drug' | 'unknown';
 
 export interface ScrapedOpOutcome {
   txHash: string;
   block: number;
-  ts: number;          // ms (best effort: now, since fetching block timestamps for every event is heavy)
+  ts: number;          // ms — approximate event timestamp derived from block delta (1 block ≈ 1s on MegaETH)
   player: string;
   corp: string;
   rewardDirty: number; // human-readable
@@ -137,6 +152,11 @@ export class OpScraperFeed extends EventEmitter {
   private lastBlockSeen = 0;
   private alive = false;
   private inFlight = false;
+  // In-memory dedup of recently-processed txHashes. Persisted in the cursor
+  // file so a crash/restart can't re-emit the last batch (the breaker would
+  // count those replays toward its window otherwise).
+  private recentTxHashes: string[] = [];
+  private recentTxHashSet: Set<string> = new Set();
 
   constructor(cfg: OpScraperConfig) {
     super();
@@ -176,18 +196,54 @@ export class OpScraperFeed extends EventEmitter {
       if (!fs.existsSync(CURSOR_FILE)) return null;
       const raw = fs.readFileSync(CURSOR_FILE, 'utf-8');
       const obj = JSON.parse(raw);
+      // Restore dedup ring so a crash/restart doesn't replay the last batch.
+      if (Array.isArray(obj.recentTxHashes)) {
+        this.recentTxHashes = obj.recentTxHashes.slice(-TXHASH_DEDUP_LIMIT);
+        this.recentTxHashSet = new Set(this.recentTxHashes);
+      }
       return typeof obj.lastBlockSeen === 'number' ? obj.lastBlockSeen : null;
     } catch { return null; }
   }
 
+  /**
+   * Atomic cursor write: write to a temp file, fsync, then rename over the
+   * destination. A crash mid-write can't corrupt the live cursor file.
+   * Includes the txHash dedup ring so restarts don't re-emit the last batch.
+   */
   private saveCursor() {
     try {
       const dir = path.dirname(CURSOR_FILE);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(CURSOR_FILE, JSON.stringify({ lastBlockSeen: this.lastBlockSeen, updated: Date.now() }));
+      const tmp = CURSOR_FILE + '.tmp';
+      const payload = JSON.stringify({
+        lastBlockSeen: this.lastBlockSeen,
+        recentTxHashes: this.recentTxHashes,
+        updated: Date.now(),
+      });
+      const fd = fs.openSync(tmp, 'w');
+      try {
+        fs.writeSync(fd, payload);
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(tmp, CURSOR_FILE);
     } catch (err: any) {
       logger.warn({ err: err.message }, '[OpScraper] failed to persist cursor');
     }
+  }
+
+  /** Record a txHash as processed (capped ring). Returns true if newly seen. */
+  private markProcessed(txHash: string): boolean {
+    if (!txHash) return true;
+    if (this.recentTxHashSet.has(txHash)) return false;
+    this.recentTxHashSet.add(txHash);
+    this.recentTxHashes.push(txHash);
+    if (this.recentTxHashes.length > TXHASH_DEDUP_LIMIT) {
+      const evicted = this.recentTxHashes.shift();
+      if (evicted) this.recentTxHashSet.delete(evicted);
+    }
+    return true;
   }
 
   stop() {
@@ -204,106 +260,57 @@ export class OpScraperFeed extends EventEmitter {
       const latestHex = await rpc<string>({ method: 'eth_blockNumber', params: [] });
       const latest = Number(BigInt(latestHex));
       if (latest <= this.lastBlockSeen) return;
+      // Anchor: when this poll happened, the latest block had this timestamp.
+      // We approximate event timestamps as `pollNow - (latest - eventBlock) * 1000ms`
+      // since MegaETH produces ~1 block/second. Used downstream so the circuit
+      // breaker can tell live liquidations apart from backfilled ones.
+      const pollNow = Date.now();
 
-      const fromBlock = '0x' + (this.lastBlockSeen + 1).toString(16);
-      const toBlock = '0x' + latest.toString(16);
-
-      // Pull both event types in one call. MegaETH's getLogs accepts an array
-      // of topic0 values via topics[0]: [...].
-      const logs = await rpc<any[]>({
-        method: 'eth_getLogs',
-        params: [{
-          address: corps,
-          topics: [[TRADE_COMPLETED_TOPIC, TRADE_LIQUIDATED_TOPIC]],
-          fromBlock,
-          toBlock,
-        }],
-      });
-
+      // Chunk wide ranges: first run / long-downtime resume can be 100k+
+      // blocks, which trips RPC range limits and 413 response sizes. Process
+      // and persist progress per-chunk so a crash mid-replay only loses the
+      // current chunk, not everything after the original cursor.
+      let chunkStart = this.lastBlockSeen + 1;
       this.alive = true;
       this.emit('status', true);
-      this.lastBlockSeen = latest;
-      this.saveCursor();
+      while (chunkStart <= latest) {
+        const chunkEnd = Math.min(chunkStart + MAX_BLOCKS_PER_CHUNK - 1, latest);
+        const fromBlock = '0x' + chunkStart.toString(16);
+        const toBlock = '0x' + chunkEnd.toString(16);
 
-      if (logs.length === 0) return;
-      const liqCount = logs.filter(l => l.topics[0] === TRADE_LIQUIDATED_TOPIC).length;
-      const compCount = logs.length - liqCount;
-      logger.info({ completed: compCount, liquidated: liqCount }, '[OpScraper] new outcome events');
-
-      for (const log of logs) {
+        let logs: any[];
         try {
-          const isLiquidation = log.topics[0] === TRADE_LIQUIDATED_TOPIC;
-          // TradeCompleted: topics = [t0, player, corp]
-          // TradeLiquidated: topics = [t0, liquidator, player, corp]
-          const player = isLiquidation
-            ? '0x' + log.topics[2].slice(26)
-            : '0x' + log.topics[1].slice(26);
-          const corp = isLiquidation
-            ? '0x' + log.topics[3].slice(26)
-            : '0x' + log.topics[2].slice(26);
-
-          const data = log.data.replace(/^0x/, '');
-          let rewardRaw: bigint;
-          let influenceRaw: bigint;
-          if (isLiquidation) {
-            // data layout: [ethPriceAtLiq, partialReward, durationOrTicks]
-            rewardRaw = BigInt('0x' + data.substring(64, 128)); // word 2
-            influenceRaw = 5n * 10n ** 18n; // doc says liquidation forfeits all 5 INF; not in event payload
-          } else {
-            rewardRaw = BigInt('0x' + data.substring(0, 64));
-            influenceRaw = BigInt('0x' + data.substring(64, 128));
-          }
-          const block = Number(BigInt(log.blockNumber));
-
-          // Read the corp's tradeInfo at the block before completion to learn mode + window.
-          let mode = 0;
-          let durationSec = 0;
-          try {
-            const priorHex = await rpc<string>({
-              method: 'eth_call',
-              params: [{ to: corp, data: SEL_GET_TRADE_INFO }, '0x' + (block - 1).toString(16)],
-            });
-            const ti = decodeTradeInfo(priorHex);
-            if (ti) {
-              mode = ti.mode;
-              durationSec = ti.endTime - ti.startTime;
-            }
-          } catch (err: any) {
-            logger.warn({ err: err.message, block }, '[OpScraper] tradeInfo read failed; classifying as unknown');
-          }
-
-          const opType = classifyDuration(durationSec);
-          const rewardDirty = Number(rewardRaw) / 1e18;
-          // Successful only if the event was TradeCompleted AND the reward
-          // matches the base. TradeLiquidated is a failure by definition,
-          // even when the partial reward is large.
-          const succeeded = !isLiquidation && rewardDirty >= this.cfg.baseRewardDirty * 0.999;
-
-          const outcome: ScrapedOpOutcome = {
-            txHash: log.transactionHash,
-            block,
-            ts: Date.now(),
-            player,
-            corp,
-            rewardDirty,
-            rewardRaw: rewardRaw.toString(),
-            influenceUsed: Number(influenceRaw) / 1e18,
-            baseReward: this.cfg.baseRewardDirty,
-            succeeded,
-            opType,
-            durationMin: Math.round(durationSec / 60),
-            mode,
-          };
-
-          this.emit('outcome', outcome);
-          try {
-            await this.cfg.onOutcome(outcome);
-          } catch (err: any) {
-            logger.error({ err: err.message, txHash: log.transactionHash }, '[OpScraper] onOutcome handler threw');
-          }
+          logs = await rpc<any[]>({
+            method: 'eth_getLogs',
+            params: [{
+              address: corps,
+              topics: [[TRADE_COMPLETED_TOPIC, TRADE_LIQUIDATED_TOPIC]],
+              fromBlock,
+              toBlock,
+            }],
+          });
         } catch (err: any) {
-          logger.error({ err: err.message, log }, '[OpScraper] failed to process log');
+          // Don't advance past a failed chunk — leave cursor alone so the next
+          // poll retries from the same point. Bubble up to outer catch.
+          throw err;
         }
+
+        if (logs.length > 0) {
+          const liqCount = logs.filter(l => l.topics[0] === TRADE_LIQUIDATED_TOPIC).length;
+          const compCount = logs.length - liqCount;
+          logger.info(
+            { completed: compCount, liquidated: liqCount, fromBlock: chunkStart, toBlock: chunkEnd },
+            '[OpScraper] new outcome events',
+          );
+          await this.processLogs(logs, latest, pollNow, MS_PER_BLOCK);
+        }
+
+        // Only advance the cursor AFTER successful processing of this chunk.
+        // A crash before this point leaves lastBlockSeen unchanged so the
+        // next start re-scans the same chunk (txHash dedup elides duplicates).
+        this.lastBlockSeen = chunkEnd;
+        this.saveCursor();
+        chunkStart = chunkEnd + 1;
       }
     } catch (err: any) {
       this.alive = false;
@@ -311,6 +318,90 @@ export class OpScraperFeed extends EventEmitter {
       logger.error({ err: err.message }, '[OpScraper] poll failed');
     } finally {
       this.inFlight = false;
+    }
+  }
+
+  private async processLogs(logs: any[], latest: number, pollNow: number, msPerBlock: number) {
+    for (const log of logs) {
+      try {
+        // Dedup BEFORE any work — same tx may appear in overlapping ranges
+        // after a partial-failure resume. markProcessed returns false if seen.
+        if (!this.markProcessed(log.transactionHash)) continue;
+        const isLiquidation = log.topics[0] === TRADE_LIQUIDATED_TOPIC;
+        // TradeCompleted: topics = [t0, player, corp]
+        // TradeLiquidated: topics = [t0, liquidator, player, corp]
+        const player = isLiquidation
+          ? '0x' + log.topics[2].slice(26)
+          : '0x' + log.topics[1].slice(26);
+        const corp = isLiquidation
+          ? '0x' + log.topics[3].slice(26)
+          : '0x' + log.topics[2].slice(26);
+
+        const data = log.data.replace(/^0x/, '');
+        let rewardRaw: bigint;
+        let influenceRaw: bigint;
+        if (isLiquidation) {
+          // data layout: [ethPriceAtLiq, partialReward, durationOrTicks]
+          rewardRaw = BigInt('0x' + data.substring(64, 128)); // word 2
+          influenceRaw = 5n * 10n ** 18n; // doc says liquidation forfeits all 5 INF; not in event payload
+        } else {
+          rewardRaw = BigInt('0x' + data.substring(0, 64));
+          influenceRaw = BigInt('0x' + data.substring(64, 128));
+        }
+        const block = Number(BigInt(log.blockNumber));
+
+        // Read the corp's tradeInfo at the block before completion to learn mode + window.
+        let mode = 0;
+        let durationSec = 0;
+        try {
+          const priorHex = await rpc<string>({
+            method: 'eth_call',
+            params: [{ to: corp, data: SEL_GET_TRADE_INFO }, '0x' + (block - 1).toString(16)],
+          });
+          const ti = decodeTradeInfo(priorHex);
+          if (ti) {
+            mode = ti.mode;
+            durationSec = ti.endTime - ti.startTime;
+          }
+        } catch (err: any) {
+          logger.warn({ err: err.message, block }, '[OpScraper] tradeInfo read failed; classifying as unknown');
+        }
+
+        const opType = classifyDuration(durationSec);
+        const rewardDirty = Number(rewardRaw) / 1e18;
+        // Successful only if the event was TradeCompleted AND the reward
+        // matches the base. TradeLiquidated is a failure by definition,
+        // even when the partial reward is large.
+        const succeeded = !isLiquidation && rewardDirty >= this.cfg.baseRewardDirty * 0.999;
+
+        const outcome: ScrapedOpOutcome = {
+          txHash: log.transactionHash,
+          block,
+          // Approximate event timestamp from block-number delta. Honest
+          // about backfills: replayed historical events get accurate
+          // historical ts so the circuit breaker can correctly ignore them.
+          ts: pollNow - (latest - block) * msPerBlock,
+          player,
+          corp,
+          rewardDirty,
+          rewardRaw: rewardRaw.toString(),
+          influenceUsed: Number(influenceRaw) / 1e18,
+          baseReward: this.cfg.baseRewardDirty,
+          succeeded,
+          opType,
+          durationMin: Math.round(durationSec / 60),
+          mode,
+        };
+
+        this.emit('outcome', outcome);
+        try {
+          await this.cfg.onOutcome(outcome);
+        } catch (err: any) {
+          logger.error({ err: err.message, txHash: log.transactionHash }, '[OpScraper] onOutcome handler threw');
+        }
+      } catch (err: any) {
+        logger.error({ err: err.message, log }, '[OpScraper] failed to process log');
+      }
     }
   }
 }
