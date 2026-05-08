@@ -141,35 +141,36 @@ html,body{
    right side, negative space on the left.                                     */
 .hero-image{
   position:absolute;
-  top:140px;                              /* under the topbar */
-  right:0;
+  top:160px;                              /* under the topbar */
+  right:-24px;                            /* slight bleed past the shell edge */
   left:auto;
-  width:min(560px, 42vw);                 /* smaller — atmospheric, not dominating */
-  height:440px;
+  width:min(360px, 28vw);                 /* narrower — eye-zone only */
+  height:380px;
   background:url('/hero.jpg') center right / cover no-repeat;
   z-index:0;
   pointer-events:none;
-  /* Tighter mask — image only "appears" in the rightmost ~50% of its own
-     bounds so the headline area is fully clean.                                */
+  /* Tight mask — only the rightmost ~30% reaches full opacity, the rest
+     fades out so the face barely materializes from the dark and the eye
+     becomes the single focal point.                                              */
   -webkit-mask-image:linear-gradient(
     90deg,
     transparent 0%,
-    rgba(0,0,0,0.10) 25%,
-    rgba(0,0,0,0.55) 50%,
-    #000 75%,
-    #000 100%
+    rgba(0,0,0,0.05) 35%,
+    rgba(0,0,0,0.30) 55%,
+    rgba(0,0,0,0.70) 75%,
+    #000 90%
   );
   mask-image:linear-gradient(
     90deg,
     transparent 0%,
-    rgba(0,0,0,0.10) 25%,
-    rgba(0,0,0,0.55) 50%,
-    #000 75%,
-    #000 100%
+    rgba(0,0,0,0.05) 35%,
+    rgba(0,0,0,0.30) 55%,
+    rgba(0,0,0,0.70) 75%,
+    #000 90%
   );
   opacity:0;
   animation:hero-fade 1800ms var(--ease-snap) 100ms forwards;
-  filter:saturate(0.92) contrast(0.95) brightness(0.85);
+  filter:saturate(0.92) contrast(0.95) brightness(0.82);
 }
 .hero-image::after{
   /* Scanline overlay restricted to the image — keeps it integrated with
