@@ -544,7 +544,7 @@ Three glass cards horizontally. Each shows one stage of the loop with a Phosphor
                                                          
   [ Start playing →  ]   (ref CTA #4, pink filled)       
                                                          
-  Built by @rustyrocket · Source on GitHub               
+  Read-only · Unaffiliated               
                                                          
 ```
 
@@ -715,7 +715,7 @@ Hero headline candidates (pick one, A/B if you must):
 
 - **Single HTML file** for v1. Keep dependencies to one Google Fonts link + one tiny JS module for state machine + polling. Aim for <40KB gzipped.
 - **Deploy target**: Cloudflare Pages connected to `flowdirty.fun`. The page calls `https://api.flowdirty.fun/api/track/:wallet` (Cloudflare Tunnel → operator's VPS 127.0.0.1:3456).
-- **Privacy guardrail**: don't reuse the favicon, don't link back to `offshore.lekker.design`, don't write "built by [real name]" — only `@rustyrocket` is acceptable in the footer.
+- **Privacy guardrail**: don't reuse the favicon, don't link back to `offshore.lekker.design`, don't write "built by [real name]" — no personal handles in the footer.
 - **Performance budget**: First Contentful Paint <1s on 4G. Largest Contentful Paint <2s. CLS <0.05. JS execution time <100ms on first load.
 
 ---
