@@ -321,8 +321,11 @@ export class Storage {
       );
       CREATE INDEX IF NOT EXISTS idx_op_ts ON op_outcomes(ts);
       CREATE INDEX IF NOT EXISTS idx_op_type ON op_outcomes(op_type);
-      CREATE INDEX IF NOT EXISTS idx_op_strategy ON op_outcomes(strategy, ts);
-      CREATE INDEX IF NOT EXISTS idx_op_corp_ts  ON op_outcomes(corp, ts);
+      -- idx_op_strategy + idx_op_corp_ts are created in the post-init
+      -- migration block below, AFTER we ensure the strategy/corp columns
+      -- exist on legacy databases via ALTER TABLE ADD COLUMN. Putting them
+      -- here would crash on first boot for any DB created before the
+      -- attribution feature shipped.
 
       -- Bootstrap log: one row per startTrade() call by CorpBot. Lets the
       -- op-scraper attach strategy to op_outcomes via (corp, ts within
@@ -545,6 +548,10 @@ export class Storage {
     // Online migration: add strategy / corp / inf_cost columns to op_outcomes
     // for the strategy attribution ledger. Legacy rows stay NULL on these
     // fields; only ops bootstrapped after this deploy get tagged.
+    //
+    // CREATE INDEX on the new columns runs HERE (not in the schema block
+    // above) so the indexes get created AFTER we've ensured the columns
+    // exist on legacy DBs.
     try {
       const cols = this.db.prepare(`PRAGMA table_info(op_outcomes)`).all() as { name: string }[];
       const have = new Set(cols.map(c => c.name));
@@ -561,8 +568,13 @@ export class Storage {
           this.db.exec(`ALTER TABLE op_outcomes ADD COLUMN inf_cost REAL`);
           logger.info('[Storage] migrated op_outcomes: added inf_cost column');
         }
-        // Indexes are CREATE IF NOT EXISTS in init() — already idempotent.
       }
+      // Indexes are idempotent (IF NOT EXISTS) and safe to re-run on
+      // every boot. Run them AFTER the column-add migration completes.
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_op_strategy ON op_outcomes(strategy, ts);
+        CREATE INDEX IF NOT EXISTS idx_op_corp_ts  ON op_outcomes(corp, ts);
+      `);
     } catch (err: any) {
       logger.warn({ err: err.message }, '[Storage] op_outcomes migration failed (non-fatal)');
     }
