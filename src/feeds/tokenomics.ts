@@ -51,8 +51,6 @@ const ACTIVE_WINDOW_BLOCKS = 50_000;       // ~14 hours of MegaETH at ~1s blocks
 
 // --- Multicall3 encoder (mirror of onchain-balances.ts) ---
 
-function pad32(hex: string): string { return hex.padStart(64, '0'); }
-
 function encodeMulticall3Aggregate3(calls: { target: string; allowFailure: boolean; callData: string }[]): string {
   const tupleBodies: string[] = calls.map(c => {
     const target = c.target.toLowerCase().replace(/^0x/, '').padStart(64, '0');

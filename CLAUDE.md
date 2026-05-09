@@ -23,8 +23,14 @@
 3. **NEVER touch the operator's main wallet key** beyond what the bot already
    does (`enableAutoTrade`, `disableAutoTrade`, `claimRewards`). The key lives
    in `.env` as `MAIN_KEY`. Do not log it, print it, expose it.
-4. **NEVER add Extortion** (mode 0) anywhere. The operator has explicitly
-   disabled it. Liquidation threshold is 0.039% — too fragile to run.
+4. **Extortion (mode 0) is OPERATOR-CONFIRMED ONLY.** Never add it to a
+   schedule slot, never make it the default, never let `/bot drug` /
+   `/bot arms` / `/bot custom` / `forceMode()` accept mode 0. The single
+   approved entry point is `/bot burn-money confirm` in TG, which engages
+   the dedicated `burn-money` preset for a hard-capped 30 minutes and
+   auto-reverts. The schedule lookup explicitly skips `burn-money` even if
+   a corrupt config tries to use it. Live Ext threshold is sampled from
+   chain (was 0.039%; weekend-mode 0.0242%).
 5. **Notify the operator** if anything drifts: bot key fails, schedule tx
    rejected, doc page changes content, dependency vuln found, etc. Don't
    silently work around problems.
@@ -183,10 +189,24 @@ ecosystem.config.js     ← PM2 config (process: offshore-terminal)
 
 **Preset selection priority**:
 1. **Circuit breaker** (≥2 corps liquidated in 5 min → force-pause for 30 min)
-2. Manual override (`/bot preset <name>`) — locks until released
-3. Danger override (`dangerScore >= panicThreshold`, default 75)
-4. HKT schedule lookup
-5. Fallback: `all-drug`
+2. **burn-money auto-revert** (operator-confirmed; max 30 min)
+3. Manual override (`/bot preset <name>` / `/bot off` / `/bot on`) — locks until released
+4. Danger override (`dangerScore >= panicThreshold`, default 75)
+5. HKT schedule lookup (when `scheduleEnabled === true`)
+6. **Fallbacks** (changed 2026-05-09):
+   - Schedule ON but slot is empty/invalid → `all-drug` (defensive)
+   - Schedule OFF → **`paused`** (was `all-drug` until 2026-05-09 — operator
+     reported confusion: turning schedule off didn't stop trading.)
+
+**Operator commands worth knowing:**
+- `/bot off` / `/bot stop` — sets manual preset to `paused`; calls
+  `disableAutoTrade()` on every corp on the next tick. Unambiguous "stop trading."
+- `/bot on` — releases the manual lock so the schedule (or fallback) takes over.
+- `/bot pause` / `/bot resume` — toggles `operatorPaused`. Stops the bot's WRITES
+  but does NOT disable on-chain auto-trade. If auto was already enabled, the
+  contracts keep running ops on their own. Different from `/bot off`!
+- `/bot schedule off` — disables the time-of-day schedule. Now falls back to
+  `paused`, so this also stops trading. Use `/bot schedule on` to resume.
 
 **Circuit breaker** (default threshold = 2, was 3): reactive defense against rapid
 serial liquidations (the "fast death loop"). Watches `OpScraperFeed`'s liquidation
@@ -207,18 +227,26 @@ Date.now) so backfilled events on restart can't spuriously trip the breaker.
 | `paused` | (auto-trade disabled) | Dead zones — saves INF |
 | `panic` | (auto-trade disabled) | Danger override target |
 
-**Default HKT schedule** (May 7 2026 — derived from 72h network analysis of 76,250 ops, INF-constrained yield-per-op lens):
+**Default HKT schedule** (v2 — May 8 2026, evidence-derived):
 ```
 00h     →  all-drug  (Drug d̄=52, sr=38% — marginal but net-positive vs idle)
-01-08h  →  all-drug  (Drug d̄=58-95 across the band; Arms d̄=43-76)
+01-02h  →  all-drug  (Drug d̄=58-95 across the band; Arms d̄=43-76)
+03h     →  all-arms  ⭐ v2 EDIT: Drug 87.8 liqs/day at 03h (33% of all liqs); Arms 9.5/day → switched
+04-08h  →  all-drug
 09h     →  all-arms  (Arms d̄=53 vs Drug d̄=52 — slight Arms edge)
 10-13h  →  all-drug  (Drug d̄=82-91 — calm Asia midday)
 14h     →  all-arms  (Arms d̄=81 vs Drug d̄=79 — only hour Arms cleanly wins)
-15-19h  →  all-drug  (Drug d̄=75-93 — peak hours; Drug edge widest)
-20h     →  all-drug  (Drug d̄=74, sr=52% — strong; was paused unnecessarily)
-21-22h  →  paused    (21h sr=2/20%, 22h sr=23/6% — both catastrophic)
-23h     →  all-drug  (Drug d̄=65, sr=33% — recovery hour)
+15-16h  →  all-drug  (Drug d̄=75-93)
+17h     →  all-arms  ⭐ v2 EDIT: Drug 29 liqs/day vs Arms 8.5 — Arms safer
+18h     →  all-arms  ⭐ v2 EDIT: Drug 46.7 liqs/day vs Arms 15.7 — Arms safer
+19h     →  all-drug  (Drug d̄=93 — peak; 0 Drug liqs in 7-day evidence)
+20h     →  all-drug  (Drug d̄=74, sr=52%)
+21-22h  →  paused    (21h sr=10%, 22h sr=14% — confirmed by v2 evidence)
+23h     →  all-drug  (Drug d̄=65, sr=30%)
 ```
+Three v2 changes (03h, 17h, 18h) all flip from all-drug to all-arms based on the
+schedule-evidence feed's first 7-day rolling sample (31,849 ops scanned 2026-05-08).
+If the next 5–7 days don't bear them out, revert by flipping the slot back.
 **Lens choice matters**: above is yield-per-op (each op costs 5 INF; INF is the scarce resource). Drug wins almost every hour because its 0.518% liq threshold beats Arms's 0.176%. If/when INF stops being the binding constraint (PL3 or massive USDM reserves), switch lens to DIRTY-per-hour and Arms wins almost every hour (3× cycle speed). Re-analyze quarterly — meta drifts as network composition changes.
 
 **Telegram admin GUI** (operator-only via `TG_OPERATOR_CHAT_ID`):
@@ -440,6 +468,53 @@ file**. Specific triggers:
 
 If `WebFetch https://www.offshoreprotocol.fun/llms.txt` returns content that
 disagrees with this file, **trust llms.txt and update CLAUDE.md**.
+
+---
+
+## 🔒 FlowDirty.fun privacy contract
+
+The public surface (`flowdirty.fun`) makes specific privacy claims to visitors
+in the wallet-tracker UI. They MUST stay true. The contract:
+
+- **Read-only.** No write paths reachable from any public route. No
+  wallet-connect, no signature flow.
+- **Wallet addresses never persisted to disk.** Verified by:
+  - `disableRequestLogging: true` on the Fastify instance + a redacting
+    `serializers.req` that rewrites `/api/track/0x…` → `/api/track/[redacted]`
+  - `walletLogTag()` in `src/utils/wallet-log.ts` is used everywhere a
+    wallet would otherwise appear in a log line (`wallet-tracker.ts`,
+    `loadout-scanner.ts`, `server.ts`)
+  - nginx `access_log off; error_log /dev/null crit;` on `/api/track/`
+    and `/api/track-stats`
+  - rate-limiter stores `walletTags: Set<string>` (sha256 prefixes), never
+    raw wallet/IP joins
+- **Cleared from memory after 30s.** `WalletTracker.cache` schedules an
+  `unref'd setTimeout` at TTL that deletes the entry; `size()` and `peek()`
+  also prune lazily.
+
+### Why we DON'T denylist the operator's wallet
+
+The first audit suggested rejecting `config.walletAddress` on `/api/track/:wallet`
+to prevent the public tracker from exposing the operator's position.
+**Decision: not implementing.** Reasoning:
+1. The data is public on-chain — anyone can pull it via Etherscan or any
+   MegaETH RPC explorer. Blocking it on FlowDirty doesn't add privacy.
+2. A denylist creates an **ownership tell** — the one address that 404s
+   confirms operator ownership when probed. Denying nothing is more
+   anonymous than denying just the operator.
+3. The operator wants to use their own tracker.
+
+If the operator ever wants to break this and add a denylist, do it in
+`src/api/server.ts` inside the `/api/track/:wallet` handler before
+calling `walletTracker.track(wallet)`, AND make sure the 404 response
+shape is identical to the "Bad Request" 400 to avoid the timing/shape
+tell.
+
+### Audit trail
+
+- Initial audit: `/tmp/flowdirty-audit-result.md` (5 critical, 2 high)
+- Post-fix verification: `/tmp/flowdirty-verify-result.md` (8/9 PASS, 1 partial — the partial was the unrelated CorpBot startup log, since redacted)
+- Re-run with: `codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox < /tmp/flowdirty-verify-prompt.md`
 
 ---
 

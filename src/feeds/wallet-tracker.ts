@@ -17,6 +17,10 @@
 
 import { ethers } from 'ethers';
 import { logger } from '../logger';
+import { walletLogTag } from '../utils/wallet-log';
+
+// Re-export for backwards compat with existing import sites.
+export { walletLogTag };
 import { fetchUserCompanies, fetchCorpStatesFor, computeOpHeadroom } from './corp-state';
 import type { CorpState } from './corp-state';
 import { computeVaultProjection } from './loadout-scanner';
@@ -95,7 +99,6 @@ export class WalletTracker {
   private provider: ethers.JsonRpcProvider;
   private mc: ethers.Contract;
   private tokenIface: ethers.Interface;
-  private mcIface: ethers.Interface;
   private readonly cacheTtlMs: number;
   private readonly loadoutScanner: LoadoutScannerFeed;
   private readonly getEthPrice: () => number | null;
@@ -107,7 +110,6 @@ export class WalletTracker {
     this.provider = new ethers.JsonRpcProvider(RPC);
     this.mc = new ethers.Contract(MULTICALL3, MC3_ABI, this.provider);
     this.tokenIface = new ethers.Interface(TOKEN_ABI);
-    this.mcIface = new ethers.Interface(MC3_ABI);
   }
 
   /** Track a wallet — returns cached result if fresh, else fetches fresh. */
@@ -129,16 +131,30 @@ export class WalletTracker {
     return promise;
   }
 
-  /** Synchronous cache peek for status endpoints. */
+  /** Synchronous cache peek for status endpoints. Prunes if stale. */
   peek(wallet: string): TrackResult | null {
-    const cached = this.cache.get(wallet.toLowerCase());
+    const key = wallet.toLowerCase();
+    const cached = this.cache.get(key);
     if (!cached) return null;
-    if (Date.now() - cached.ts > this.cacheTtlMs) return null;
+    if (Date.now() - cached.ts > this.cacheTtlMs) {
+      this.cache.delete(key);
+      return null;
+    }
     return cached.data;
   }
 
-  /** Number of wallets with cached state right now. */
-  size(): number { return this.cache.size; }
+  /**
+   * Number of FRESH cached wallets right now. Prunes stale entries as a
+   * side effect so the public footer "Tracking N wallets" never overcounts
+   * memory residency. Cheap — runs only when a poll hits this method.
+   */
+  size(): number {
+    const now = Date.now();
+    for (const [key, entry] of this.cache) {
+      if (now - entry.ts > this.cacheTtlMs) this.cache.delete(key);
+    }
+    return this.cache.size;
+  }
 
   /** Manually evict a wallet (e.g. on user action). */
   evict(wallet: string): void { this.cache.delete(wallet.toLowerCase()); }
@@ -230,9 +246,24 @@ export class WalletTracker {
         worstLoadoutId,
       },
     };
-    this.cache.set(wallet, { data: result, ts: Date.now() });
-    logger.debug({ wallet, ms: Date.now() - t0, corps: corps.length, loadouts: loadouts.length },
-      '[WalletTracker] fetched');
+    const ts = Date.now();
+    this.cache.set(wallet, { data: result, ts });
+    // Privacy: schedule an active eviction at TTL so the wallet is GONE
+    // from RAM after 30s even if nobody re-polls. Without this, the entry
+    // would only be cleared lazily on the next read. The `cur?.ts === ts`
+    // guard prevents stomping on a fresh re-fetch that wrote a newer entry.
+    setTimeout(() => {
+      const cur = this.cache.get(wallet);
+      if (cur && cur.ts === ts) this.cache.delete(wallet);
+    }, this.cacheTtlMs).unref();
+
+    // Privacy: log only a hashed tag, never the raw wallet address. The
+    // 30s in-memory cache uses the address itself as the key but it
+    // never appears in disk logs.
+    logger.debug(
+      { walletTag: walletLogTag(wallet), ms: Date.now() - t0, corps: corps.length, loadouts: loadouts.length },
+      '[WalletTracker] fetched',
+    );
     return result;
   }
 

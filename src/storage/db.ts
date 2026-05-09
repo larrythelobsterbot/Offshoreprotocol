@@ -20,6 +20,116 @@ export interface Subscriber {
   updated_at: number;
 }
 
+export interface WhaleClaimRow {
+  id?: number;
+  ts: number;
+  block: number;
+  tx_hash: string;
+  log_index: number;
+  claimer: string;
+  cycle_id: number;
+  usdm_amount: number;
+  whale_rank: number | null;
+}
+
+export interface KumbayaLpEventRow {
+  id?: number;
+  ts: number;
+  block: number;
+  tx_hash: string;
+  log_index: number;
+  kind: 'mint' | 'burn' | 'collect';
+  owner: string;
+  tick_lower: number;
+  tick_upper: number;
+  liquidity: number | null;
+  dirty_amount: number;
+  usdm_amount: number;
+}
+
+export type WhaleTradeSide =
+  | 'buy' | 'sell'           // Kumbaya DEX
+  | 'asset_buy'              // Gacha
+  | 'op_payout'              // TradeRouter (op reward)
+  | 'upgrade' | 'mint'       // burn / mint
+  | 'wt_send' | 'wt_recv'    // whale-to-whale
+  | 'other';
+
+export interface WhaleTradeRow {
+  id?: number;
+  ts: number;
+  block: number;
+  tx_hash: string;
+  log_index: number;
+  whale_address: string;
+  whale_rank: number | null;
+  side: WhaleTradeSide;
+  dirty_amount: number;
+  counterparty: string;
+  counterparty_label: string | null;
+  usd_value: number | null;
+}
+
+export interface SafetyGateRow {
+  id?: number;
+  ts: number;
+  corp: string;
+  mode: 0 | 1 | 2;
+  op_type: 'extortion' | 'arms' | 'drug';
+  safety_score: number | null;
+  threshold: number;
+  decision: 'allow' | 'block';
+  shadow: 0 | 1;
+  reason: string | null;
+}
+
+export interface ShadowEvent {
+  ts: number;
+  signal: 'network_health' | 'eth_velocity';
+  would_pause: boolean;
+  reason: string;
+  op_type_filter?: 'drug' | 'arms' | 'extortion' | null;
+  context_json?: any;
+}
+
+export interface ShadowEventRow {
+  id: number;
+  ts: number;
+  signal: string;
+  would_pause: number;        // 0/1
+  reason: string;
+  op_type_filter: string | null;
+  context_json: string | null;
+}
+
+export interface NetworkHourlyRow {
+  date_hkt: string;             // 'YYYY-MM-DD' in HKT
+  hour_hkt: number;             // 0..23
+  completed_count: number;      // TC events
+  liquidated_count: number;     // TL events (all op types)
+  liq_extortion: number;
+  liq_arms: number;
+  liq_drug: number;
+  liq_unknown: number;          // TL with duration outside known windows
+  dirty_paid: number;           // sum of TC rewards + TL partial rewards
+  scanned_at: number;           // ms when this row was last upserted
+}
+
+export interface WhaleCopyRow {
+  id?: number;
+  ts: number;                       // when whale's copy event was observed
+  source_whale: string;             // whale who triggered the copy
+  source_mode: 0 | 1 | 2;           // op mode the whale started
+  source_corp: string | null;       // whale's corp address that started
+  status: 'queued' | 'fired' | 'dropped';
+  drop_reason: string | null;       // 'no_corp_available' / 'sr_below_avg' / 'sample_low' / etc.
+  our_corp: string | null;          // our corp address that consumed it (NULL if dropped)
+  fired_ts: number | null;          // when WE actually startTrade'd
+  outcome: 'win' | 'loss' | null;   // resolved later via op-scraper join
+  outcome_ts: number | null;
+  outcome_dirty: number | null;
+}
+
 export interface OpOutcome {
   id?: number;
   ts: number;
@@ -170,7 +280,206 @@ export class Storage {
       );
       CREATE INDEX IF NOT EXISTS idx_op_ts ON op_outcomes(ts);
       CREATE INDEX IF NOT EXISTS idx_op_type ON op_outcomes(op_type);
+
+      -- Network-wide hourly stats. One row per (HKT date, HKT hour). The
+      -- schedule-evidence feed scans TradeCompleted + TradeLiquidated
+      -- events daily and stores rollups here. TL events are classified
+      -- by op type using the duration field; TC events don't carry op
+      -- type cheaply, so liq_* columns are exact while completed_* are
+      -- aggregate (the dashboard derives per-op SR using the TL mix).
+      -- Shadow-mode log for danger-v2 signals. New defense layers
+      -- (NetworkHealth, EthVelocity, etc.) write here before they go live
+      -- so we can compute precision/recall against actual op outcomes
+      -- BEFORE letting them force-pause the bot.
+      --
+      -- One row per "would-pause" decision. context_json captures the
+      -- signal's input snapshot for offline replay/calibration.
+      CREATE TABLE IF NOT EXISTS defense_shadow_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        signal TEXT NOT NULL,         -- 'network_health' | 'eth_velocity'
+        would_pause INTEGER NOT NULL, -- 0 = "no trip" (sampled), 1 = "trip"
+        reason TEXT NOT NULL,
+        op_type_filter TEXT,          -- 'drug' | 'arms' | 'extortion' | NULL (all)
+        context_json TEXT             -- raw inputs that drove the decision
+      );
+      CREATE INDEX IF NOT EXISTS idx_shadow_ts     ON defense_shadow_log(ts);
+      CREATE INDEX IF NOT EXISTS idx_shadow_signal ON defense_shadow_log(signal);
+
+      -- Live-sampled op liquidation thresholds. The contract recalibrates
+      -- these every ~48h based on network success rate, plus applies a
+      -- "weekend leverage" tightening Fri evening → Sun evening. We
+      -- sample tradeInfo() across active corps every 10 min and persist
+      -- here whenever the value CHANGES, so we have a complete change
+      -- history to debug "why did SR drop yesterday".
+      CREATE TABLE IF NOT EXISTS op_params_history (
+        ts INTEGER NOT NULL,
+        mode INTEGER NOT NULL CHECK(mode IN (0,1,2)),
+        threshold_pct REAL NOT NULL,    -- e.g. 0.3077 for 0.3077% Drug
+        sample_count INTEGER NOT NULL,
+        is_weekend INTEGER NOT NULL,    -- 0/1 inferred from HKT day-of-week
+        inf_cost_per_op REAL,           -- median INF cost/op observed at this ts (NULL on legacy rows)
+        PRIMARY KEY (ts, mode)
+      );
+      CREATE INDEX IF NOT EXISTS idx_op_params_mode ON op_params_history(mode, ts);
+      -- Online migration: the table existed before inf_cost_per_op was added.
+      -- ALTER ... ADD COLUMN IF NOT EXISTS isn't supported in SQLite, so we
+      -- check the schema first to keep this idempotent across restarts.
+
+      CREATE TABLE IF NOT EXISTS network_hourly_stats (
+        date_hkt TEXT NOT NULL,           -- 'YYYY-MM-DD' in HKT
+        hour_hkt INTEGER NOT NULL,        -- 0..23
+        completed_count INTEGER NOT NULL, -- TradeCompleted events
+        liquidated_count INTEGER NOT NULL,-- TradeLiquidated events (all types)
+        liq_extortion INTEGER NOT NULL,
+        liq_arms INTEGER NOT NULL,
+        liq_drug INTEGER NOT NULL,
+        liq_unknown INTEGER NOT NULL,
+        dirty_paid REAL NOT NULL,
+        scanned_at INTEGER NOT NULL,
+        PRIMARY KEY (date_hkt, hour_hkt)
+      );
+      CREATE INDEX IF NOT EXISTS idx_nhs_date ON network_hourly_stats(date_hkt);
+
+      -- Whale Trades: every DIRTY Transfer event involving a top-N
+      -- network player. Categorized by counterparty contract:
+      --   side = 'buy'        : whale received DIRTY from Kumbaya pool
+      --   side = 'sell'       : whale sent DIRTY to Kumbaya pool
+      --   side = 'asset_buy'  : whale sent DIRTY to Gacha contract (asset pack)
+      --   side = 'op_payout'  : whale received DIRTY from TradeRouter (op reward)
+      --   side = 'upgrade'    : whale burned DIRTY (to=0x0) — Status upgrade
+      --   side = 'mint'       : whale received DIRTY (from=0x0) — first claim or other mint
+      --   side = 'wt_send'    : whale-to-whale transfer (sent)
+      --   side = 'wt_recv'    : whale-to-whale transfer (received)
+      --   side = 'other'      : transfer to/from unknown EOA or unrecognized contract
+      CREATE TABLE IF NOT EXISTS whale_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        block INTEGER NOT NULL,
+        tx_hash TEXT NOT NULL,
+        log_index INTEGER NOT NULL,
+        whale_address TEXT NOT NULL,        -- the tracked whale's address
+        whale_rank INTEGER,                 -- their rank in the top-N at trade time
+        side TEXT NOT NULL,
+        dirty_amount REAL NOT NULL,
+        counterparty TEXT NOT NULL,
+        counterparty_label TEXT,            -- human-readable label if known
+        usd_value REAL,                     -- best-effort dirty_amount × dirtyPriceUsd
+        UNIQUE(tx_hash, log_index)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wt_ts     ON whale_trades(ts);
+      CREATE INDEX IF NOT EXISTS idx_wt_whale  ON whale_trades(whale_address, ts);
+      CREATE INDEX IF NOT EXISTS idx_wt_side   ON whale_trades(side, ts);
+
+      -- Safety Gate decisions. Logged BEFORE startTrade fires so we can
+      -- compute precision/recall against op_outcomes after a few days.
+      -- Each row pairs a "would-block" or "allowed" decision with the
+      -- safety score that drove it. Joined to op_outcomes by approximate
+      -- timestamp + corp + mode at analysis time.
+      CREATE TABLE IF NOT EXISTS safety_gate_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        corp TEXT NOT NULL,
+        mode INTEGER NOT NULL CHECK(mode IN (0,1,2)),
+        op_type TEXT NOT NULL CHECK(op_type IN ('extortion','arms','drug')),
+        safety_score REAL,
+        threshold REAL NOT NULL,
+        decision TEXT NOT NULL CHECK(decision IN ('allow','block')),
+        shadow INTEGER NOT NULL CHECK(shadow IN (0,1)),
+        reason TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_sg_ts   ON safety_gate_log(ts);
+      CREATE INDEX IF NOT EXISTS idx_sg_corp ON safety_gate_log(corp, ts);
+
+      -- Vault Claim events — fired when a player claims their cycle
+      -- USDM share. Topic[1] = claimer, Topic[2] = cycleId, data = USDM
+      -- amount (1e18). Source: CycleRewards contract event 0xf01da32...
+      -- Empirically ~350 claims per 8h cycle (every active player + bot).
+      CREATE TABLE IF NOT EXISTS whale_claims (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        block INTEGER NOT NULL,
+        tx_hash TEXT NOT NULL,
+        log_index INTEGER NOT NULL,
+        claimer TEXT NOT NULL,
+        cycle_id INTEGER NOT NULL,
+        usdm_amount REAL NOT NULL,
+        whale_rank INTEGER,                 -- their rank at time of claim, NULL if not in top-N
+        UNIQUE(tx_hash, log_index)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wc_ts        ON whale_claims(ts);
+      CREATE INDEX IF NOT EXISTS idx_wc_claimer   ON whale_claims(claimer, ts);
+      CREATE INDEX IF NOT EXISTS idx_wc_cycle     ON whale_claims(cycle_id);
+
+      -- Kumbaya LP events — Mint/Burn/Collect on the DIRTY/USDM Univ3 pool.
+      -- Mint = LP added, Burn = LP removed (followed by Collect for fees).
+      -- "owner" is typically the Univ3 Position Manager NFT, not the
+      -- end user. To resolve the true LP we'd need to cross-reference
+      -- the matching IncreaseLiquidity/DecreaseLiquidity event on the
+      -- Position Manager. For now we record the immediate owner; UI
+      -- shows aggregate volumes regardless.
+      CREATE TABLE IF NOT EXISTS kumbaya_lp_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        block INTEGER NOT NULL,
+        tx_hash TEXT NOT NULL,
+        log_index INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('mint','burn','collect')),
+        owner TEXT NOT NULL,
+        tick_lower INTEGER NOT NULL,
+        tick_upper INTEGER NOT NULL,
+        liquidity REAL,                     -- raw liquidity uint128 (mint/burn only)
+        dirty_amount REAL NOT NULL,
+        usdm_amount REAL NOT NULL,
+        UNIQUE(tx_hash, log_index)
+      );
+      CREATE INDEX IF NOT EXISTS idx_klp_ts ON kumbaya_lp_events(ts);
+      CREATE INDEX IF NOT EXISTS idx_klp_owner ON kumbaya_lp_events(owner, ts);
+
+      -- Whale copy-trading log. One row per whale-emitted copy event,
+      -- regardless of whether we acted on it. Drives the "did the copy
+      -- pay off?" SR computation that auto-disables copy-mode if our
+      -- recent copy SR drops below the network's rolling SR.
+      --
+      -- Lifecycle:
+      --   queued  : whale started an op; copy event recorded, awaiting a free corp
+      --   fired   : we successfully bootstrapped the same mode on one of our corps
+      --   dropped : we chose not to copy (no free corp / pool disabled / etc.)
+      --
+      -- Outcome columns are filled in lazily by joining with op_outcomes
+      -- as our copies resolve. fired_ts within ~5 min of an op_outcome.ts
+      -- on our_corp ⇒ that outcome is the result of this copy.
+      CREATE TABLE IF NOT EXISTS whale_copy_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        source_whale TEXT NOT NULL,
+        source_mode INTEGER NOT NULL CHECK(source_mode IN (0,1,2)),
+        source_corp TEXT,
+        status TEXT NOT NULL CHECK(status IN ('queued','fired','dropped')),
+        drop_reason TEXT,
+        our_corp TEXT,
+        fired_ts INTEGER,
+        outcome TEXT CHECK(outcome IN ('win','loss')),
+        outcome_ts INTEGER,
+        outcome_dirty REAL
+      );
+      CREATE INDEX IF NOT EXISTS idx_wcl_ts     ON whale_copy_log(ts);
+      CREATE INDEX IF NOT EXISTS idx_wcl_whale  ON whale_copy_log(source_whale, ts);
+      CREATE INDEX IF NOT EXISTS idx_wcl_status ON whale_copy_log(status, ts);
     `);
+
+    // Online migration: add inf_cost_per_op column to op_params_history if
+    // missing. SQLite supports ALTER ADD COLUMN but not IF NOT EXISTS, so
+    // we check the schema first. Idempotent across restarts.
+    try {
+      const cols = this.db.prepare(`PRAGMA table_info(op_params_history)`).all() as { name: string }[];
+      if (cols.length > 0 && !cols.some(c => c.name === 'inf_cost_per_op')) {
+        this.db.exec(`ALTER TABLE op_params_history ADD COLUMN inf_cost_per_op REAL`);
+        logger.info('[Storage] migrated op_params_history: added inf_cost_per_op column');
+      }
+    } catch (err: any) {
+      logger.warn({ err: err.message }, '[Storage] op_params_history migration failed (non-fatal)');
+    }
   }
 
   private prepareStatements() {
@@ -435,6 +744,455 @@ export class Storage {
     txn();
     this.db.pragma('optimize');
     logger.info({ retentionDays: config.dataRetentionDays }, '[Storage] Cleaned old data');
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Network hourly stats (schedule-evidence feed)
+  // ────────────────────────────────────────────────────────────
+
+  upsertNetworkHourly(row: NetworkHourlyRow): void {
+    this.db.prepare(`
+      INSERT INTO network_hourly_stats
+        (date_hkt, hour_hkt, completed_count, liquidated_count,
+         liq_extortion, liq_arms, liq_drug, liq_unknown,
+         dirty_paid, scanned_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(date_hkt, hour_hkt) DO UPDATE SET
+        completed_count  = excluded.completed_count,
+        liquidated_count = excluded.liquidated_count,
+        liq_extortion    = excluded.liq_extortion,
+        liq_arms         = excluded.liq_arms,
+        liq_drug         = excluded.liq_drug,
+        liq_unknown      = excluded.liq_unknown,
+        dirty_paid       = excluded.dirty_paid,
+        scanned_at       = excluded.scanned_at
+    `).run(
+      row.date_hkt, row.hour_hkt, row.completed_count, row.liquidated_count,
+      row.liq_extortion, row.liq_arms, row.liq_drug, row.liq_unknown,
+      row.dirty_paid, row.scanned_at,
+    );
+  }
+
+  /** Pull all rows newer than `sinceMs` (scanned_at), ordered. */
+  getNetworkHourlySince(sinceMs: number): NetworkHourlyRow[] {
+    return this.db.prepare(
+      `SELECT * FROM network_hourly_stats WHERE scanned_at >= ? ORDER BY date_hkt, hour_hkt`,
+    ).all(sinceMs) as NetworkHourlyRow[];
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Whale Claims (CycleRewards claim events)
+  // ────────────────────────────────────────────────────────────
+
+  insertWhaleClaims(rows: WhaleClaimRow[]): void {
+    if (rows.length === 0) return;
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO whale_claims
+        (ts, block, tx_hash, log_index, claimer, cycle_id, usdm_amount, whale_rank)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const txn = this.db.transaction((items: WhaleClaimRow[]) => {
+      for (const r of items) {
+        stmt.run(
+          r.ts, r.block, r.tx_hash, r.log_index,
+          r.claimer.toLowerCase(), r.cycle_id, r.usdm_amount, r.whale_rank,
+        );
+      }
+    });
+    txn(rows);
+  }
+
+  /** Most recent claims for the dashboard panel. */
+  getRecentClaims(limit = 100, opts?: { cycleId?: number; minUsd?: number }): WhaleClaimRow[] {
+    const clauses: string[] = [];
+    const params: any[] = [];
+    if (opts?.cycleId != null) { clauses.push('cycle_id = ?');    params.push(opts.cycleId); }
+    if (opts?.minUsd != null)  { clauses.push('usdm_amount >= ?'); params.push(opts.minUsd); }
+    const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+    params.push(limit);
+    return this.db.prepare(
+      `SELECT * FROM whale_claims ${where} ORDER BY ts DESC LIMIT ?`,
+    ).all(...params) as WhaleClaimRow[];
+  }
+
+  /** Cursor: highest block already ingested. */
+  getWhaleClaimsMaxBlock(): number {
+    const row = this.db.prepare(`SELECT MAX(block) as b FROM whale_claims`).get() as { b: number | null };
+    return row?.b ?? 0;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Kumbaya LP events
+  // ────────────────────────────────────────────────────────────
+
+  insertKumbayaLpEvents(rows: KumbayaLpEventRow[]): void {
+    if (rows.length === 0) return;
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO kumbaya_lp_events
+        (ts, block, tx_hash, log_index, kind, owner, tick_lower, tick_upper, liquidity, dirty_amount, usdm_amount)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const txn = this.db.transaction((items: KumbayaLpEventRow[]) => {
+      for (const r of items) {
+        stmt.run(
+          r.ts, r.block, r.tx_hash, r.log_index, r.kind,
+          r.owner.toLowerCase(), r.tick_lower, r.tick_upper,
+          r.liquidity, r.dirty_amount, r.usdm_amount,
+        );
+      }
+    });
+    txn(rows);
+  }
+
+  getRecentLpEvents(limit = 50): KumbayaLpEventRow[] {
+    return this.db.prepare(
+      `SELECT * FROM kumbaya_lp_events ORDER BY ts DESC LIMIT ?`,
+    ).all(limit) as KumbayaLpEventRow[];
+  }
+
+  getKumbayaLpMaxBlock(): number {
+    const row = this.db.prepare(`SELECT MAX(block) as b FROM kumbaya_lp_events`).get() as { b: number | null };
+    return row?.b ?? 0;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Whale Stance — 24h aggregate per whale (cross-table query)
+  // ────────────────────────────────────────────────────────────
+
+  /**
+   * Per-whale rollup over the last `windowMs`. Joins whale_trades and
+   * whale_claims to give a single row per whale showing their net
+   * activity. Returns empty array if no whale activity in window.
+   */
+  getWhaleStance(windowMs = 86400_000, topN?: number): {
+    whale_address: string;
+    whale_rank: number | null;
+    sells_dirty: number;
+    sells_usd: number;
+    sells_n: number;
+    buys_dirty: number;
+    buys_usd: number;
+    buys_n: number;
+    asset_buys_dirty: number;
+    asset_buys_n: number;
+    upgrades_dirty: number;
+    upgrades_n: number;
+    op_payouts_dirty: number;
+    op_payouts_n: number;
+    claims_usdm: number;
+    claims_n: number;
+  }[] {
+    const since = Date.now() - windowMs;
+    // Single-pass aggregate: trades grouped by side, plus claims joined in
+    const trades = this.db.prepare(`
+      SELECT
+        whale_address,
+        MAX(whale_rank) as whale_rank,
+        SUM(CASE WHEN side = 'sell'      THEN dirty_amount ELSE 0 END) AS sells_dirty,
+        SUM(CASE WHEN side = 'sell'      THEN COALESCE(usd_value, 0) ELSE 0 END) AS sells_usd,
+        SUM(CASE WHEN side = 'sell'      THEN 1 ELSE 0 END) AS sells_n,
+        SUM(CASE WHEN side = 'buy'       THEN dirty_amount ELSE 0 END) AS buys_dirty,
+        SUM(CASE WHEN side = 'buy'       THEN COALESCE(usd_value, 0) ELSE 0 END) AS buys_usd,
+        SUM(CASE WHEN side = 'buy'       THEN 1 ELSE 0 END) AS buys_n,
+        SUM(CASE WHEN side = 'asset_buy' THEN dirty_amount ELSE 0 END) AS asset_buys_dirty,
+        SUM(CASE WHEN side = 'asset_buy' THEN 1 ELSE 0 END) AS asset_buys_n,
+        SUM(CASE WHEN side = 'upgrade'   THEN dirty_amount ELSE 0 END) AS upgrades_dirty,
+        SUM(CASE WHEN side = 'upgrade'   THEN 1 ELSE 0 END) AS upgrades_n,
+        SUM(CASE WHEN side = 'op_payout' THEN dirty_amount ELSE 0 END) AS op_payouts_dirty,
+        SUM(CASE WHEN side = 'op_payout' THEN 1 ELSE 0 END) AS op_payouts_n
+      FROM whale_trades WHERE ts >= ?
+      GROUP BY whale_address
+    `).all(since) as any[];
+
+    const claims = this.db.prepare(`
+      SELECT claimer, SUM(usdm_amount) AS claims_usdm, COUNT(*) AS claims_n
+      FROM whale_claims WHERE ts >= ?
+      GROUP BY claimer
+    `).all(since) as any[];
+
+    const claimMap = new Map<string, { usdm: number; n: number }>();
+    for (const c of claims) claimMap.set(c.claimer, { usdm: c.claims_usdm, n: c.claims_n });
+
+    const tradeWhales = new Set(trades.map(t => t.whale_address));
+
+    const merged = trades.map(t => ({
+      ...t,
+      claims_usdm: claimMap.get(t.whale_address)?.usdm ?? 0,
+      claims_n:    claimMap.get(t.whale_address)?.n ?? 0,
+    }));
+    // Add whales who claimed but didn't trade in window
+    for (const c of claims) {
+      if (tradeWhales.has(c.claimer)) continue;
+      merged.push({
+        whale_address: c.claimer,
+        whale_rank: null,
+        sells_dirty: 0, sells_usd: 0, sells_n: 0,
+        buys_dirty: 0, buys_usd: 0, buys_n: 0,
+        asset_buys_dirty: 0, asset_buys_n: 0,
+        upgrades_dirty: 0, upgrades_n: 0,
+        op_payouts_dirty: 0, op_payouts_n: 0,
+        claims_usdm: c.claims_usdm, claims_n: c.claims_n,
+      });
+    }
+
+    // Rank by total $ activity (sells + buys + claims), desc
+    merged.sort((a, b) =>
+      (b.sells_usd + b.buys_usd + b.claims_usdm) -
+      (a.sells_usd + a.buys_usd + a.claims_usdm),
+    );
+    return topN ? merged.slice(0, topN) : merged;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Whale copy log
+  // ────────────────────────────────────────────────────────────
+
+  insertWhaleCopy(r: Omit<WhaleCopyRow, 'id'>): number {
+    const info = this.db.prepare(`
+      INSERT INTO whale_copy_log
+        (ts, source_whale, source_mode, source_corp, status, drop_reason,
+         our_corp, fired_ts, outcome, outcome_ts, outcome_dirty)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      r.ts, r.source_whale.toLowerCase(), r.source_mode,
+      r.source_corp ? r.source_corp.toLowerCase() : null,
+      r.status, r.drop_reason,
+      r.our_corp ? r.our_corp.toLowerCase() : null,
+      r.fired_ts, r.outcome, r.outcome_ts, r.outcome_dirty,
+    );
+    return Number(info.lastInsertRowid);
+  }
+
+  /**
+   * Mark a queued copy as fired by attaching our_corp + fired_ts.
+   * Returns the row id updated, or 0 if no matching queued row.
+   */
+  markCopyFired(id: number, ourCorp: string, firedTs: number): number {
+    const info = this.db.prepare(`
+      UPDATE whale_copy_log
+         SET status   = 'fired',
+             our_corp = ?,
+             fired_ts = ?
+       WHERE id = ? AND status = 'queued'
+    `).run(ourCorp.toLowerCase(), firedTs, id);
+    return info.changes;
+  }
+
+  markCopyDropped(id: number, reason: string): number {
+    const info = this.db.prepare(`
+      UPDATE whale_copy_log
+         SET status      = 'dropped',
+             drop_reason = ?
+       WHERE id = ? AND status = 'queued'
+    `).run(reason, id);
+    return info.changes;
+  }
+
+  /**
+   * Resolve a fired copy's outcome. Called when an op_outcome lands on our_corp
+   * within a tolerance of fired_ts. Idempotent — only updates if outcome NULL.
+   */
+  setCopyOutcome(id: number, outcome: 'win' | 'loss', ts: number, dirty: number): number {
+    const info = this.db.prepare(`
+      UPDATE whale_copy_log
+         SET outcome       = ?,
+             outcome_ts    = ?,
+             outcome_dirty = ?
+       WHERE id = ? AND outcome IS NULL
+    `).run(outcome, ts, dirty, id);
+    return info.changes;
+  }
+
+  /**
+   * Best-effort attach: find the most recent fired copy on `corp` whose
+   * fired_ts is within `toleranceMs` of `outcomeTs` and still has NULL
+   * outcome. Returns row id or 0.
+   */
+  attachOutcomeToRecentCopy(opts: {
+    ourCorp: string;
+    outcomeTs: number;
+    toleranceMs: number;
+    outcome: 'win' | 'loss';
+    dirty: number;
+  }): number {
+    const minTs = opts.outcomeTs - opts.toleranceMs;
+    const row = this.db.prepare(`
+      SELECT id FROM whale_copy_log
+       WHERE our_corp = ?
+         AND status = 'fired'
+         AND outcome IS NULL
+         AND fired_ts BETWEEN ? AND ?
+       ORDER BY fired_ts DESC LIMIT 1
+    `).get(opts.ourCorp.toLowerCase(), minTs, opts.outcomeTs) as { id: number } | undefined;
+    if (!row) return 0;
+    return this.setCopyOutcome(row.id, opts.outcome, opts.outcomeTs, opts.dirty);
+  }
+
+  /** Recent copies for /bot copy status + dashboard. */
+  getRecentCopies(limit = 50): WhaleCopyRow[] {
+    return this.db.prepare(
+      `SELECT * FROM whale_copy_log ORDER BY ts DESC LIMIT ?`,
+    ).all(limit) as WhaleCopyRow[];
+  }
+
+  /**
+   * Last-N fired copies' SR. Used to auto-disable copy mode if our recent
+   * copy success rate drops below the network's rolling SR.
+   */
+  getRecentCopySR(lastN = 20): { fired: number; resolved: number; wins: number; sr: number | null } {
+    const rows = this.db.prepare(`
+      SELECT outcome FROM whale_copy_log
+       WHERE status = 'fired'
+       ORDER BY fired_ts DESC LIMIT ?
+    `).all(lastN) as { outcome: 'win' | 'loss' | null }[];
+    const fired = rows.length;
+    const resolved = rows.filter(r => r.outcome != null).length;
+    const wins = rows.filter(r => r.outcome === 'win').length;
+    const sr = resolved > 0 ? wins / resolved : null;
+    return { fired, resolved, wins, sr };
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Safety Gate (precision/recall validation against op outcomes)
+  // ────────────────────────────────────────────────────────────
+
+  insertSafetyGateDecision(r: SafetyGateRow): void {
+    this.db.prepare(`
+      INSERT INTO safety_gate_log
+        (ts, corp, mode, op_type, safety_score, threshold, decision, shadow, reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      r.ts, r.corp.toLowerCase(), r.mode, r.op_type,
+      r.safety_score, r.threshold, r.decision, r.shadow, r.reason,
+    );
+  }
+
+  /** Recent decisions for /bot status summary. */
+  getRecentSafetyGateDecisions(limit = 20): SafetyGateRow[] {
+    return this.db.prepare(
+      `SELECT * FROM safety_gate_log ORDER BY id DESC LIMIT ?`,
+    ).all(limit) as SafetyGateRow[];
+  }
+
+  /** Counts grouped by decision over the last sinceMs. */
+  getSafetyGateRollup(sinceMs: number): { decision: string; n: number }[] {
+    return this.db.prepare(
+      `SELECT decision, COUNT(*) as n FROM safety_gate_log WHERE ts >= ? GROUP BY decision`,
+    ).all(sinceMs) as { decision: string; n: number }[];
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Whale Trades (DIRTY Transfer events for tracked whales)
+  // ────────────────────────────────────────────────────────────
+
+  insertWhaleTrades(rows: WhaleTradeRow[]): void {
+    if (rows.length === 0) return;
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO whale_trades
+        (ts, block, tx_hash, log_index, whale_address, whale_rank,
+         side, dirty_amount, counterparty, counterparty_label, usd_value)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const txn = this.db.transaction((items: WhaleTradeRow[]) => {
+      for (const r of items) {
+        stmt.run(
+          r.ts, r.block, r.tx_hash, r.log_index,
+          r.whale_address.toLowerCase(), r.whale_rank,
+          r.side, r.dirty_amount, r.counterparty.toLowerCase(),
+          r.counterparty_label, r.usd_value,
+        );
+      }
+    });
+    txn(rows);
+  }
+
+  /** Most recent whale trades, optionally filtered by side. */
+  getRecentWhaleTrades(limit = 50, opts?: { side?: WhaleTradeSide; minUsd?: number }): WhaleTradeRow[] {
+    const clauses: string[] = [];
+    const params: any[] = [];
+    if (opts?.side)            { clauses.push('side = ?');       params.push(opts.side); }
+    if (opts?.minUsd != null)  { clauses.push('usd_value >= ?'); params.push(opts.minUsd); }
+    const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+    params.push(limit);
+    return this.db.prepare(
+      `SELECT * FROM whale_trades ${where} ORDER BY ts DESC LIMIT ?`,
+    ).all(...params) as WhaleTradeRow[];
+  }
+
+  /** Cursor: highest block already ingested. Resume after restarts. */
+  getWhaleTradesMaxBlock(): number {
+    const row = this.db.prepare(`SELECT MAX(block) as b FROM whale_trades`).get() as { b: number | null };
+    return row?.b ?? 0;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Op-params history (live-sampled liquidation thresholds)
+  // ────────────────────────────────────────────────────────────
+
+  insertOpParams(rows: { ts: number; mode: 0 | 1 | 2; threshold_pct: number; sample_count: number; is_weekend: 0 | 1; inf_cost_per_op?: number | null }[]): void {
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO op_params_history
+        (ts, mode, threshold_pct, sample_count, is_weekend, inf_cost_per_op)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const txn = this.db.transaction((items: typeof rows) => {
+      for (const r of items) stmt.run(r.ts, r.mode, r.threshold_pct, r.sample_count, r.is_weekend, r.inf_cost_per_op ?? null);
+    });
+    txn(rows);
+  }
+
+  /** Most recent threshold per mode. */
+  getLatestOpParams(): Record<0 | 1 | 2, { threshold_pct: number; ts: number; sample_count: number; is_weekend: number; inf_cost_per_op: number | null } | null> {
+    const result = { 0: null as any, 1: null as any, 2: null as any };
+    for (const m of [0, 1, 2] as const) {
+      const row = this.db.prepare(
+        `SELECT threshold_pct, ts, sample_count, is_weekend, inf_cost_per_op FROM op_params_history WHERE mode = ? ORDER BY ts DESC LIMIT 1`,
+      ).get(m) as any;
+      result[m] = row ?? null;
+    }
+    return result;
+  }
+
+  /** All distinct (threshold, is_weekend) values for a mode, ordered oldest→newest. Used for the "change history" panel. */
+  getOpParamsHistory(mode: 0 | 1 | 2, limit = 50): { ts: number; threshold_pct: number; sample_count: number; is_weekend: number }[] {
+    return this.db.prepare(
+      `SELECT ts, threshold_pct, sample_count, is_weekend FROM op_params_history WHERE mode = ? ORDER BY ts DESC LIMIT ?`,
+    ).all(mode, limit) as any;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Defense shadow log (danger-v2 calibration)
+  // ────────────────────────────────────────────────────────────
+
+  insertShadowEvent(e: ShadowEvent): void {
+    this.db.prepare(`
+      INSERT INTO defense_shadow_log
+        (ts, signal, would_pause, reason, op_type_filter, context_json)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      e.ts, e.signal, e.would_pause ? 1 : 0, e.reason,
+      e.op_type_filter ?? null,
+      e.context_json ? JSON.stringify(e.context_json) : null,
+    );
+  }
+
+  /** Get all shadow events newer than `sinceMs`, ordered oldest→newest. */
+  getShadowEventsSince(sinceMs: number, signal?: string): ShadowEventRow[] {
+    if (signal) {
+      return this.db.prepare(
+        `SELECT * FROM defense_shadow_log WHERE ts >= ? AND signal = ? ORDER BY ts`,
+      ).all(sinceMs, signal) as ShadowEventRow[];
+    }
+    return this.db.prepare(
+      `SELECT * FROM defense_shadow_log WHERE ts >= ? ORDER BY ts`,
+    ).all(sinceMs) as ShadowEventRow[];
+  }
+
+  /** Distinct dates already collected — used by the backfill check. */
+  getCollectedDates(): string[] {
+    return (this.db.prepare(
+      `SELECT DISTINCT date_hkt FROM network_hourly_stats ORDER BY date_hkt`,
+    ).all() as { date_hkt: string }[]).map(r => r.date_hkt);
   }
 
   close() {

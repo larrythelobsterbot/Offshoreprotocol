@@ -29,6 +29,7 @@
 
 import { EventEmitter } from 'events';
 import { logger } from '../logger';
+import { DEFAULT_THRESHOLDS } from './op-params';
 
 const RPC_URL = 'https://mainnet.megaeth.com/rpc';
 const MULTICALL3 = '0xca11bde05977b3631167028862be2a173976ca11';
@@ -152,20 +153,11 @@ const MODE_LABEL: Record<number, string> = {
   2: 'Drug Deal',
 };
 
-const MODE_WINDOW_SEC: Record<number, number> = {
-  0: 300,    // 5 min — Extortion
-  1: 1800,   // 30 min — Arms
-  2: 5400,   // 90 min — Drug
-};
-
-// Per-mode liquidation threshold (deviation % from anchor). Verified against
-// `getTradeInfo()` word 3 (pre-computed lower bound) on all 6 active corps —
-// matches to 4 decimals.
-const MODE_LIQ_THRESHOLD: Record<number, number> = {
-  0: 0.00039,  // Extortion 0.039%
-  1: 0.00176,  // Arms 0.176%
-  2: 0.00518,  // Drug 0.518%
-};
+// Per-mode liquidation threshold fallback. Pulled from the canonical
+// DEFAULT_THRESHOLDS in op-params.ts so we have one place to update
+// when devs recalibrate. computeOpHeadroom derives the band from
+// chain-stored entryPrice/liqPrice directly so this is only used for
+// the display `thresholdPct` field on idle corps.
 
 // Headroom alert levels. Tunable; defaults below match the planned
 // dashboard color coding (green / yellow / red).
@@ -200,7 +192,13 @@ export function computeOpHeadroom(corp: CorpState, ethPrice: number | null): OpH
   const headroomPct = Math.max(-100, Math.min(100, (distAbove / fullBand) * 100));
 
   const deviationPct = ((ethPrice - anchorPrice) / anchorPrice) * 100;
-  const threshold = MODE_LIQ_THRESHOLD[ti.mode] ?? 0;
+  // Use the trade's CHAIN-DERIVED threshold so it reflects current leverage
+  // (post-recalibration + weekend mode). fullBand / anchorPrice IS the
+  // actual threshold this specific trade is operating under. Fall back to
+  // the v1 map only when the trade is degenerate (zero anchor).
+  const threshold = anchorPrice > 0
+    ? fullBand / anchorPrice
+    : (DEFAULT_THRESHOLDS[ti.mode as 0 | 1 | 2] ?? 0);
   const nowSec = Math.floor(Date.now() / 1000);
 
   let alertLevel: OpHeadroom['alertLevel'] = 'safe';

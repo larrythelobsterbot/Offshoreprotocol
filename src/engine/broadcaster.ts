@@ -40,6 +40,9 @@ export class Broadcaster {
     regime_change:  { cooldownMs: 30 * 60_000, lastFiredAt: 0 },
     calm_window:    { cooldownMs: 90 * 60_000, lastFiredAt: 0 }, // 90m so it doesn't flap
     price_swing:    { cooldownMs: 60 * 60_000, lastFiredAt: 0 },
+    // Danger-v2 leading-indicator alerts (transition-edge)
+    nh_cascade:     { cooldownMs: 15 * 60_000, lastFiredAt: 0 }, // 15m — cascades fade fast
+    eth_velocity:   { cooldownMs: 15 * 60_000, lastFiredAt: 0 },
   };
 
   // Memoized last-seen values so we can detect transitions
@@ -49,6 +52,9 @@ export class Broadcaster {
   private lastBestOpProb: number | null = null;
   private priceBaseline: number | null = null;
   private priceBaselineTs: number = 0;
+  // Danger-v2 transition state
+  private lastNhTrip: boolean = false;
+  private lastEvTrip: boolean = false;
 
   constructor(cfg: BroadcasterConfig) {
     this.cfg = cfg;
@@ -66,6 +72,8 @@ export class Broadcaster {
       this.checkRegime(state);
       this.checkCalmWindow(state);
       this.checkPriceSwing(state);
+      this.checkNetworkHealth(state);
+      this.checkEthVelocity(state);
     } catch (err: any) {
       logger.warn({ err: err.message }, '[Broadcaster] observe threw');
     }
@@ -73,11 +81,93 @@ export class Broadcaster {
 
   /**
    * Post the daily digest. Caller schedules this once per day at a
-   * fixed UTC hour (e.g. 06:00) — not transition-driven.
+   * fixed UTC hour (e.g. 01:00 = 09:00 HKT) — not transition-driven.
    */
   async postDailyDigest(text: string) {
     if (!this.cfg.channelHandle) return;
     await this.cfg.bot.sendChannel(this.cfg.channelHandle, text);
+  }
+
+  /**
+   * Compose the daily digest body from current state. Pulls:
+   *   - ETH price + 24h move
+   *   - Network success rate over the last 24h
+   *   - Best/worst HKT hours per op type (from schedule-evidence rolling window)
+   *   - Active player count
+   *   - Vault USDM payout pool
+   *   - Today's recommended op-mix outlook
+   *
+   * Returns ready-to-post Markdown text.
+   *
+   * Privacy invariants: NO operator-specific data. Only network aggregates,
+   * public on-chain reads, and ETH market data. No corp addresses, no
+   * operator wallet, no personal P&L.
+   */
+  composeDailyDigest(input: {
+    state: DashboardState;
+    rolling7d: import('../feeds/schedule-evidence').RollingStats | null;
+    vaultPoolUsdm?: number | null;
+  }): string {
+    const { state: s, rolling7d, vaultPoolUsdm } = input;
+
+    const eth = s.ethPrice;
+    const ethStart = s.ethPriceStart;
+    const ethDelta = (eth != null && ethStart != null && ethStart > 0)
+      ? ((eth - ethStart) / ethStart) * 100 : null;
+
+    const tok: any = (s as any).tokenomics ?? {};
+    const activePlayers = tok.activePlayers ?? '—';
+    const dirtyDelta24 = tok.tokens?.DIRTY?.pctChange24h;
+
+    // Network 24h headline from schedule-evidence (or fall back to scores)
+    const globalSR = rolling7d?.globalSR != null
+      ? (rolling7d.globalSR * 100).toFixed(1) + '%'
+      : '—';
+
+    // Compose best/worst lines (just top 3 per op type)
+    const fmtHrs = (hrs: number[]) =>
+      hrs.slice(0, 3).map(h => String(h).padStart(2, '0') + 'h').join(' · ') || '—';
+    const drugBest = rolling7d ? fmtHrs(rolling7d.bestHours.drug)  : '—';
+    const drugWorst= rolling7d ? fmtHrs(rolling7d.worstHours.drug) : '—';
+    const armsBest = rolling7d ? fmtHrs(rolling7d.bestHours.arms)  : '—';
+    const armsWorst= rolling7d ? fmtHrs(rolling7d.worstHours.arms) : '—';
+
+    // Current HKT hour (UTC + 8)
+    const hktHour = (new Date().getUTCHours() + 8) % 24;
+
+    // Live danger
+    const danger = s.scores?.dangerScore ?? null;
+    const dangerEmoji = danger == null ? '⚪' : danger >= 60 ? '🔴' : danger >= 40 ? '🟡' : '🟢';
+
+    const lines: string[] = [];
+    lines.push(`📊 *Offshore Protocol — Daily Recap*`);
+    lines.push(`${new Date().toUTCString().slice(0, 16)} UTC · 09:00 HKT`);
+    lines.push('');
+    if (eth != null) {
+      const deltaStr = ethDelta != null ? ` (${ethDelta >= 0 ? '+' : ''}${ethDelta.toFixed(2)}% session)` : '';
+      lines.push(`🔷 *ETH* $${eth.toFixed(2)}${deltaStr}`);
+    }
+    lines.push(`${dangerEmoji} *Danger* ${danger ?? '—'}/100  ·  *Network SR (7d)* ${globalSR}`);
+    if (vaultPoolUsdm != null) {
+      const k = vaultPoolUsdm / 1000;
+      lines.push(`💰 *Vault pool* $${k >= 1000 ? (k/1000).toFixed(2) + 'M' : k.toFixed(1) + 'K'} USDM`);
+    }
+    lines.push(`👥 *Active players* ${activePlayers}` +
+      (dirtyDelta24 != null ? `  ·  *DIRTY 24h* ${dirtyDelta24 >= 0 ? '+' : ''}${dirtyDelta24.toFixed(1)}%` : ''));
+    lines.push('');
+    lines.push(`*Best HKT hours (last 7d evidence)*`);
+    lines.push(`  Drug: ${drugBest}`);
+    lines.push(`  Arms: ${armsBest}`);
+    lines.push('');
+    lines.push(`*Avoid these hours*`);
+    lines.push(`  Drug: ${drugWorst}`);
+    lines.push(`  Arms: ${armsWorst}`);
+    lines.push('');
+    lines.push(`Right now (${String(hktHour).padStart(2, '0')}h HKT): see live tracker`);
+    lines.push('');
+    lines.push(`▶ ${this.publicLink()}`);
+    lines.push(`⚠ Read-only · unaffiliated · not financial advice`);
+    return lines.join('\n');
   }
 
   private canFire(key: keyof typeof this.cooldowns): boolean {
@@ -216,7 +306,77 @@ Live: ${this.dashboardLink()}`);
     }
   }
 
+  // Danger-v2 transition: NetworkHealth crosses into "would pause" state.
+  // Posts even when the signal is in shadow mode — the channel publishes
+  // the WARNING regardless; only bot behavior is gated by shadow mode.
+  private checkNetworkHealth(s: DashboardState) {
+    const nh = (s as any).networkHealth as
+      | (import('../feeds/network-health').NetworkHealthSnapshot | null)
+      | undefined;
+    if (!nh) return;
+    const tripped = nh.wouldPause;
+    const prev = this.lastNhTrip;
+    this.lastNhTrip = tripped;
+    // Only act on rising edge (entering trip state)
+    if (tripped && !prev && this.canFire('nh_cascade')) {
+      const tag = nh.wouldPauseOpType
+        ? `${nh.wouldPauseOpType.toUpperCase()} CASCADE`
+        : 'NETWORK CASCADE';
+      void this.fire(
+`🔴 *${tag}*
+
+${nh.reason || 'liquidations spiking on-chain'}
+
+5-min stats: ${nh.tc5min} successful, ${nh.tl5min} liquidated · network SR ${nh.networkSR5min == null ? '—' : (nh.networkSR5min * 100).toFixed(0) + '%'}
+By op type (5m): drug ${nh.tlDrug5min} · arms ${nh.tlArms5min} · ext ${nh.tlExt5min}
+
+Recommended: stand down on the affected op for the next 10–15 min.
+
+Live tracker: ${this.publicLink()}`);
+    }
+  }
+
+  // Danger-v2 transition: ETH velocity trip. Forward-looking — fires on
+  // the first 1m or 5m sustained drop that crosses thresholds.
+  private checkEthVelocity(s: DashboardState) {
+    const ev = (s as any).ethVelocity as
+      | (import('./eth-velocity-signal').EthVelocitySnapshot | null)
+      | undefined;
+    if (!ev || ev.bps1m == null) return;
+    const tripped = ev.wouldPause;
+    const prev = this.lastEvTrip;
+    this.lastEvTrip = tripped;
+    if (tripped && !prev && this.canFire('eth_velocity')) {
+      const tag = ev.wouldPauseOpType
+        ? `${ev.wouldPauseOpType.toUpperCase()} WINDOW`
+        : 'ALL OPS';
+      void this.fire(
+`📉 *ETH dropping fast — ${tag} at risk*
+
+${ev.reason || 'price velocity threshold crossed'}
+
+1m: ${ev.bps1m >= 0 ? '+' : ''}${ev.bps1m.toFixed(0)} bps/min
+5m: ${ev.bps5m! >= 0 ? '+' : ''}${ev.bps5m!.toFixed(0)} bps/min · accel ${ev.accel! >= 0 ? '+' : ''}${ev.accel!.toFixed(0)}
+
+Recommended: hold new bootstraps for 60–120s.
+
+Live tracker: ${this.publicLink()}`);
+    }
+  }
+
+  /**
+   * URL the OPERATOR's private dashboard. Used for danger/cascade/regime
+   * alerts that link operators back to their dashboard.
+   */
   private dashboardLink(): string {
     return process.env.DASHBOARD_URL || 'offshore.lekker.design';
+  }
+
+  /**
+   * Public-facing URL surfaced in broadcast-channel posts. Drives ref
+   * traffic to FlowDirty. Falls back to dashboard link if unset.
+   */
+  private publicLink(): string {
+    return process.env.PUBLIC_TRACKER_URL || 'flowdirty.fun';
   }
 }

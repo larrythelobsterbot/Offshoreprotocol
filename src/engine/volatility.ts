@@ -6,7 +6,7 @@ import type {
 } from '../types';
 import { config } from '../config';
 import { calibrateProb, getHourlyRiskLevel, getSuggestedOp } from './calibration';
-import { dropProbStudentT, dropProbNormal } from './distributions';
+import { dropProbStudentT } from './distributions';
 import { buildEconomics } from './economics';
 import type { OpStatsBlock } from './op-stats';
 import type { OpType } from './economics';
@@ -16,23 +16,17 @@ import type { CorpStateBlock } from '../feeds/corp-state';
 import { computeOpHeadroom } from '../feeds/corp-state';
 import type { AmmRate } from '../feeds/amm-rate';
 import type { TokenomicsBlock } from '../feeds/tokenomics';
+import { DEFAULT_THRESHOLDS } from '../feeds/op-params';
 
-// Operation thresholds — canonical values from offshoreprotocol.fun/llms.txt
-// Extortion: 2,565x leverage -> 0.039% drop fails it
-// Arms Deal: 567x leverage   -> 0.176% drop fails it
-// Drug Deal: 193x leverage   -> 0.518% drop fails it
+// Operation thresholds — STALE FALLBACKS sourced from op-params.ts
+// (single source of truth). Live values come from the OpParamsFeed via
+// setOpParamsProvider; only used when the feed isn't wired. Stored in
+// PERCENT (0.518 not 0.00518) because dropProb*() takes thresholdPct.
 const THRESHOLDS = {
-  extortion: 0.039,
-  arms: 0.176,
-  drug: 0.518,
+  extortion: DEFAULT_THRESHOLDS[0] * 100,
+  arms:      DEFAULT_THRESHOLDS[1] * 100,
+  drug:      DEFAULT_THRESHOLDS[2] * 100,
 };
-// Time windows in ms
-const WINDOWS = {
-  extortion: 5 * 60_000,
-  arms: 30 * 60_000,
-  drug: 90 * 60_000,
-};
-
 // Rolling buffer with time-based eviction
 class TimeBuffer<T extends { t: number }> {
   private items: T[] = [];
@@ -106,6 +100,19 @@ export class VolatilityEngine extends EventEmitter {
   private getOpStats: (() => OpStatsBlock) | null = null;
   private getEmpiricalFractions: (() => Partial<Record<OpType, number>>) | null = null;
   private getActivityBundle: (() => { last1h: OpSummary; last24h: OpSummary; sinceSession: OpSummary }) | null = null;
+  // Danger-v2 signal providers (network-health + eth-velocity)
+  private getNetworkHealth: (() => import('../feeds/network-health').NetworkHealthSnapshot | null) | null = null;
+  private getEthVelocitySnap: (() => import('./eth-velocity-signal').EthVelocitySnapshot | null) | null = null;
+  // Live op-params provider (live-sampled liquidation thresholds — replaces hardcoded THRESHOLDS map)
+  private getOpParamsSnap: (() => import('../feeds/op-params').OpParamsSnapshot | null) | null = null;
+  // Whale trades provider (operator-only intel; stripped from public state)
+  private getWhaleTradesSnap: (() => import('../feeds/whale-trades').WhaleTradesSnapshot | null) | null = null;
+  // WhaleClaims (CycleRewards claim events) — operator-only
+  private getWhaleClaimsSnap: (() => import('../feeds/whale-claims').WhaleClaimsSnapshot | null) | null = null;
+  // KumbayaLP (Mint/Burn/Collect events on pool) — operator-only
+  private getKumbayaLpSnap: (() => import('../feeds/kumbaya-lp').KumbayaLpSnapshot | null) | null = null;
+  // Storage handle for the cross-table whale-stance query
+  private storageRef: import('../storage/db').Storage | null = null;
   private latestWalletBalances: WalletBalances | null = null;
   private latestCorpState: CorpStateBlock | null = null;
   private latestAmmRate: AmmRate | null = null;
@@ -121,6 +128,63 @@ export class VolatilityEngine extends EventEmitter {
     this.getOpStats = statsFn;
     this.getEmpiricalFractions = fractionsFn;
     this.getActivityBundle = activityFn ?? null;
+  }
+
+  /** Inject the danger-v2 leading-indicator providers. */
+  setDangerV2Providers(
+    networkHealthFn: () => import('../feeds/network-health').NetworkHealthSnapshot | null,
+    ethVelocityFn: () => import('./eth-velocity-signal').EthVelocitySnapshot | null,
+  ) {
+    this.getNetworkHealth = networkHealthFn;
+    this.getEthVelocitySnap = ethVelocityFn;
+  }
+
+  /** Inject the live op-params provider (replaces hardcoded threshold values). */
+  setOpParamsProvider(
+    opParamsFn: () => import('../feeds/op-params').OpParamsSnapshot | null,
+  ) {
+    this.getOpParamsSnap = opParamsFn;
+  }
+
+  /** Inject the whale-trades snapshot provider (operator-only). */
+  setWhaleTradesProvider(
+    whaleTradesFn: () => import('../feeds/whale-trades').WhaleTradesSnapshot | null,
+  ) {
+    this.getWhaleTradesSnap = whaleTradesFn;
+  }
+
+  /** Inject the whale-claims snapshot provider (operator-only). */
+  setWhaleClaimsProvider(
+    fn: () => import('../feeds/whale-claims').WhaleClaimsSnapshot | null,
+  ) {
+    this.getWhaleClaimsSnap = fn;
+  }
+
+  /** Inject the Kumbaya LP-events snapshot provider (operator-only). */
+  setKumbayaLpProvider(
+    fn: () => import('../feeds/kumbaya-lp').KumbayaLpSnapshot | null,
+  ) {
+    this.getKumbayaLpSnap = fn;
+  }
+
+  /** Inject the Storage handle so getState() can compute whale-stance. */
+  setStorageProvider(storage: import('../storage/db').Storage) {
+    this.storageRef = storage;
+  }
+
+  /**
+   * Returns live thresholds in PERCENT (so 0.3077 not 0.003077). Used by
+   * dropProb calcs which take a `thresholdPct` arg. Falls back to the
+   * v1 fallback constants if the feed isn't wired.
+   */
+  private liveThresholds(): { extortion: number; arms: number; drug: number } {
+    const snap = this.getOpParamsSnap?.();
+    if (!snap) return THRESHOLDS;
+    return {
+      extortion: snap.thresholds[0] * 100,
+      arms:      snap.thresholds[1] * 100,
+      drug:      snap.thresholds[2] * 100,
+    };
   }
 
   onWalletBalances(b: WalletBalances) {
@@ -149,6 +213,37 @@ export class VolatilityEngine extends EventEmitter {
 
   /** Most recent ETH price observed (USD). Null until first tick. */
   getEthPrice(): number | null { return this.ethPrice; }
+
+  /**
+   * Signed ETH price velocity — danger-v2 leading indicator.
+   *
+   * Why this exists separately from `volatility`: vol is variance (always
+   * positive). Liquidations on Offshore ops only fire on DOWN moves
+   * (one-sided down — confirmed by the operator and the corp-state
+   * computeOpHeadroom fix). A burst of upward volatility can still be
+   * a "high vol" reading but is harmless for op headroom. Velocity
+   * adds direction.
+   *
+   * Returns:
+   *   bps1m:   last 1-min log return × 10_000 (negative = fall)
+   *   bps5m:   mean of last 5 1-min returns × 10_000 (smoothed slope)
+   *   accel:   bps1m − previous bps1m (positive = decelerating, negative = ramping)
+   *
+   * All values null when fewer than 2 candles are available.
+   */
+  getEthVelocity(): { bps1m: number; bps5m: number; accel: number } | null {
+    const r = this.returns1m;
+    if (r.length < 2) return null;
+    const last1 = r[r.length - 1].r;
+    const prev1 = r[r.length - 2].r;
+    const window5 = r.slice(-5);
+    const mean5 = window5.reduce((s, x) => s + x.r, 0) / window5.length;
+    return {
+      bps1m: last1 * 10_000,
+      bps5m: mean5 * 10_000,
+      accel: (last1 - prev1) * 10_000,
+    };
+  }
 
   // --- Feed handlers ---
 
@@ -228,13 +323,6 @@ export class VolatilityEngine extends EventEmitter {
     return dropProbStudentT(vol, windowMinutes, thresholdPct, this.studentTDf);
   }
 
-  // Fallback: Normal CDF based drop probability
-  private calcDropProbNormal(windowMinutes: number, thresholdPct: number): number {
-    const vol = this.calcVol(windowMinutes);
-    if (vol === null) return 0.5;
-    return dropProbNormal(vol, windowMinutes, thresholdPct);
-  }
-
   private getVolatility(): VolatilityData {
     const vol5m = this.calcVol(5);
     const vol30m = this.calcVol(30);
@@ -245,10 +333,13 @@ export class VolatilityEngine extends EventEmitter {
                    refVol < 40 ? 'low' as const :
                    refVol < 80 ? 'medium' as const : 'high' as const;
 
-    // Raw model probabilities — Student-t is primary, normal is fallback
-    const rawExtortion = this.calcDropProbStudentT(5, THRESHOLDS.extortion);
-    const rawArms = this.calcDropProbStudentT(30, THRESHOLDS.arms);
-    const rawDrug = this.calcDropProbStudentT(90, THRESHOLDS.drug);
+    // Raw model probabilities — Student-t is primary, normal is fallback.
+    // Thresholds come from the LIVE OpParamsFeed so probabilities reflect
+    // current leverage (post-recalibration + weekend mode if active).
+    const liveTh = this.liveThresholds();
+    const rawExtortion = this.calcDropProbStudentT(5, liveTh.extortion);
+    const rawArms = this.calcDropProbStudentT(30, liveTh.arms);
+    const rawDrug = this.calcDropProbStudentT(90, liveTh.drug);
 
     // Calibrated probabilities (corrected for fat tails + hourly pattern)
     const utcHour = new Date().getUTCHours();
@@ -371,40 +462,74 @@ export class VolatilityEngine extends EventEmitter {
       ? Math.min(1, Math.abs(this.hlCtx.funding) / 0.001) // 0.1% funding = max heat
       : 0;
 
-    // --- Composite danger score (0-100) ---
+    // --- Composite danger score (0-100) — v2 reweighted (2026-05-08) ---
+    //
+    // v2 redistributes weight TOWARD the new game-internal & directional
+    // signals (NetworkHealth, EthVelocity) and away from indirect proxies
+    // (vol RV, CVD). The old signals are still useful at the margin but
+    // were over-weighted given that vol is direction-blind and CVD is
+    // CEX-specific.
+    //
+    // New target distribution:
+    //   25  vol regime (was 35)
+    //   25  game liq velocity (NEW — network-health snapshot)
+    //   15  ETH velocity (NEW — signed rate-of-change)
+    //   15  CVD pressure (was 20)
+    //    8  OB imbalance (was 12)
+    //    7  CEX liq cascade (was 15) — still relevant but down-weighted vs game-internal
+    //    5  CVD divergence (was 8)
+    //   ───
+    //  100  total
+    //
+    // Funding heat & IV/RV moved into per-op scoring (see calcSafety),
+    // not into the composite, since they're op-type-agnostic markers.
     let danger = 0;
 
-    // Vol regime (0-35)
+    // Vol regime (0-25)
     const refVol = vol.vol30m ?? vol.vol5m ?? 0;
-    if (refVol > 120) danger += 35;
-    else if (refVol > 80) danger += 25;
-    else if (refVol > 60) danger += 18;
-    else if (refVol > 40) danger += 10;
-    else danger += 3;
+    if (refVol > 120) danger += 25;
+    else if (refVol > 80) danger += 18;
+    else if (refVol > 60) danger += 13;
+    else if (refVol > 40) danger += 7;
+    else danger += 2;
 
-    // CVD pressure (0-20)
+    // Game liq velocity (0-25) — danger-v2 PRIMARY new component.
+    // Critical drug or arms cascade → 25; elevated → 12; safe → 0.
+    const nh = this.getNetworkHealth ? this.getNetworkHealth() : null;
+    if (nh) {
+      if (nh.cascadeRisk === 'critical' || nh.drugRisk === 'critical' || nh.armsRisk === 'critical') {
+        danger += 25;
+      } else if (nh.cascadeRisk === 'elevated' || nh.drugRisk === 'elevated' || nh.armsRisk === 'elevated') {
+        danger += 12;
+      }
+    }
+
+    // ETH velocity (0-15) — signed rate-of-change. Only DOWN moves count.
+    const ev = this.getEthVelocitySnap ? this.getEthVelocitySnap() : null;
+    if (ev && ev.bps1m != null) {
+      if (ev.risk === 'critical') danger += 15;
+      else if (ev.risk === 'elevated') danger += 7;
+    }
+
+    // CVD pressure (0-15)
     if (cvd5m < 0) {
       const pressure = Math.min(1, Math.abs(cvd5m) / 5_000_000);
-      danger += pressure * 20;
+      danger += pressure * 15;
     }
 
-    // OB imbalance (0-12)
+    // OB imbalance (0-8)
     if (obImbalance < 0) {
-      danger += Math.min(1, Math.abs(obImbalance) / 0.5) * 12;
+      danger += Math.min(1, Math.abs(obImbalance) / 0.5) * 8;
     }
 
-    // Liq cascade (0-15)
-    const cascadeScore = { LOW: 0, ELEVATED: 5, HIGH: 10, CRITICAL: 15 };
+    // CEX liq cascade (0-7) — down-weighted; complementary to game liq velocity
+    const cascadeScore = { LOW: 0, ELEVATED: 2, HIGH: 4, CRITICAL: 7 };
     danger += cascadeScore[liq.cascadeRisk];
 
-    // Funding heat (0-5)
-    danger += fundingHeat * 5;
+    // CVD divergence (0-5)
+    danger += cvdDivergence * 5;
 
-    // CVD divergence (0-8)
-    danger += cvdDivergence * 8;
-
-    // IV/RV spread (0-5)
-    danger += Math.min(1, ivrvSpread / 0.15) * 5;
+    // (Funding heat & IV/RV no longer in composite — fed into per-op scoring below)
 
     danger = Math.round(Math.min(100, Math.max(0, danger)));
 
@@ -538,6 +663,28 @@ export class VolatilityEngine extends EventEmitter {
       loadouts: this.latestLoadouts,
       tokenomics: this.latestTokenomics,
       activity,
+      // Danger-v2 leading-indicator snapshots (null when feed not running).
+      // Public state strips these — see api/server pickPublicState.
+      networkHealth: this.getNetworkHealth ? this.getNetworkHealth() : null,
+      ethVelocity:   this.getEthVelocitySnap ? this.getEthVelocitySnap() : null,
+      // Live op params (current liquidation thresholds) — public-safe by
+      // design (just chain-derived numbers everyone can read themselves)
+      opParams: this.getOpParamsSnap ? this.getOpParamsSnap() : null,
+      // Whale trades — OPERATOR-ONLY. publicMode skips this; pickPublicState
+      // also strips it as a defense-in-depth.
+      whaleTrades: config.publicMode
+        ? null
+        : (this.getWhaleTradesSnap ? this.getWhaleTradesSnap() : null),
+      // WhaleClaims, KumbayaLP, WhaleStance — also operator-only intel
+      whaleClaims: config.publicMode
+        ? null
+        : (this.getWhaleClaimsSnap ? this.getWhaleClaimsSnap() : null),
+      kumbayaLp: config.publicMode
+        ? null
+        : (this.getKumbayaLpSnap ? this.getKumbayaLpSnap() : null),
+      whaleStance: config.publicMode || !this.storageRef
+        ? null
+        : this.storageRef.getWhaleStance(24 * 3600_000, 25),
     } as any;
   }
 

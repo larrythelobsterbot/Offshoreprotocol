@@ -7,6 +7,46 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-K0K8R22YRH"></script>
+<script>
+  // PRIVACY: scrub ?wallet=0x... from the URL BEFORE gtag fires its
+  // automatic page_view event. The deep-link query string would otherwise
+  // be sent to Google Analytics as the page_location property. We do two
+  // things in belt-and-suspenders order:
+  //  1. history.replaceState rewrites the visible/recorded URL.
+  //  2. gtag config explicitly overrides page_location with a sanitized
+  //     value, in case the auto page_view fires before replaceState lands.
+  // Capture the deep-link wallet param into a window-scoped variable
+  // that initFromUrl() at the bottom of the page reads, then strip it
+  // from the URL so it never reaches gtag's page_location.
+  window.__deepLinkWallet = null;
+  (function scrubWalletFromUrl(){
+    try {
+      const u = new URL(window.location.href);
+      if (u.searchParams.has('wallet')) {
+        window.__deepLinkWallet = u.searchParams.get('wallet');
+        u.searchParams.delete('wallet');
+        history.replaceState({}, '', u.pathname + (u.search ? u.search : '') + u.hash);
+      }
+    } catch {}
+  })();
+  function _safeLocation(){
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.delete('wallet');
+      return u.origin + u.pathname + (u.search ? u.search : '');
+    } catch { return window.location.origin + window.location.pathname; }
+  }
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-K0K8R22YRH', {
+    anonymize_ip: true,
+    page_location: _safeLocation(),
+  });
+</script>
 <style>
 :root{
   --bg-deep:#050505;
@@ -215,6 +255,25 @@ body{overflow-x:hidden;letter-spacing:-0.01em}
   transition:opacity 240ms var(--ease-fluid),max-height 240ms var(--ease-fluid),margin-top 240ms var(--ease-fluid);
 }
 .pill-error.show{opacity:1;max-height:32px}
+
+/* privacy notice — sits below the wallet pill */
+.privacy-note{
+  display:flex;align-items:flex-start;gap:10px;
+  margin:18px 0 0 22px;max-width:560px;
+  padding:10px 14px;border-radius:10px;
+  background:rgba(34,240,255,0.04);
+  border:1px solid rgba(34,240,255,0.16);
+  font-family:var(--mono);font-size:12px;line-height:1.45;
+  color:var(--text-mid);letter-spacing:0;
+}
+.privacy-note svg{
+  flex-shrink:0;color:var(--cyan);margin-top:2px;
+  filter:drop-shadow(0 0 6px rgba(34,240,255,0.45));
+}
+.privacy-note b{color:var(--text-pure);font-weight:600}
+@media (max-width:640px){
+  .privacy-note{margin:14px 0 0 0;font-size:11.5px}
+}
 
 /* ref link below pill */
 .ref-link{
@@ -669,6 +728,20 @@ body{overflow-x:hidden;letter-spacing:-0.01em}
           </button>
         </form>
         <div class="pill-error" id="pillError">▲ Invalid format. Address must match 0x followed by 40 hex characters.</div>
+
+        <!-- Privacy notice — explicit so visitors don't have to read source -->
+        <div class="privacy-note" role="note" aria-label="Privacy">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="4" y="11" width="16" height="10" rx="2"/>
+            <path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+          </svg>
+          <span>
+            <b>Read-only.</b> No signup, no signature, no wallet connection.
+            Wallet addresses are <b>never logged to disk</b> server-side and clear from memory after 30 seconds &mdash;
+            server logs and request URLs are scrubbed. Page-view analytics (Google Analytics, IP-anonymized) is
+            used to count visits; <b>your wallet address is never sent to it</b>.
+          </span>
+        </div>
       </div>
 
       <a class="ref-link" href="https://app.offshoreprotocol.fun/?ref=BMR6ZA" target="_blank" rel="noopener">
@@ -1388,16 +1461,44 @@ async function pollStats(){
   } catch {}
 }
 pollStats();
-setInterval(pollStats, STATS_POLL_MS);
+let statsTimer = setInterval(pollStats, STATS_POLL_MS);
+
+// ─────────── Pause polling while tab is hidden ───────────
+// Browsers throttle background timers, but we want to fully stop firing
+// requests when the user isn't looking — saves bandwidth and RPC budget.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+  } else {
+    // Resume: refresh immediately and re-arm timers.
+    pollStats();
+    statsTimer = setInterval(pollStats, STATS_POLL_MS);
+    if (currentWallet) {
+      fetchTrack(currentWallet).then(populateDashboard).catch(() => {});
+      pollTimer = setInterval(async () => {
+        if (!currentWallet) return;
+        try { populateDashboard(await fetchTrack(currentWallet)); } catch {}
+      }, POLL_MS);
+      countdownTimer = setInterval(tickCountdown, 1000);
+    }
+  }
+});
 
 // ─────────── deep-link: ?wallet=0x... auto-submits ───────────
+// The wallet param is read from window.__deepLinkWallet, captured by the
+// gtag-scrubber in <head> BEFORE the URL was rewritten. This keeps the
+// deep-link UX while ensuring the wallet never appears in any analytics
+// page_location event.
 (function initFromUrl(){
-  const params = new URLSearchParams(window.location.search);
-  const w = params.get('wallet');
+  const w = window.__deepLinkWallet;
   if (w && RE.test(w)) {
     input.value = w;
     requestAnimationFrame(() => pill.dispatchEvent(new Event('submit', { cancelable: true })));
   }
+  // Discard the captured value so it's not retained beyond first use.
+  try { delete window.__deepLinkWallet; } catch { window.__deepLinkWallet = null; }
 })();
 </script>
 </body>

@@ -68,4 +68,46 @@ export const config = {
   cgPollInterval: 60_000,
   indicatorStoreInterval: 30_000,
   cleanupInterval: 3600_000, // hourly
+
+  // ── Danger v2 / op-spacing config ──
+  // Minimum minutes between consecutive corp bootstrap startTrade calls.
+  // 0 = current behavior (all corps fire as soon as eligible — high
+  // correlation). 15 = recommended (6 corps × 90min Drug ops perfectly
+  // staggered). Variance reducer; EV-neutral.
+  botStaggerMin: parseInt(process.env.BOT_STAGGER_MIN || '15'),
+
+  // Shadow-mode flags for danger-v2 signals. true = compute & log only,
+  // do NOT actually pause the bot. Flip to false once precision/recall
+  // looks good in defense_shadow_log.
+  networkHealthShadow: (process.env.NETWORK_HEALTH_SHADOW ?? 'true').toLowerCase() !== 'false',
+  ethVelocityShadow:   (process.env.ETH_VELOCITY_SHADOW   ?? 'true').toLowerCase() !== 'false',
+  // Hard kill switches (skip the signal entirely, even shadow logging).
+  networkHealthDisabled: process.env.NETWORK_HEALTH_DISABLED === '1',
+  ethVelocityDisabled:   process.env.ETH_VELOCITY_DISABLED   === '1',
+
+  // ── Safety Gate (per-op safety score gate before bootstrap) ──
+  // Runs BEFORE startTrade(). When score for the chosen op type is below
+  // its threshold, the gate either logs a "would-block" shadow event
+  // (default) or actually skips the bootstrap (when shadow=false).
+  // Per-op thresholds — 0 disables that op type entirely.
+  // Defaults are calibrated from the 324-op alpha analysis (2026-05-09):
+  //   Drug at safety<50 = 60% SR vs Drug at safety>=50 = 68% SR (modest gate)
+  //   Drug at safety<25 was n=5 only — tiny sample, treat as disabled
+  //   Arms calibration is unreliable above safety=75 (n=4, 50% observed
+  //     vs 84% predicted) — keep gate OFF until we have more data
+  //   Extortion is operator-confirmed only via burn-money — gate OFF
+  safetyGateShadow: (process.env.SAFETY_GATE_SHADOW ?? 'true').toLowerCase() !== 'false',
+  safetyGateDisabled: process.env.SAFETY_GATE_DISABLED === '1',
+  safetyGateDrugThreshold: parseFloat(process.env.SAFETY_GATE_DRUG_THRESHOLD ?? '50'),
+  safetyGateArmsThreshold: parseFloat(process.env.SAFETY_GATE_ARMS_THRESHOLD ?? '0'),
+  safetyGateExtThreshold:  parseFloat(process.env.SAFETY_GATE_EXT_THRESHOLD  ?? '0'),
+
+  // ── Operator override grace period (Fix B) ──
+  // When a corp shows autoTradeEnabled=false but the bot's active preset
+  // is NOT paused (so the bot didn't disable it itself), grant the
+  // operator this many minutes of "I'm doing something manually" grace
+  // before the bot re-enables. Set to 0 to disable grace (legacy
+  // behavior — bot re-enables within 30s). Set to a high value to be
+  // very forgiving. Recommended 5–15 min.
+  botOperatorGraceMin: parseInt(process.env.BOT_OPERATOR_GRACE_MIN ?? '5'),
 };

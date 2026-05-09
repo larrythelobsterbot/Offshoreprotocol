@@ -24,6 +24,7 @@
 import { ethers } from 'ethers';
 import { EventEmitter } from 'events';
 import { logger } from '../logger';
+import { walletLogTag } from '../utils/wallet-log';
 
 const RPC = 'https://mainnet.megaeth.com/rpc';
 const GEN_MGR      = '0x1b5AB7c503C2B1D94e7C42b212b4F944F7c77fce';
@@ -45,12 +46,6 @@ const VAULT_DISC_CAP       = 7000;   // 70% in basis points
 const VAULT_DAMAGE_SCALE   = 10000;
 // Cycle is 8 hours wall-clock; the 900-tick simulation maps onto this window.
 const VAULT_CYCLE_SECONDS  = 8 * 3600;
-// Generator base stats (always present, items add on top).
-const VAULT_BASE_CR  = 50;
-const VAULT_BASE_HP  = 100;
-const VAULT_BASE_EFF = 100;   // 100% baseline efficiency
-const VAULT_BASE_BM  = 110;   // 110% baseline bonus multiplier
-
 const ITEM_TYPES = ['?', 'Business', 'Insurance', 'Accountant', 'Method', 'Associates', 'OpSec'];
 const RARITY_NAMES = ['?', 'Common', 'Rare', 'Epic', 'Legendary', 'Mythic'];
 const RARITY_MULT  = [1, 1, 1.5, 2.5, 4.5, 8];
@@ -267,8 +262,17 @@ export interface CorpOpView {
 export interface TopPlayerView {
   address: string;
   rank: number;
+  // Primary ranking metric (since 2026-05-09): cumulative USDM claimed
+  // from CycleRewards in the last `claimRankWindowMs` (default 7 days).
+  // Reflects who's actually winning the laundering meta vs just grinding ops.
+  claimUsdm7d: number;
+  claimsCount7d: number;
+  // Secondary metrics (kept for context / fallback ranking)
   opsCount: number;
   dirtyEarned: number;
+  // Which metric drove the current rank — useful when claim data is
+  // sparse and we fell back to ops-based ranking on startup.
+  rankMetric: 'claim_usdm' | 'ops_count';
   generators: GeneratorView[];
   // Tier 2 additions: balances + corp activity
   balances: {
@@ -305,6 +309,24 @@ export interface LoadoutBlock {
   templatesAvailable: number;
   // Current Swiss Vault cycle metadata. Refreshed every cycle poll.
   cycle: VaultCycle | null;
+  // Lightweight TOP-SR leaderboard. Ranked by win rate with a minimum
+  // ops threshold so 1-op-100%-SR wallets don't dominate. Only address
+  // + outcome counts are published (no loadout fetch — too expensive
+  // for ~25 entries that change every 15min poll). Operator can
+  // cross-reference to whale-watch panel for loadout details.
+  topBySr?: TopBySrEntry[];
+}
+
+export interface TopBySrEntry {
+  address: string;
+  rank: number;          // 1-based rank by SR
+  wins: number;
+  losses: number;
+  opsCount: number;      // wins + losses
+  successRate: number;   // 0..1
+  dirtyEarned: number;
+  // Helpful cross-references when shown in the panel
+  claimUsdm: number;     // 0 if not in the recent claim window
 }
 
 /**
@@ -408,6 +430,13 @@ interface LoadoutScannerConfig {
   topPlayerCount?: number;
   // Lookback for the network ranking event scan (default 100k blocks ≈ 28h)
   rankingLookbackBlocks?: number;
+  // Storage handle for claim-based ranking (preferred over ops-based).
+  // When provided, ranking uses summed USDM claimed in last 7d as the
+  // primary metric; falls back to ops-based ranking if claim data is
+  // sparse (< MIN_CLAIMERS_FOR_RANK distinct claimers).
+  storage?: import('../storage/db').Storage | null;
+  // Window for claim-based ranking. Default 7 days.
+  claimRankWindowMs?: number;
 }
 
 // TradeCompleted event topic hash (used for the network-wide player ranking)
@@ -417,7 +446,6 @@ const TL_TOPIC = '0xbc95a830b1019b9734680ca35152c5632ef54d080bfa3a55531b75586739
 export class LoadoutScannerFeed extends EventEmitter {
   private cfg: LoadoutScannerConfig;
   private provider: ethers.JsonRpcProvider;
-  private genMgr: ethers.Contract;
   private mc: ethers.Contract;
   private genIface: ethers.Interface;
 
@@ -441,7 +469,6 @@ export class LoadoutScannerFeed extends EventEmitter {
       topPlayerCount: cfg.topPlayerCount ?? 5,
     };
     this.provider = new ethers.JsonRpcProvider(RPC);
-    this.genMgr   = new ethers.Contract(GEN_MGR, GEN_MGR_ABI, this.provider);
     this.mc       = new ethers.Contract(MULTICALL3, MC3_ABI, this.provider);
     this.genIface = new ethers.Interface(GEN_MGR_ABI);
   }
@@ -732,7 +759,10 @@ export class LoadoutScannerFeed extends EventEmitter {
         inventoryCount: invItemIds.length,
       };
     } catch (err: any) {
-      logger.warn({ err: err.message, addr }, '[LoadoutScanner] fetchUserView failed');
+      // Privacy: log only the hashed tag, never the raw wallet. This path
+      // is reachable from the public /api/track/:wallet endpoint, so the
+      // raw addr would otherwise hit pm2 disk logs on RPC failure.
+      logger.warn({ err: err.message, walletTag: walletLogTag(addr) }, '[LoadoutScanner] fetchUserView failed');
       return null;
     }
   }
@@ -748,22 +778,32 @@ export class LoadoutScannerFeed extends EventEmitter {
   }
 
   /**
-   * Scan TradeCompleted events network-wide to rank players by activity.
-   * Returns the top-N most active players. Used to feed `refreshNetwork`.
+   * Scan TradeCompleted + TradeLiquidated events network-wide to rank
+   * players. Returns per-player wins/losses/SR + DIRTY earned. The
+   * `opsCount` aggregates wins+losses (total volume); `wins` and
+   * `losses` separate them so callers can compute SR or rank by it.
    */
-  private async rankPlayersFromChain(): Promise<{ address: string; opsCount: number; dirtyEarned: number }[]> {
+  private async rankPlayersFromChain(): Promise<{
+    address: string;
+    opsCount: number;       // total = wins + losses
+    wins: number;           // TC count
+    losses: number;         // TL count
+    successRate: number;    // wins / total, or 0 when total==0
+    dirtyEarned: number;
+  }[]> {
     const lookback = this.cfg.rankingLookbackBlocks ?? 100_000;
     const latest = await this.provider.getBlockNumber();
     const start  = latest - lookback;
 
     // Pull events in 5k-block chunks (RPC max range)
-    const playerOps:   Record<string, number> = {};
-    const playerDirty: Record<string, number> = {};
+    const playerWins:   Record<string, number> = {};
+    const playerLosses: Record<string, number> = {};
+    const playerDirty:  Record<string, number> = {};
     const CHUNK = 5000;
     let scanned = 0;
     for (let from = start; from < latest; from += CHUNK) {
       const to = Math.min(from + CHUNK - 1, latest);
-      // TradeCompleted (success)
+      // TradeCompleted (success) — tally as a WIN
       try {
         const tcLogs = await this.provider.getLogs({
           fromBlock: from, toBlock: to, topics: [TC_TOPIC],
@@ -771,7 +811,7 @@ export class LoadoutScannerFeed extends EventEmitter {
         for (const log of tcLogs) {
           if (!log.topics[1]) continue;
           const player = '0x' + log.topics[1].slice(-40);
-          playerOps[player] = (playerOps[player] ?? 0) + 1;
+          playerWins[player] = (playerWins[player] ?? 0) + 1;
           // data[0] = reward (uint256). 32 bytes after 0x = 64 hex.
           if (log.data && log.data.length >= 66) {
             try {
@@ -783,7 +823,9 @@ export class LoadoutScannerFeed extends EventEmitter {
       } catch (err: any) {
         logger.warn({ err: err.message, from, to }, '[LoadoutScanner] TC chunk failed');
       }
-      // TradeLiquidated (partial reward)
+      // TradeLiquidated (failure) — tally as a LOSS. Partial reward
+      // still counts toward DIRTY earned (some ops pay out reduced
+      // rewards on liquidation per partial-fail mechanics).
       try {
         const tlLogs = await this.provider.getLogs({
           fromBlock: from, toBlock: to, topics: [TL_TOPIC],
@@ -791,7 +833,7 @@ export class LoadoutScannerFeed extends EventEmitter {
         for (const log of tlLogs) {
           if (log.topics.length < 4) continue;
           const player = '0x' + log.topics[2].slice(-40);
-          playerOps[player] = (playerOps[player] ?? 0) + 1;
+          playerLosses[player] = (playerLosses[player] ?? 0) + 1;
           // data[1] = partialReward
           if (log.data && log.data.length >= 130) {
             try {
@@ -804,26 +846,124 @@ export class LoadoutScannerFeed extends EventEmitter {
       scanned += CHUNK;
     }
 
-    const ranked = Object.entries(playerOps)
-      .map(([addr, ops]) => ({
+    const allPlayers = new Set([...Object.keys(playerWins), ...Object.keys(playerLosses)]);
+    const ranked = [...allPlayers].map(addr => {
+      const wins = playerWins[addr] ?? 0;
+      const losses = playerLosses[addr] ?? 0;
+      const total = wins + losses;
+      return {
         address: addr,
-        opsCount: ops,
+        opsCount: total,
+        wins,
+        losses,
+        successRate: total > 0 ? wins / total : 0,
         dirtyEarned: playerDirty[addr] ?? 0,
-      }))
-      .sort((a, b) => b.opsCount - a.opsCount);
+      };
+    }).sort((a, b) => b.opsCount - a.opsCount);
 
     logger.info({ players: ranked.length, scanned: lookback }, '[LoadoutScanner] ranking built');
     return ranked;
   }
 
+  /**
+   * Rank players by USDM claimed from CycleRewards in the last
+   * `claimRankWindowMs` window. This is the PRIMARY ranking metric as of
+   * 2026-05-09 — replaces the previous ops-count ranking which rewarded
+   * activity over actual yield. Top earners by claim USDM are the real
+   * laundering-meta winners.
+   *
+   * Returns null if storage isn't wired or claim data is sparse — callers
+   * fall back to the ops-based ranking in that case.
+   */
+  private rankPlayersByClaims(): { address: string; claimUsdm: number; claimsCount: number }[] | null {
+    if (!this.cfg.storage) return null;
+    const windowMs = this.cfg.claimRankWindowMs ?? 7 * 86400_000;
+    const sinceMs = Date.now() - windowMs;
+    try {
+      const stmt = (this.cfg.storage as any).db.prepare(`
+        SELECT claimer, SUM(usdm_amount) total_usdm, COUNT(*) n
+        FROM whale_claims WHERE ts >= ?
+        GROUP BY claimer ORDER BY total_usdm DESC
+      `);
+      const rows = stmt.all(sinceMs) as { claimer: string; total_usdm: number; n: number }[];
+      const MIN_CLAIMERS_FOR_RANK = 10;
+      if (rows.length < MIN_CLAIMERS_FOR_RANK) return null;
+      return rows.map(r => ({
+        address: r.claimer.toLowerCase(),
+        claimUsdm: r.total_usdm,
+        claimsCount: r.n,
+      }));
+    } catch (err: any) {
+      logger.warn({ err: err.message }, '[LoadoutScanner] claim-based ranking failed');
+      return null;
+    }
+  }
+
   /** Refresh network meta — popularity stats + top players' loadouts. Slow. */
   private async refreshNetwork() {
     try {
-      const ranked = await this.rankPlayersFromChain();
-      if (ranked.length === 0) {
+      // Run BOTH ranking paths so we have ops/dirty as secondary metrics.
+      const opsRanking = await this.rankPlayersFromChain();
+      if (opsRanking.length === 0) {
         logger.debug('[LoadoutScanner] no ranked players — skipping');
         return;
       }
+
+      // Try claim-based ranking first (preferred). If too sparse, fall back.
+      const claimRanking = this.rankPlayersByClaims();
+      const useClaimRank = claimRanking !== null;
+      logger.info(
+        { claimers: claimRanking?.length ?? 0, opsPlayers: opsRanking.length, primary: useClaimRank ? 'claim_usdm' : 'ops_count' },
+        '[LoadoutScanner] ranking source decided',
+      );
+
+      // Build the master ranking. When claim-based is active:
+      //   1. Top by claim_usdm (the actual money winners)
+      //   2. Plus everyone from ops-ranking who isn't already in claim-ranking
+      //      (so we don't lose data on active grinders who just haven't claimed yet)
+      const opsByAddr = new Map(opsRanking.map(r => [r.address.toLowerCase(), r]));
+
+      type Row = { address: string; opsCount: number; wins: number; losses: number;
+                   successRate: number; dirtyEarned: number;
+                   claimUsdm: number; claimsCount: number; rankMetric: 'claim_usdm' | 'ops_count' };
+      const rankedRows: Row[] = [];
+      const seen = new Set<string>();
+
+      if (useClaimRank) {
+        for (const c of claimRanking!) {
+          const ops = opsByAddr.get(c.address);
+          rankedRows.push({
+            address: c.address,
+            claimUsdm: c.claimUsdm,
+            claimsCount: c.claimsCount,
+            opsCount: ops?.opsCount ?? 0,
+            wins:        ops?.wins        ?? 0,
+            losses:      ops?.losses      ?? 0,
+            successRate: ops?.successRate ?? 0,
+            dirtyEarned: ops?.dirtyEarned ?? 0,
+            rankMetric: 'claim_usdm',
+          });
+          seen.add(c.address);
+        }
+      }
+      // Append ops-ranked players not yet in the list, ranked by ops count
+      for (const r of opsRanking) {
+        const a = r.address.toLowerCase();
+        if (seen.has(a)) continue;
+        rankedRows.push({
+          address: a,
+          claimUsdm: 0,
+          claimsCount: 0,
+          opsCount: r.opsCount,
+          wins:        r.wins,
+          losses:      r.losses,
+          successRate: r.successRate,
+          dirtyEarned: r.dirtyEarned,
+          rankMetric: useClaimRank ? 'ops_count' : 'ops_count',
+        });
+      }
+
+      const ranked = rankedRows;
       // Cap the scan to the top 200 players to keep RPC pressure reasonable.
       // Network meta needs aggregation across the whole field, but we don't
       // need to fetch loadouts for the long tail.
@@ -925,19 +1065,25 @@ export class LoadoutScannerFeed extends EventEmitter {
       const templateCount: Record<number, number> = {};
       const templateRarityCount: Record<string, number> = {}; // key: `${tid}|${rarity}`
 
-      const playerInfoByAddr = new Map<string, { ops: number; dirty: number }>();
-      for (const p of scanned) playerInfoByAddr.set(p.address, { ops: p.opsCount, dirty: p.dirtyEarned });
+      // Map by lowercased address — case-mixed addresses occasionally show
+      // up across feeds. Storage stores lowercased; chain logs return mixed.
+      const playerInfoByAddr = new Map<string, Row>();
+      for (const p of scanned) playerInfoByAddr.set(p.address.toLowerCase(), p);
 
       const topPlayers: TopPlayerView[] = [];
       const topN = this.cfg.topPlayerCount ?? 5;
       let countedLoadouts = 0;
 
       for (const pg of playerGens) {
+        const info = playerInfoByAddr.get(pg.address.toLowerCase());
         const playerView: TopPlayerView = {
           address: pg.address,
           rank: scanned.findIndex(r => r.address === pg.address) + 1,
-          opsCount:    playerInfoByAddr.get(pg.address)?.ops ?? 0,
-          dirtyEarned: playerInfoByAddr.get(pg.address)?.dirty ?? 0,
+          claimUsdm7d:   info?.claimUsdm   ?? 0,
+          claimsCount7d: info?.claimsCount ?? 0,
+          opsCount:      info?.opsCount    ?? 0,
+          dirtyEarned:   info?.dirtyEarned ?? 0,
+          rankMetric:    info?.rankMetric  ?? 'ops_count',
           generators: [],
           balances: null,           // filled in Tier 2 enrichment below
           corpCount: 0,             // filled below
@@ -1043,11 +1189,38 @@ export class LoadoutScannerFeed extends EventEmitter {
         lastScanTs: Date.now(),
       };
       this.latest.topPlayers = topPlayers;
+
+      // Build the TOP-SR leaderboard from the same opsRanking dataset.
+      // Min ops threshold (default 50) filters out small-sample noise —
+      // a wallet with 5 wins out of 5 ops is statistically uninteresting
+      // since the network's 60% baseline gives ~8% chance of that by luck.
+      const SR_MIN_OPS = 50;
+      const SR_TOP_N = 25;
+      const claimByAddrLc = new Map<string, number>(
+        (claimRanking ?? []).map(c => [c.address.toLowerCase(), c.claimUsdm]),
+      );
+      const srEligible = opsRanking
+        .filter(r => r.opsCount >= SR_MIN_OPS)
+        .sort((a, b) => b.successRate - a.successRate);
+      const topBySr: TopBySrEntry[] = srEligible.slice(0, SR_TOP_N).map((r, i) => ({
+        address: r.address.toLowerCase(),
+        rank: i + 1,
+        wins: r.wins,
+        losses: r.losses,
+        opsCount: r.opsCount,
+        successRate: r.successRate,
+        dirtyEarned: r.dirtyEarned,
+        claimUsdm: claimByAddrLc.get(r.address.toLowerCase()) ?? 0,
+      }));
+      this.latest.topBySr = topBySr;
+
       this.emit('network', this.latest);
       logger.info({
         loadouts: countedLoadouts,
         topPlayers: topPlayers.length,
         topAssets: topEquipped.length,
+        topBySr: topBySr.length,
+        srLeader: topBySr[0] ? `${topBySr[0].address.slice(0,10)}.. ${(topBySr[0].successRate*100).toFixed(1)}%` : 'none',
       }, '[LoadoutScanner] network scan complete');
     } catch (err: any) {
       logger.warn({ err: err.message }, '[LoadoutScanner] refreshNetwork failed');

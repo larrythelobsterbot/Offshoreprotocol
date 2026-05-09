@@ -9,9 +9,17 @@ import { OpScraperFeed } from './feeds/op-scraper';
 import { TokenomicsFeed } from './feeds/tokenomics';
 import { KumbayaPriceFeed } from './feeds/kumbaya-price';
 import { LoadoutScannerFeed } from './feeds/loadout-scanner';
+import { ScheduleEvidenceFeed } from './feeds/schedule-evidence';
+import { NetworkHealthFeed } from './feeds/network-health';
+import { OpParamsFeed } from './feeds/op-params';
+import { WhaleTradesFeed } from './feeds/whale-trades';
+import { WhaleClaimsFeed } from './feeds/whale-claims';
+import { WhaleCopyFeed } from './feeds/whale-copy';
+import { KumbayaLpFeed } from './feeds/kumbaya-lp';
 import { PolymarketFeed } from './feeds/polymarket';
 import { CoinglassFeed } from './feeds/coinglass';
 import { VolatilityEngine } from './engine/volatility';
+import { EthVelocitySignal } from './engine/eth-velocity-signal';
 import { sendTelegramAlert } from './engine/telegram';
 import { Storage } from './storage/db';
 import { ApiServer } from './api/server';
@@ -67,81 +75,31 @@ async function main() {
     5 * 60_000,
   );
   // Loadout scanner — operator's loadouts (60s) + network meta (15min)
+  // topPlayerCount bumped to 25 so WhaleTradesFeed can track the top-25
+  // by ops count. The dashboard's WHALE WATCH panel still renders the
+  // first 10 (CSS limit on the rendering side), so widening here only
+  // gives the whale-trades feed a bigger pool.
   const loadoutScanner = new LoadoutScannerFeed({
     walletAddress:        config.walletAddress,
     selfPollMs:           60_000,
     networkPollMs:        15 * 60_000,
-    topPlayerCount:       10,
+    topPlayerCount:       25,
     rankingLookbackBlocks: 100_000,
+    // Pass storage so the scanner can rank by claim USDM (preferred over
+    // ops count). Falls back to ops-based ranking when fewer than 10
+    // distinct claimers in the 7d window (i.e. on a fresh deploy).
+    storage,
+    claimRankWindowMs:    7 * 86400_000,
   });
 
   // Track the latest corp-address list so the scraper always has fresh inputs.
   let latestCorpAddresses: string[] = [];
 
-  // Per-loadout vault alert state — keyed by `${cycleId}|${genId}` so new
-  // cycle automatically re-arms. Fires once when projection first turns
-  // 'danger' (predicted to liquidate before cycle end with current
-  // suspicion ≥70%).
-  const vaultAlertedKeys = new Set<string>();
-  async function checkVaultAlerts(loadoutBlock: any) {
-    if (!config.operatorChatId) return;
-    if (!loadoutBlock?.user || !loadoutBlock?.cycle) return;
-    const cycleId = loadoutBlock.cycle.cycleId;
-    for (const g of (loadoutBlock.user.generators || [])) {
-      const p = g.vaultProjection;
-      if (!p) continue;
-      const key = `${cycleId}|${g.id}`;
-      if (p.alertLevel !== 'danger') continue;
-      if (vaultAlertedKeys.has(key)) continue;
-      vaultAlertedKeys.add(key);
-      const cycleEndIso = new Date(p.cycleEndTs * 1000).toISOString().slice(11, 16) + ' UTC';
-      const text =
-        `🚨 *VAULT LIQUIDATION RISK*\n` +
-        `Loadout: gen #${g.id} (CR ${g.cr} · HP ${g.hp} · Disc ${g.disc.toFixed(1)}%)\n` +
-        `Cycle ${p.cycleId}: ${p.progressPct.toFixed(0)}% elapsed (ends ${cycleEndIso})\n` +
-        `Current suspicion: *${p.currentSuspicionPct.toFixed(0)}%*\n` +
-        `Predicted survival: ${p.predictedSurvivalPct.toFixed(0)}% (sim liquidates at tick ${p.predictedSurvivalTicks}/900)\n` +
-        `Projected output: *${p.projectedOutputUI.toFixed(2)}M cash*`;
-      try { await bot.sendDm(config.operatorChatId, text, { parseMode: 'Markdown' }); }
-      catch { /* best-effort */ }
-    }
-  }
-
-  // Per-corp headroom alert state — tracks the level we last DM'd for each
-  // corp so we don't spam on oscillation. Re-arms only after returning to safe.
-  const corpHeadroomLastLevel = new Map<string, 'safe' | 'warn' | 'danger'>();
-  async function checkHeadroomAlerts(corpsBlock: any) {
-    if (!config.operatorChatId) return;
-    // Lazy-import the helper to avoid TS circular import concerns.
-    const { computeOpHeadroom } = await import('./feeds/corp-state');
-    const ethPrice = engine.getEthPrice();
-    if (ethPrice == null) return;
-    for (const c of corpsBlock.corps as any[]) {
-      const h = computeOpHeadroom(c, ethPrice);
-      if (!h) {
-        // Op not active — clear stored level so the next active op starts clean.
-        corpHeadroomLastLevel.delete(c.address);
-        continue;
-      }
-      const prevLevel = corpHeadroomLastLevel.get(c.address) ?? 'safe';
-      // Fire DM only when transitioning INTO danger from a non-danger level.
-      // Re-arm when corp returns to 'safe' (so a fresh slide back triggers again).
-      if (h.alertLevel === 'danger' && prevLevel !== 'danger') {
-        const devSign = h.deviationPct >= 0 ? '+' : '';
-        const minLeft = Math.ceil(h.secondsRemaining / 60);
-        const text =
-          `🚨 *LIQUIDATION RISK*\n` +
-          `Corp: \`${c.address.slice(0, 10)}..\` (${c.locationLabel}, ${c.modeLabel})\n` +
-          `Headroom: *${h.headroomPct.toFixed(0)}%*\n` +
-          `ETH: $${h.ethPrice.toFixed(2)} (anchor $${h.anchorPrice.toFixed(2)}, ` +
-          `${devSign}${h.deviationPct.toFixed(3)}% from anchor · liq @ −${h.thresholdPct.toFixed(3)}%)\n` +
-          `Time left: ${minLeft}m`;
-        try { await bot.sendDm(config.operatorChatId, text, { parseMode: 'Markdown' }); }
-        catch { /* sendDm swallows errors */ }
-      }
-      corpHeadroomLastLevel.set(c.address, h.alertLevel);
-    }
-  }
+  // (Vault + headroom DM alerts were disabled 2026-05-08 — operator
+  //  reported "way too loud" during normal volatility. Removed 2026-05-09
+  //  dead-code pass. Vault projections + headroom levels still surface on
+  //  the dashboard; the circuit-breaker trip notification on actual
+  //  liquidations is unaffected.)
   const poly = new PolymarketFeed();
   const cg = new CoinglassFeed();
 
@@ -225,12 +183,6 @@ async function main() {
     engine.onCorpState(b);
     // Feed the live address list to the scraper.
     latestCorpAddresses = b.corps.map((c: any) => c.address.toLowerCase());
-    // Per-op liquidation headroom DM alerts (Phase 1a) — DISABLED 2026-05-08
-    // per operator request: "way too loud". Predictive alerts fired too often
-    // during normal ETH volatility. Re-enable by uncommenting the call below.
-    // The actual circuit-breaker trip notification (when real liquidations
-    // occur) is unaffected and still fires from corp-bot.ts.
-    // void checkHeadroomAlerts(b);
   });
 
   // Live $DIRTY ↔ USDM AMM rate from the in-game Uniswap V3 pool
@@ -246,17 +198,12 @@ async function main() {
   loadoutScanner.on('user',    () => {
     const snap = loadoutScanner.getSnapshot();
     engine.onLoadouts(snap);
-    // Per-loadout vault projection alerts (Phase 1b) — DISABLED 2026-05-08
-    // alongside the headroom alerts above (same "too loud" feedback).
-    // Re-enable by uncommenting the call below. Vault projection itself is
-    // still computed and surfaced in the dashboard / API — only the DM
-    // notification is silenced.
-    // void checkVaultAlerts(snap);
   });
   loadoutScanner.on('network', () => engine.onLoadouts(loadoutScanner.getSnapshot()));
 
-  // On-chain operation outcome scraper. Posts each newly-finalized
-  // TradeCompleted event to /api/op-result so the empirical
+  // On-chain operation outcome scraper. Each newly-finalized
+  // TradeCompleted / TradeLiquidated event is written directly to
+  // op_outcomes via storage.insertOpOutcome so the empirical
   // failure-fraction tracker learns from real outcomes automatically.
   const seenTxHashes = new Set<string>();
   const scraper = new OpScraperFeed({
@@ -279,36 +226,53 @@ async function main() {
         corpBot.recordLiquidation(o.corp, o.ts, o.txHash);
       }
 
+      // Attach to whale_copy_log if this outcome lines up with a recent
+      // copy-mode bootstrap. No-op when no matching row.
+      corpBot.recordOpOutcome({
+        corp: o.corp,
+        succeeded: o.succeeded,
+        dirtyEarned: o.rewardDirty,
+        ts: o.ts,
+      });
+
       if (o.opType === 'unknown') {
         logger.warn({ txHash: o.txHash, durationMin: o.durationMin, mode: o.mode },
           '[OpScraper] outcome with unknown opType; not logging');
         return;
       }
+
+      // Direct storage insert. Replaced the previous self-HTTP POST to
+      // `/api/op-result` (which routed through Fastify schema validation
+      // and the operator gate). Same end result — insertOpOutcome — but
+      // without the network round-trip + serialization + double-bookkeeping
+      // failure modes.
       try {
-        const res = await fetch(`http://localhost:${config.port}/api/op-result`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            opType: o.opType,
-            succeeded: o.succeeded,
-            dirtyEarned: o.rewardDirty,
-            baseReward: o.baseReward,
-            ts: o.ts,
-            note: `auto:${o.txHash.slice(0, 12)}...:${o.corp.slice(0, 8)}:m${o.mode}`,
-          }),
-        });
-        if (!res.ok) {
-          const txt = await res.text();
-          logger.warn({ status: res.status, body: txt.slice(0, 200), txHash: o.txHash },
-            '[OpScraper] /api/op-result rejected outcome');
-        } else {
-          logger.info(
-            { op: o.opType, reward: o.rewardDirty, succeeded: o.succeeded, corp: o.corp.slice(0, 10) },
-            '[OpScraper] auto-logged outcome',
+        const base = o.baseReward ?? 100;
+        // Sanity clamp mirrors the API endpoint's check so anomalous events
+        // (chain quirks, decode bugs) don't poison the empirical SR sample.
+        if (o.rewardDirty > base * 2) {
+          logger.warn(
+            { txHash: o.txHash, dirtyEarned: o.rewardDirty, baseReward: base },
+            '[OpScraper] dropping outcome — dirtyEarned > 2× base (likely decode anomaly)',
           );
+          return;
         }
+        storage.insertOpOutcome({
+          ts: o.ts,
+          opType: o.opType,
+          succeeded: o.succeeded ? 1 : 0,
+          dirtyEarned: o.rewardDirty,
+          baseReward: base,
+          note: `auto:${o.txHash.slice(0, 12)}...:${o.corp.slice(0, 8)}:m${o.mode}`,
+        });
+        // Recompute cached op stats for the next dashboard broadcast.
+        onOpStatsChanged();
+        logger.info(
+          { op: o.opType, reward: o.rewardDirty, succeeded: o.succeeded, corp: o.corp.slice(0, 10) },
+          '[OpScraper] auto-logged outcome',
+        );
       } catch (err: any) {
-        logger.error({ err: err.message }, '[OpScraper] POST /api/op-result failed');
+        logger.error({ err: err.message, txHash: o.txHash }, '[OpScraper] insertOpOutcome failed');
       }
     },
   });
@@ -335,7 +299,76 @@ async function main() {
     getEthPrice: () => engine.getEthPrice(),
   });
 
-  const server = new ApiServer(storage, () => engine.getState(), onOpStatsChanged, walletTracker);
+  // Schedule-evidence feed — daily network-wide ops scan, persists hourly
+  // rollups for the dashboard's "best/worst hours" panel.
+  const scheduleEvidence = new ScheduleEvidenceFeed({ storage });
+
+  // OpParamsFeed — live-samples the contract's current liquidation
+  // thresholds every 10 min. Drives danger calculations + UI displays.
+  // Replaces the old hardcoded constants (which went stale when devs
+  // recalibrated leverage on 2026-05-09 and added weekend mode).
+  const opParams = new OpParamsFeed({ storage });
+  engine.setOpParamsProvider(() => opParams.getSnapshot());
+
+  // WhaleTradesFeed — tracks every DIRTY transfer involving a top-25
+  // network player, classified by counterparty (DEX swap / asset buy /
+  // op payout / mint / burn / whale-to-whale). Operator-only intel
+  // panel; not exposed on the public surface.
+  const whaleTrades = new WhaleTradesFeed({
+    storage,
+    loadoutScanner,
+    topN: 25,
+    getDirtyPriceUsd: () => {
+      // Best available DIRTY/USD: prefer KumbayaPriceFeed's priceUSD field.
+      // Fall back to live AMM rate × ETH spot if Kumbaya is stale. The
+      // KumbayaPriceFeed serializes the field as `priceUSD` (capital
+      // letters) — a previous version of this getter used `priceUsd`
+      // (camelCase) which always returned undefined and caused all
+      // whale-trade USD values to default to 0.
+      const dp = engine.getState().dirtyPrice as any;
+      return dp?.priceUSD ?? null;
+    },
+  });
+  engine.setWhaleTradesProvider(() => whaleTrades.getSnapshot());
+
+  // WhaleClaimsFeed — every CycleRewards claim() event. Operator-only
+  // intel showing which whales actually harvest USDM per cycle.
+  const whaleClaims = new WhaleClaimsFeed({ storage, loadoutScanner });
+
+  // KumbayaLpFeed — Mint/Burn/Collect on the DIRTY/USDM pool.
+  // Liquidity-shift signal that affects DIRTY price stability.
+  const kumbayaLp = new KumbayaLpFeed({ storage });
+
+  // WhaleCopyFeed — re-uses the LoadoutScanner's `topBySr` pool (top 5 by
+  // 72h SR with min 50 ops + 75% SR), polls those whales' corps every 30s,
+  // emits an event whenever any of their corps transitions idle → active.
+  // CorpBot subscribes via setCopyHooks below.
+  const whaleCopy = new WhaleCopyFeed({ loadoutScanner });
+
+  engine.setWhaleClaimsProvider(() => whaleClaims.getSnapshot());
+  engine.setKumbayaLpProvider(() => kumbayaLp.getSnapshot());
+  engine.setStorageProvider(storage);
+
+  // ── Danger-v2 leading-indicator signals ──
+  // Both default to SHADOW mode (compute & log only, no bot pause). Flip
+  // via env once defense_shadow_log shows good precision/recall.
+  const networkHealth = new NetworkHealthFeed({
+    storage,
+    shadow: config.networkHealthShadow,
+  });
+  const ethVelocity = new EthVelocitySignal({
+    storage,
+    engine,
+    shadow: config.ethVelocityShadow,
+  });
+  // Wire snapshot providers into the volatility engine so the composite
+  // dangerScore can incorporate the new signals.
+  engine.setDangerV2Providers(
+    () => networkHealth.getSnapshot(),
+    () => ethVelocity.getSnapshot(),
+  );
+
+  const server = new ApiServer(storage, () => engine.getState(), onOpStatsChanged, walletTracker, scheduleEvidence);
 
   // --- Periodic tasks ---
 
@@ -367,6 +400,8 @@ async function main() {
     refLink: config.refLink || undefined,
     operatorChatId: config.operatorChatId,
     dashboardUrl: config.dashboardUrl,
+    // Used by /bot burn-money to surface live OpParamsFeed thresholds.
+    getState: () => engine.getState(),
   });
   void bot.start();
 
@@ -411,7 +446,22 @@ async function main() {
     tgBot: bot,
     operatorChatId: config.operatorChatId,
     getWalletBalances: () => latestWalletBalances,
+    storage,                           // for SafetyGate shadow logging
   });
+  // Wire copy-mode hooks. Pool mean SR comes from WhaleCopyFeed; network
+  // rolling SR is read from ScheduleEvidence's 7d rolling stats. Both
+  // are getters so the bot picks up live values each tick.
+  corpBot.setCopyHooks({
+    drainQueue: () => whaleCopy.drainQueue(),
+    getPoolMeanSr: () => whaleCopy.getPoolMeanSr(),
+    getNetworkSr: () => {
+      try {
+        const r = scheduleEvidence.getRollingStats(7);
+        return r.globalSR;
+      } catch { return null; }
+    },
+  });
+
   // Give the TG bot a back-reference to the corp bot so the /bot admin
   // command can drive it. Operator-only auth is enforced inside cmdBot.
   bot.attachCorpBot(corpBot);
@@ -423,12 +473,48 @@ async function main() {
     broadcaster.observe(state);
     // Feed latest danger score to corp bot
     corpBot.onDangerScore(state.scores.dangerScore);
+    // Feed per-op safety scores (powers the SafetyGate shadow check)
+    corpBot.onSafetyScores({
+      extortion: state.scores.extortion ?? null,
+      arms:      state.scores.arms      ?? null,
+      drug:      state.scores.drug      ?? null,
+    });
   }, 1000);
 
   // DB cleanup hourly
   setInterval(() => {
     storage.cleanup();
   }, config.cleanupInterval);
+
+  // ── Daily digest scheduler (broadcast channel) ──
+  // Fires once per UTC day at 01:00 UTC = 09:00 HKT. Checks every minute
+  // and tracks last-fired-day so we never double-fire and never miss a
+  // day across pm2 restarts.
+  let lastDigestDate: string | null = null;
+  setInterval(async () => {
+    const now = new Date();
+    const hour = now.getUTCHours();
+    const minute = now.getUTCMinutes();
+    const todayKey = now.toISOString().slice(0, 10);
+    // Window: 01:00–01:04 UTC. Stash last-fired-date so a restart at 01:02
+    // doesn't re-fire if we already fired this day.
+    if (hour === 1 && minute < 5 && lastDigestDate !== todayKey) {
+      try {
+        const text = broadcaster.composeDailyDigest({
+          state: engine.getState(),
+          rolling7d: scheduleEvidence.getRollingStats(7),
+          // Vault USDM pool — null until we wire the multicall feed
+          // (see follow-up). Skip the line in the digest if null.
+          vaultPoolUsdm: null,
+        });
+        await broadcaster.postDailyDigest(text);
+        lastDigestDate = todayKey;
+        logger.info({ date: todayKey }, '[Broadcaster] daily digest sent');
+      } catch (err: any) {
+        logger.warn({ err: err.message }, '[Broadcaster] daily digest failed');
+      }
+    }
+  }, 60_000).unref();
 
   // --- Start everything ---
   await server.start();
@@ -440,6 +526,14 @@ async function main() {
   tokenomics.start();
   dirtyPrice.start();
   void loadoutScanner.start();
+  void scheduleEvidence.start();
+  void opParams.start();
+  void whaleTrades.start();
+  void whaleClaims.start();
+  void kumbayaLp.start();
+  void whaleCopy.start();
+  if (!config.networkHealthDisabled) void networkHealth.start();
+  if (!config.ethVelocityDisabled)   ethVelocity.start();
   poly.start();
   cg.start();
 
@@ -487,6 +581,14 @@ async function main() {
     tokenomics.stop();
     dirtyPrice.stop();
     loadoutScanner.stop();
+    scheduleEvidence.stop();
+    opParams.stop();
+    whaleTrades.stop();
+    whaleClaims.stop();
+    kumbayaLp.stop();
+    whaleCopy.stop();
+    networkHealth.stop();
+    ethVelocity.stop();
     scraper.stop();
     poly.stop();
     cg.stop();

@@ -21,6 +21,7 @@
 // ============================================================
 
 import { logger } from '../logger';
+import { config as appConfig } from '../config';
 import type { Storage } from '../storage/db';
 // Type-only import — avoids a runtime circular dep with corp-bot.ts.
 import type { CorpBot } from './corp-bot';
@@ -68,6 +69,10 @@ export interface TgBotConfig {
   // optionally so the TG bot still works even when CorpBot is disabled
   // (e.g. PUBLIC_MODE deployments without a signing key).
   corpBot?: CorpBot | null;
+  // Optional read-only state getter — used by /bot burn-money to surface
+  // live OpParamsFeed thresholds in the confirmation prompt. Can be
+  // omitted; subcommand falls back to "unknown".
+  getState?: () => any;
 }
 
 export class TgBot {
@@ -143,18 +148,29 @@ export class TgBot {
     }
   }
 
-  /** Public helper: broadcast to a channel (e.g. @offshorecasinochannel). */
-  async sendChannel(channelHandle: string, text: string, opts: { parseMode?: 'Markdown' | 'HTML' } = {}): Promise<void> {
+  /**
+   * Public helper: broadcast to a channel.
+   * Accepts either a public username (`offshorecasinochannel` or
+   * `@offshorecasinochannel`) OR a numeric chat_id as a string
+   * (e.g. `-1001234567890` for private channels).
+   */
+  async sendChannel(channelIdent: string, text: string, opts: { parseMode?: 'Markdown' | 'HTML' } = {}): Promise<void> {
     if (!this.alive) return;
+    // Detect numeric chat_id (private channels — usernames don't resolve).
+    // Telegram channel IDs are negative integers (typically -100xxxxxxxxxx).
+    const isNumeric = /^-?\d+$/.test(channelIdent);
+    const chat_id = isNumeric
+      ? Number(channelIdent)
+      : (channelIdent.startsWith('@') ? channelIdent : '@' + channelIdent);
     try {
       await this.api('sendMessage', {
-        chat_id: channelHandle.startsWith('@') ? channelHandle : '@' + channelHandle,
+        chat_id,
         text,
         parse_mode: opts.parseMode ?? 'Markdown',
         disable_web_page_preview: true,
       });
     } catch (err: any) {
-      logger.warn({ err: err.message, channelHandle }, '[TgBot] sendChannel failed');
+      logger.warn({ err: err.message, channelIdent }, '[TgBot] sendChannel failed');
     }
   }
 
@@ -483,15 +499,88 @@ Both of us get a bonus when you join.`);
   USDM:   \`${fmt(s.balances.usdm)}\`${rate(s.balances.usdmPerHr,  '/hr')}
 ` : '\n_(wallet balances unavailable — feed warming up)_\n';
 
+          // Live INF cost per op (post-DIRTY-price-adjusted). Single global
+          // value across all modes per chain sampling 2026-05-09. Pulled from
+          // OpParamsFeed via the engine state getter.
+          const opParams = (this.cfg.getState?.() as any)?.opParams;
+          const infCostBlock = opParams?.infCostPerOp
+            ? `*INF cost/op:* \`${opParams.infCostPerOp.toFixed(2)}\` _(network-median, n=${opParams.infCostSampleCount ?? 0})_\n`
+            : '';
+
+          // Locked corps + operator-override grace state. Operator-only
+          // controls — surface so the operator can see what's currently
+          // outside the bot's reach.
+          const locked = corpBot.getLockedCorps();
+          const overrides = corpBot.getOperatorOverrides();
+          let lockBlock = '';
+          if (locked.length > 0) {
+            const labels = locked.map(addr => {
+              const idx = s.perCorp.findIndex(c => c.addr.toLowerCase() === addr) + 1;
+              return idx > 0 ? '#' + idx : addr.slice(0, 8);
+            }).join(', ');
+            lockBlock += `*Locked corps:* 🔒 ${labels}\n`;
+          }
+          if (overrides.length > 0) {
+            const lines = overrides.map(o => {
+              const idx = s.perCorp.findIndex(c => c.addr.toLowerCase() === o.corp) + 1;
+              const m = Math.ceil(o.remainingMs / 60_000);
+              return `  ${idx > 0 ? '#' + idx : o.corp.slice(0,8)} (${m}m remaining)`;
+            }).join('\n');
+            lockBlock += `*Operator grace:* ✋\n${lines}\n`;
+          }
+
+          // SafetyGate state — shadow vs live, current per-op safety scores,
+          // 24h decision rollup. The gate is shadow-by-default until we
+          // have ~5-7 days of decisions to validate against op_outcomes.
+          const scores = (this.cfg.getState?.() as any)?.scores;
+          let gateBlock = '';
+          try {
+            const config = require('../config').config;
+            if (!config.safetyGateDisabled) {
+              const sinceMs = Date.now() - 24 * 3600_000;
+              const rollup = this.cfg.storage?.getSafetyGateRollup(sinceMs) ?? [];
+              const allow = rollup.find(r => r.decision === 'allow')?.n ?? 0;
+              const block = rollup.find(r => r.decision === 'block')?.n ?? 0;
+              const mode = config.safetyGateShadow ? 'SHADOW' : 'LIVE';
+              const tDrug = config.safetyGateDrugThreshold;
+              const tArms = config.safetyGateArmsThreshold;
+              const tExt  = config.safetyGateExtThreshold;
+              const fmtScore = (n: number | null | undefined) => n == null ? '—' : n.toFixed(0);
+              gateBlock =
+                `*SafetyGate:* \`${mode}\` · live scores ` +
+                `Ext=${fmtScore(scores?.extortion)} ` +
+                `Arms=${fmtScore(scores?.arms)} ` +
+                `Drug=${fmtScore(scores?.drug)}\n` +
+                `   thresholds: Drug≥${tDrug || 'OFF'} · Arms≥${tArms || 'OFF'} · Ext≥${tExt || 'OFF'}\n` +
+                `   24h decisions: ${allow} allow · ${block} would-block\n`;
+            }
+          } catch { /* status renders without gate block on error */ }
+
           // Format target modes per corp
           const targetStr = s.targetModes.map((m, i) =>
             `corp${i+1}=${['Ext','Arms','Drug'][m] ?? m}`
           ).join(', ');
 
-          // Schedule line
+          // Schedule line — also explain the FALLBACK so the operator
+          // understands what happens when both schedule + manual are off.
           const scheduleLine = s.scheduleEnabled
             ? `Schedule: ON · ${s.hktHour.toString().padStart(2,'0')}h HKT → \`${s.schedulePresetThisHour}\``
-            : `Schedule: OFF (using all-drug)`;
+            : `Schedule: OFF — fallback is *paused* (use \`/bot on\` to resume)`;
+          // Decode the activePresetName label into a readable "why":
+          //   manual:X            → "manual override → X"
+          //   auto:X              → "schedule slot → X"
+          //   breaker:paused      → "circuit breaker tripped"
+          //   danger:panic        → "danger override active"
+          //   fallback:X          → "fallback (no schedule, no manual) → X"
+          const presetSourceExplain = (label: string) => {
+            if (label.startsWith('manual:'))     return '🔒 manual lock';
+            if (label.startsWith('auto:'))       return '📅 schedule';
+            if (label.startsWith('breaker:'))    return '🚨 circuit breaker';
+            if (label.startsWith('danger:'))     return '⚠ danger override';
+            if (label.startsWith('fallback:'))   return '⤵ fallback';
+            return '?';
+          };
+          const sourceTag = presetSourceExplain(s.activePresetName);
 
           // Circuit breaker line — only show when notable (tripped or pressure building)
           const cb = s.circuitBreaker;
@@ -510,11 +599,12 @@ State: ${s.running ? (s.paused ? '⏸ *PAUSED*' : '▶️ Running') : '⛔ Stopp
 Signer: \`${s.signer ?? '(none)'}\`
 Owns:   ${s.ownedCorps}/${s.totalCorps} corps
 
-*Active preset:* \`${s.activePresetName}\` (${s.scheduleMode})
+*Active preset:* \`${s.activePresetName}\`
+   *Source:* ${sourceTag}
 Targets: ${targetStr}
 ${scheduleLine}
 Last danger: ${s.lastDanger ?? '_n/a_'} (panic at ≥${s.panicThreshold})${breakerLine}
-${balancesBlock}
+${lockBlock}${infCostBlock}${gateBlock}${balancesBlock}
 *Per-corp on-chain:*
 ${corps}
 
@@ -531,6 +621,18 @@ Subcommands: \`/bot help\``);
 \`/bot logs\` — last 20 CorpBot log lines
 \`/bot claim\` — claim pending rewards on all corps now
 
+*Stop / start (most common):*
+\`/bot off\` — *full stop* (locks paused preset, calls disableAutoTrade on every corp)
+\`/bot on\`  — release lock, resume schedule
+\`/bot pause\` / \`/bot resume\` — soft pause (stops bot writes; on-chain auto-trade keeps running)
+
+*Per-corp manual control:*
+\`/bot lockcorp <index>\` — exclude a corp from automation entirely (persists across restarts)
+\`/bot lockcorp list\` — show currently locked corps
+\`/bot unlockcorp <index>\` — re-include a corp
+   ↳ Tip: if you disable auto-trade on a corp via the in-game UI, the bot
+   gives you ${appConfig.botOperatorGraceMin}min grace before re-enabling. For permanent control, use lockcorp.
+
 *Presets (loadouts):*
 \`/bot preset list\` — list all presets
 \`/bot preset <name>\` — manually lock to a preset (e.g. \`mix-arms\`)
@@ -541,6 +643,7 @@ Subcommands: \`/bot help\``);
 *Schedule (HKT-based):*
 \`/bot schedule\` — show 24h schedule
 \`/bot schedule on|off\` — toggle scheduling
+   ↳ when OFF: bot stops trading (paused fallback). Use \`/bot drug\` etc. to manually run.
 \`/bot schedule <hour|range> <preset>\` — e.g. \`/bot schedule 21-22 paused\`
 
 *Thresholds:*
@@ -563,13 +666,128 @@ Built-in presets:
 • \`mix-drug\` — 2 Drug + 1 Arms (hedged active)
 • \`paused\` / \`panic\` — disable auto-trade (saves INF in dead zones)
 
-Extortion is disabled (0.039% liq threshold = too fragile).`);
+*🧬 COPY-MODE (mirror top whales):*
+\`/bot copy on\` — mirror the top 5 wallets by 72h SR (≥75% SR, ≥50 ops)
+\`/bot copy off\` — release back to schedule
+\`/bot copy status\` — pool mean SR + our recent copy SR
+   ↳ Auto-disables if our last-20 copy SR drops below network rolling SR.
+
+*🔥 BURN-MONEY (high-risk, operator-confirmed only):*
+\`/bot burn-money\` — show confirmation prompt with live threshold
+\`/bot burn-money confirm\` — engage all-Extortion for 30 min, then auto-revert
+
+Op thresholds + leverage are live-sampled from chain (devs recalibrate every ~48h plus weekend mode Fri-Sun HKT). The \`/bot burn-money\` prompt always shows the current live values.`);
           return;
         }
 
         case 'pause': {
           corpBot.pause();
-          await this.sendDm(chatId, '⏸ *Bot paused.* Auto-trade still runs on-chain — only my interventions stop. Resume with `/bot resume`.');
+          await this.sendDm(chatId,
+            '⏸ *Bot paused.* My interventions stop, BUT auto-trade keeps running on-chain ' +
+            'if it was already enabled — the corps will continue ops on their own.\n\n' +
+            'For a *full stop* (disables auto-trade on every corp), use `/bot off` instead.\n' +
+            'Resume with `/bot resume`.');
+          return;
+        }
+
+        // /bot off — full stop. Sets the manual preset to `paused` which
+        // makes the bot call disableAutoTrade() on every corp on the next
+        // tick. This is the unambiguous "stop trading" command.
+        case 'off':
+        case 'stop': {
+          const r = corpBot.setManualPreset('paused');
+          if (r.ok) {
+            await this.sendDm(chatId,
+              `🛑 *Bot OFF.* Manual preset locked to *paused*.\n\n` +
+              `Bot will call \`disableAutoTrade()\` on every corp on the next tick. ` +
+              `No new ops will start until you re-enable.\n\n` +
+              `*To resume:*\n` +
+              `\`/bot on\`             — release lock, follow schedule\n` +
+              `\`/bot drug\` / \`/bot arms\` — manual mode\n` +
+              `\`/bot preset <name>\`  — specific preset`,
+            );
+          } else {
+            await this.sendDm(chatId, `Failed: ${r.reason}`);
+          }
+          return;
+        }
+
+        // /bot on — release manual lock, resume schedule.
+        case 'on': {
+          const r = corpBot.setManualPreset(null);
+          if (r.ok) {
+            const s = corpBot.getStatus();
+            const slot = s.scheduleEnabled ? s.schedulePresetThisHour : '(schedule disabled)';
+            await this.sendDm(chatId,
+              `▶️ *Bot ON.* Manual lock cleared.\n\n` +
+              (s.scheduleEnabled
+                ? `Now following the schedule — current HKT slot is *${slot}*.`
+                : `⚠ Schedule is currently *OFF* — bot will be paused via fallback.\n` +
+                  `Run \`/bot schedule on\` to follow the time-of-day schedule.`),
+            );
+          } else {
+            await this.sendDm(chatId, `Failed: ${r.reason}`);
+          }
+          return;
+        }
+
+        // /bot lockcorp <index|addr> — permanently exclude a corp from
+        // bot automation. Persisted across restarts. Operator gets full
+        // manual control of that corp (no claim, no mode switch, no
+        // re-enable). Use /bot unlockcorp to re-include.
+        case 'lockcorp':
+        case 'lock': {
+          const arg = parts[1];
+          if (!arg || arg.toLowerCase() === 'list') {
+            const locked = corpBot.getLockedCorps();
+            const status = corpBot.getStatus();
+            const lines = locked.length === 0
+              ? '_(none)_'
+              : locked.map(addr => {
+                  const idx = status.perCorp.findIndex(c => c.addr.toLowerCase() === addr) + 1;
+                  return `  ${idx > 0 ? '#' + idx : '?'} \`${addr.slice(0, 10)}..\``;
+                }).join('\n');
+            await this.sendDm(chatId,
+              `🔒 *Locked corps* (${locked.length}/${status.totalCorps})\n\n${lines}\n\n` +
+              `Use \`/bot lockcorp <index>\` to add (1-${status.totalCorps})\n` +
+              `Use \`/bot unlockcorp <index>\` to remove`);
+            return;
+          }
+          const r = corpBot.lockCorp(arg);
+          if (r.ok) {
+            const status = corpBot.getStatus();
+            const idx = status.perCorp.findIndex(c => c.addr.toLowerCase() === r.corp) + 1;
+            await this.sendDm(chatId,
+              `🔒 *Corp locked*\n` +
+              `Corp ${idx > 0 ? '#' + idx : ''} \`${r.corp!.slice(0,10)}..\` is now under your full manual control.\n\n` +
+              `The bot will:\n` +
+              `• NOT call enableAutoTrade / disableAutoTrade\n` +
+              `• NOT switch modes\n` +
+              `• NOT auto-claim rewards\n` +
+              `• NOT bootstrap startTrade\n\n` +
+              `Run \`/bot unlockcorp ${idx > 0 ? idx : r.corp}\` to release.`,
+            );
+          } else {
+            await this.sendDm(chatId, `❌ Lock failed: ${r.reason}`);
+          }
+          return;
+        }
+
+        case 'unlockcorp':
+        case 'unlock': {
+          const arg = parts[1];
+          if (!arg) {
+            await this.sendDm(chatId, 'Usage: `/bot unlockcorp <index|address>`');
+            return;
+          }
+          const r = corpBot.unlockCorp(arg);
+          if (r.ok) {
+            await this.sendDm(chatId,
+              `🔓 *Corp unlocked*\n` +
+              `\`${r.corp!.slice(0,10)}..\` will resume bot automation on the next tick.`);
+          } else {
+            await this.sendDm(chatId, `❌ Unlock failed: ${r.reason}`);
+          }
           return;
         }
 
@@ -596,10 +814,124 @@ Extortion is disabled (0.039% liq threshold = too fragile).`);
 
         case 'ext':
         case 'extortion': {
+          // Old guard preserved — `/bot ext` directly is still rejected
+          // because it bypasses the two-step confirmation. Use the
+          // dedicated /bot burn-money command if you really mean it.
           await this.sendDm(chatId,
-            `❌ *Extortion is disabled.*\n` +
-            `Liquidation threshold is only 0.039% — too fragile to run.\n` +
-            `Use \`/bot arms\` or \`/bot drug\` instead.`);
+            `❌ *Direct Extortion shortcut disabled.*\n\n` +
+            `Extortion is high-risk and requires explicit confirmation.\n` +
+            `Use \`/bot burn-money\` instead — that command shows the\n` +
+            `current threshold + leverage and requires a confirm step.`);
+          return;
+        }
+
+        case 'burn-money':
+        case 'burn_money':
+        case 'burn': {
+          // Two-step confirmation. Step 1 (no extra arg): show current
+          // Ext threshold + leverage from live OpParamsFeed, ask for
+          // explicit /bot burn-money confirm. Step 2: engage the preset
+          // for BURN_MONEY_MAX_DURATION_MS, auto-revert after.
+          const isConfirm = (parts[1] || '').toLowerCase() === 'confirm';
+          // Pull live op params for the warning text
+          const op = (this.cfg.getState?.() as any)?.opParams;
+          const extThresh = op?.thresholds?.[0];
+          const isWeekend = !!op?.isWeekend;
+          const threshStr = Number.isFinite(extThresh)
+            ? (extThresh * 100).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') + '%'
+            : 'unknown (feed warming up)';
+          const leverageStr = Number.isFinite(extThresh) && extThresh > 0
+            ? Math.round(1 / extThresh).toLocaleString() + '×'
+            : 'unknown';
+
+          if (!isConfirm) {
+            const status = corpBot.getStatus();
+            const currentPreset = status.activePresetName;
+            // Live INF cost per op for accurate burn-rate projection
+            const infCost = op?.infCostPerOp ?? null;
+            const infCostStr = infCost ? `~${infCost.toFixed(2)} INF` : '~5 INF (estimate)';
+            // Worst-case: every op fails, all N corps burn the cost every 5min
+            // → N × 12 ops/hr × infCost. Network ~80%+ failure makes this realistic.
+            const projHrBurn = infCost
+              ? (status.totalCorps * 12 * infCost).toFixed(0)
+              : '~360';
+            await this.sendDm(chatId,
+              `🔥 *BURN-MONEY CONFIRMATION*\n\n` +
+              `You're about to switch *all ${status.totalCorps} corps* to *Extortion*.\n\n` +
+              `*Live params* ${isWeekend ? '_(WEEKEND mode)_' : ''}\n` +
+              `  Window:    5 min\n` +
+              `  Threshold: \`${threshStr}\`\n` +
+              `  Leverage:  \`${leverageStr}\`\n` +
+              `  INF/op:    \`${infCostStr}\`\n\n` +
+              `Network avg P(fail) for Extortion right now is ~80%+. ` +
+              `Worst-case burn at ${status.totalCorps} corps × 12 cycles/hr × ${infCostStr}: ` +
+              `*~${projHrBurn} INF/hr*.\n\n` +
+              `*Auto-reverts* to \`${currentPreset}\` after 30 minutes.\n\n` +
+              `Reply \`/bot burn-money confirm\` to engage.\n` +
+              `Reply anything else to abort.`,
+            );
+            return;
+          }
+
+          // Step 2 — engage
+          const result = corpBot.enableBurnMoney();
+          const minsLeft = Math.round((result.revertsAt - Date.now()) / 60_000);
+          const revertLabel = result.revertsTo ?? 'auto schedule';
+          await this.sendDm(chatId,
+            `🔥 *BURN-MONEY ENGAGED*\n\n` +
+            `All corps switching to *Extortion*. Mode change tx in flight.\n` +
+            `Window: 5 min · Threshold: \`${threshStr}\` · Leverage: \`${leverageStr}\`\n\n` +
+            `*Auto-reverts* in ~${minsLeft} min to \`${revertLabel}\`.\n` +
+            `Issue \`/bot preset auto\` (or any other preset) to cancel early.`,
+          );
+          return;
+        }
+
+        case 'copy': {
+          // /bot copy on    → enable copy-mode (whale top-5 by 72h SR)
+          // /bot copy off   → disable, revert to schedule
+          // /bot copy status (default) → show pool + recent SR
+          const action = (parts[1] || 'status').toLowerCase();
+          if (action === 'on' || action === 'enable') {
+            const r = corpBot.enableCopyMode();
+            if (!r.ok) {
+              await this.sendDm(chatId, `❌ *Copy-mode failed*\n\n${r.reason}`);
+              return;
+            }
+            await this.sendDm(chatId,
+              `🧬 *COPY-MODE ENABLED*\n\n` +
+              `Now mirroring the top 5 whales by 72h SR (min 50 ops, ≥75% SR).\n` +
+              `Pool mean SR: *${((r.poolMeanSr ?? 0) * 100).toFixed(1)}%*\n\n` +
+              `Bot will fire one of YOUR free corps in the same op-mode whenever ` +
+              `a pool whale starts a new trade.\n\n` +
+              `*Auto-disable* if our last-20 copy SR drops below network SR.\n` +
+              `Run \`/bot copy off\` or \`/bot preset auto\` to release.`,
+            );
+            return;
+          }
+          if (action === 'off' || action === 'disable' || action === 'stop') {
+            corpBot.disableCopyMode('operator');
+            await this.sendDm(chatId,
+              `🛑 *Copy-mode disabled.*\n` +
+              `Reverting to auto schedule on next tick.`);
+            return;
+          }
+          // status (default)
+          const cs = corpBot.getCopyState();
+          const recent = cs.recent;
+          const srLine = recent && recent.resolved > 0
+            ? `Our last-${recent.resolved} copies: *${((recent.sr ?? 0) * 100).toFixed(1)}%* (${recent.wins}/${recent.resolved})`
+            : `Our copies: _no resolved samples yet_`;
+          const firedLine = recent
+            ? `Fired total (last 20): ${recent.fired}, resolved: ${recent.resolved}`
+            : '';
+          await this.sendDm(chatId,
+            `🧬 *Copy-mode status*\n\n` +
+            `State: ${cs.enabled ? '*ENABLED*' : 'disabled'}\n` +
+            `Pool mean SR: *${(cs.poolMeanSr * 100).toFixed(1)}%*\n` +
+            srLine + (firedLine ? `\n${firedLine}` : '') + `\n\n` +
+            `Toggle: \`/bot copy on\` | \`/bot copy off\``,
+          );
           return;
         }
 
@@ -747,7 +1079,9 @@ Extortion is disabled (0.039% liq threshold = too fragile).`);
           }
           if (action === 'off') {
             corpBot.setScheduleEnabled(false);
-            await this.sendDm(chatId, `⏸ Schedule DISABLED. Bot will use \`all-drug\` as default.`);
+            await this.sendDm(chatId,
+              `⏸ Schedule DISABLED. Bot falls back to \`paused\` — auto-trade off on every corp on the next tick.\n\n` +
+              `Use \`/bot schedule on\` to resume the HKT schedule, or set a manual preset (\`/bot drug\`, \`/bot arms\`, etc.).`);
             return;
           }
 

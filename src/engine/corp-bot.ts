@@ -13,6 +13,7 @@
 
 import { ethers } from 'ethers';
 import { logger } from '../logger';
+import { config as appConfig } from '../config';
 import type { TgBot } from './tgbot';
 import type { WalletBalances } from '../feeds/onchain-balances';
 
@@ -109,6 +110,12 @@ export interface CorpBotStatus {
     threshold: number;
     totalTrips: number;
   };
+  // Copy-mode state (operator's whale copy-trading flag + recent SR).
+  copyMode: {
+    enabled: boolean;
+    poolMeanSr: number;        // 0 when no pool / hooks not wired
+    recent: { fired: number; resolved: number; wins: number; sr: number | null } | null;
+  };
   // Wallet balances surfaced from OnchainBalancesFeed (null when unavailable).
   balances: {
     inf: number;
@@ -129,6 +136,34 @@ export interface CorpBotConfig {
   // Implemented as a getter rather than a snapshot so /bot always shows the
   // freshest data from OnchainBalancesFeed without us re-fetching.
   getWalletBalances?: () => WalletBalances | null;
+  // Optional storage handle for shadow-mode logging (SafetyGate decisions etc.)
+  storage?: import('../storage/db').Storage | null;
+}
+
+/**
+ * One detected whale-copy event handed to CorpBot via consumeCopyQueue().
+ * Mirrors the WhaleCopy feed's CopyEvent shape — duplicated here so CorpBot
+ * doesn't need to import the feed (avoids a circular dependency).
+ */
+export interface CopyQueueEntry {
+  id: string;
+  ts: number;
+  whale: string;
+  mode: 0 | 1 | 2;
+  sourceCorp: string;
+  // DB row id from whale_copy_log if the caller persisted before queueing.
+  // CorpBot uses this to update the row to 'fired' once we bootstrap.
+  logId?: number;
+}
+
+/** Copy-mode wiring (bot calls these getters/setters every tick). */
+export interface CopyModeHooks {
+  /** Drain pending copy events the WhaleCopyFeed has detected since last call. */
+  drainQueue: () => CopyQueueEntry[];
+  /** The pool's mean SR (last refresh). */
+  getPoolMeanSr: () => number;
+  /** Network rolling SR over a recent window — drives the auto-disable safety check. */
+  getNetworkSr?: () => number | null;
 }
 
 export class CorpBot {
@@ -139,6 +174,8 @@ export class CorpBot {
   private tgBot: TgBot | null;
   private operatorChatId: number | null;
   private getWalletBalances: (() => WalletBalances | null) | null;
+  // Storage handle (optional) — used by the SafetyGate shadow log
+  private storage: import('../storage/db').Storage | null;
 
   // Track last mode-switch time per corp to debounce noisy transitions
   private lastSwitch: Map<string, number> = new Map();
@@ -198,6 +235,62 @@ export class CorpBot {
   private recentLiqs: { corp: string; ts: number }[] = [];
   private circuitBreakerUntil: number = 0;
   private circuitBreakerTrips: number = 0; // diagnostic counter
+
+  // ── Op spacing / stagger gate ──
+  // When multiple corps are eligible to bootstrap simultaneously, gate them
+  // through this global timestamp. Each successful bootstrap pushes the
+  // gate forward by `botStaggerMin` minutes, so subsequent eligible corps
+  // wait their turn. Variance reducer — EV-neutral. Default 15min.
+  // Set BOT_STAGGER_MIN=0 in env to disable (revert to fire-everything-eligible).
+  private nextBootstrapAllowedTs: number = 0;
+
+  // ── burn-money safety: max time the bot can run all-Extortion before
+  // auto-reverting to the previous preset. Prevents leaving it on
+  // accidentally. Operator can re-issue /bot burn-money to extend.
+  private static readonly BURN_MONEY_MAX_DURATION_MS = 30 * 60_000;
+  private burnMoneyExpiresAt: number = 0;
+  private presetBeforeBurn: string | null = null;
+
+  // ── Operator override grace (Fix B, 2026-05-09) ──
+  // When the bot sees a corp with autoTradeEnabled=false but the active
+  // preset wants auto-trade ON, the operator must have disabled it via
+  // the in-game UI. Don't fight them — record a grace deadline per corp
+  // and skip re-enable until it expires.
+  private operatorOverrideUntil: Map<string, number> = new Map();
+
+  // ── Copy-mode (whale copy-trading, 2026-05-09) ──
+  // When enabled, bot ignores the static preset's modes for free corps and
+  // instead consumes the WhaleCopyFeed's queue: each detected whale-bootstrap
+  // event becomes a target for our next available corp. Locked corps and
+  // operator grace still take precedence.
+  //
+  // Activation flow:
+  //   /bot copy on  → enableCopyMode() — sets manualPresetName='copy' and
+  //                   wires the queue source. Stays on until /bot copy off
+  //                   OR until the safety check trips (last-20 copy SR
+  //                   below network SR).
+  //
+  // Sits between burn-money and ordinary manual presets in resolveActivePreset:
+  // it's a manual override that's safer than burn-money (still subject to
+  // operator locks) but bypasses danger override + schedule.
+  private copyEnabled: boolean = false;
+  private copyHooks: CopyModeHooks | null = null;
+  // Per-tick scratch: events drained from WhaleCopyFeed this tick.
+  // Kept as instance state so the per-corp loop can pop events as it
+  // bootstraps free corps.
+  private copyTickQueue: CopyQueueEntry[] = [];
+
+  // ── Locked corps (Fix C, 2026-05-09) ──
+  // Corps the operator has explicitly removed from automation. Bot
+  // skips them entirely — no claim, no mode switch, no enable/disable,
+  // no startTrade. Persisted across restarts. Add via /bot lockcorp.
+  private lockedCorps: Set<string> = new Set();
+
+  // ── Persistent state file (Fix A, 2026-05-09) ──
+  // Survives pm2 restarts. Holds manual preset, burn-money expiry,
+  // locked corps, schedule on/off. Loaded on construction; saved on
+  // every state-changing action.
+  private static readonly STATE_FILE = 'data/corp-bot-state.json';
   // Tunables (operator can change at runtime via /bot breaker config)
   private cbWindowMs: number    = 5 * 60_000;   // distinct-corp liq window
   private cbThreshold: number   = 2;            // distinct corps to trip — 2 of OUR 6
@@ -247,6 +340,7 @@ export class CorpBot {
     this.tgBot             = config.tgBot ?? null;
     this.operatorChatId    = config.operatorChatId ?? null;
     this.getWalletBalances = config.getWalletBalances ?? null;
+    this.storage           = config.storage ?? null;
     this.provider          = new ethers.JsonRpcProvider(RPC);
 
     // Default per-corp targets — all Drug to start.
@@ -275,28 +369,53 @@ export class CorpBot {
       // INF when even Drug's 0.518% threshold is getting blown through —
       // matches the operator's data showing 16/16 fails during US-open vol).
       'panic':     { name: 'panic',     modes: fill(MODE_DRUG), paused: true },
+      // ⚠ HIGH-RISK: 'burn-money' fills every corp with Extortion (mode 0).
+      // Liquidation threshold is now ~0.0242% (weekend) / ~0.039% (weekday) —
+      // ETH wicks past that constantly. Run rate at network avg: ~83% fail.
+      // EXPLICITLY excluded from auto schedule selection (see pickActivePreset).
+      // Auto-times out after BURN_MONEY_MAX_DURATION_MS so it can't run forever.
+      'burn-money':{ name: 'burn-money', modes: fill(MODE_EXTORTION) },
+      // 'copy' is a sentinel preset — its `modes` array is irrelevant
+      // because tick() reads modes from the WhaleCopyFeed queue per-corp
+      // when copyEnabled is true. We list it here so /bot preset list
+      // shows it and so resolveActivePreset can return a real BotPreset.
+      // Default mode (when no copy event is queued for a free corp) is Drug.
+      'copy':      { name: 'copy',      modes: fill(MODE_DRUG) },
     };
 
-    // Default 24-hour HKT schedule, derived from a 72h network-wide analysis
-    // of 76,250 ops (May 7 2026). Per-op DIRTY yield (INF-constrained lens)
-    // by hour informed each slot:
+    // Default 24-hour HKT schedule.
     //
-    //   00h     → all-drug  (Drug d̄=52, sr=38% — marginal but net-positive vs idle)
-    //   01-08h  → all-drug  (Drug d̄=58-95 vs Arms d̄=43-76 across the band)
-    //   09h     → all-arms  (Arms d̄=53 vs Drug d̄=52 — slight Arms edge)
-    //   10-13h  → all-drug  (Drug d̄=82-91 — calm Asia midday)
-    //   14h     → all-arms  (Arms d̄=81 vs Drug d̄=79 — only hour Arms cleanly wins)
-    //   15-19h  → all-drug  (Drug d̄=75-93 — peak hours; Drug edge widest)
-    //   20h     → all-drug  (Drug d̄=74, sr=52% — strong; previously paused unnecessarily)
-    //   21-22h  → paused    (21h sr=2/20%, 22h sr=23/6% — both catastrophic)
-    //   23h     → all-drug  (Drug d̄=65, sr=33% — recovery hour)
+    // ── v1 (May 7 2026) ── derived from a 72h network-wide analysis of
+    // 76,250 ops, INF-constrained per-op DIRTY yield lens. Original schedule:
+    //   00-08h  → all-drug    14h    → all-arms   21-22h → paused
+    //   09h     → all-arms    15-20h → all-drug   23h    → all-drug
+    //   10-13h  → all-drug
     //
-    // Reanalyze quarterly — meta drifts as the network composition changes.
+    // ── v2 (May 8 2026) ── three slot edits informed by the
+    // `schedule-evidence` feed's first 7-day rolling sample (31,849 ops):
+    //   03h: all-drug → all-arms
+    //     · Drug failed at 87.8 liqs/day at this hour (33% of all liqs)
+    //     · Arms only 9.5 liqs/day → ~9× safer for the same window
+    //   17h: all-drug → all-arms
+    //     · Drug 29 liqs/day vs Arms 8.5 liqs/day
+    //   18h: all-drug → all-arms
+    //     · Drug 46.7 liqs/day vs Arms 15.7 liqs/day
+    //
+    // Watch the schedule-evidence panel — if these changes don't bear out
+    // over the next 5–7 days, revert by flipping back to all-drug.
+    // Reanalyze quarterly; meta drifts as network composition changes.
     this.schedule = [
-      'all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug',
-      'all-drug','all-arms','all-drug','all-drug','all-drug','all-drug','all-arms','all-drug',
-      'all-drug','all-drug','all-drug','all-drug','all-drug','paused',  'paused',  'all-drug',
+      'all-drug','all-drug','all-drug','all-arms','all-drug','all-drug','all-drug','all-drug', //  0- 7
+      'all-drug','all-arms','all-drug','all-drug','all-drug','all-drug','all-arms','all-drug', //  8-15
+      'all-drug','all-arms','all-arms','all-drug','all-drug','paused',  'paused',  'all-drug', // 16-23
     ];
+
+    // Load any persisted operator state — manualPresetName, locked corps,
+    // burn-money state, schedule on/off, breaker tunables. Survives pm2
+    // restarts so deploys don't yank manual control out of the operator's
+    // hands. Has to run AFTER presets + schedule are initialized because
+    // it may set manualPresetName which references presets[name].
+    this.loadState();
   }
 
   /**
@@ -306,6 +425,132 @@ export class CorpBot {
    * For 9 corps: [first×6, last×3]       → 6:3
    * Single corp: just lastMode.
    */
+  /**
+   * Persist operator-controlled state to a JSON file so we survive pm2
+   * restarts. Saved fields: manual preset lock, burn-money expiry, locked
+   * corps, schedule on/off, breaker overrides. Pure side-effect — never
+   * throws (logs and continues if disk write fails).
+   */
+  private saveState(): void {
+    try {
+      const state = {
+        manualPresetName:  this.manualPresetName,
+        burnMoneyExpiresAt: this.burnMoneyExpiresAt,
+        presetBeforeBurn:  this.presetBeforeBurn,
+        scheduleEnabled:   this.scheduleEnabled,
+        lockedCorps:       [...this.lockedCorps],
+        cbWindowMs:        this.cbWindowMs,
+        cbThreshold:       this.cbThreshold,
+        cbCooldownMs:      this.cbCooldownMs,
+        dangerHigh:        this.dangerHigh,
+        dangerLow:         this.dangerLow,
+        panicThreshold:    this.panicThreshold,
+        savedAt:           Date.now(),
+      };
+      const fs = require('fs');
+      const path = require('path');
+      const file = path.resolve(CorpBot.STATE_FILE);
+      // Atomic write: write to .tmp then rename, so a crashed write
+      // doesn't leave a half-written file that breaks the next boot.
+      fs.writeFileSync(file + '.tmp', JSON.stringify(state, null, 2));
+      fs.renameSync(file + '.tmp', file);
+    } catch (err: any) {
+      logger.warn({ err: err.message }, '[CorpBot] saveState failed (non-fatal)');
+    }
+  }
+
+  /** Load persistent state on construction. Sets fields directly. */
+  private loadState(): void {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const file = path.resolve(CorpBot.STATE_FILE);
+      if (!fs.existsSync(file)) return;
+      const raw = fs.readFileSync(file, 'utf8');
+      const state = JSON.parse(raw);
+
+      if (typeof state.manualPresetName === 'string') this.manualPresetName = state.manualPresetName;
+      if (typeof state.burnMoneyExpiresAt === 'number') {
+        // If burn-money window already expired between sessions, clear it.
+        this.burnMoneyExpiresAt = state.burnMoneyExpiresAt > Date.now() ? state.burnMoneyExpiresAt : 0;
+      }
+      if (typeof state.presetBeforeBurn === 'string' || state.presetBeforeBurn === null) {
+        this.presetBeforeBurn = state.presetBeforeBurn;
+      }
+      if (typeof state.scheduleEnabled === 'boolean') this.scheduleEnabled = state.scheduleEnabled;
+      if (Array.isArray(state.lockedCorps)) {
+        this.lockedCorps = new Set(state.lockedCorps.map((s: string) => s.toLowerCase()));
+      }
+      if (typeof state.cbWindowMs   === 'number') this.cbWindowMs   = state.cbWindowMs;
+      if (typeof state.cbThreshold  === 'number') this.cbThreshold  = state.cbThreshold;
+      if (typeof state.cbCooldownMs === 'number') this.cbCooldownMs = state.cbCooldownMs;
+      if (typeof state.dangerHigh    === 'number') this.dangerHigh    = state.dangerHigh;
+      if (typeof state.dangerLow     === 'number') this.dangerLow     = state.dangerLow;
+      if (typeof state.panicThreshold === 'number') this.panicThreshold = state.panicThreshold;
+
+      logger.info({
+        manualPresetName: this.manualPresetName,
+        scheduleEnabled:  this.scheduleEnabled,
+        lockedCorps:      this.lockedCorps.size,
+        burnMoneyActive:  this.burnMoneyExpiresAt > 0,
+        savedAt:          new Date(state.savedAt ?? 0).toISOString(),
+      }, '[CorpBot] loaded persisted state');
+    } catch (err: any) {
+      logger.warn({ err: err.message }, '[CorpBot] loadState failed — starting fresh');
+    }
+  }
+
+  /** Lock a corp out of bot automation. Operator-only. Persisted. */
+  lockCorp(addrOrIndex: string): { ok: boolean; reason?: string; corp?: string } {
+    let addr = this.resolveCorp(addrOrIndex);
+    if (!addr) return { ok: false, reason: `unknown corp '${addrOrIndex}'` };
+    addr = addr.toLowerCase();
+    if (this.lockedCorps.has(addr)) return { ok: false, reason: `corp ${addr.slice(0,10)} already locked` };
+    this.lockedCorps.add(addr);
+    this.saveState();
+    this.record('info', `[CorpBot] 🔒 Corp ${addr.slice(0,10)}.. LOCKED — bot will skip it entirely`);
+    return { ok: true, corp: addr };
+  }
+
+  /** Unlock a previously-locked corp. */
+  unlockCorp(addrOrIndex: string): { ok: boolean; reason?: string; corp?: string } {
+    let addr = this.resolveCorp(addrOrIndex);
+    if (!addr) return { ok: false, reason: `unknown corp '${addrOrIndex}'` };
+    addr = addr.toLowerCase();
+    if (!this.lockedCorps.has(addr)) return { ok: false, reason: `corp ${addr.slice(0,10)} not locked` };
+    this.lockedCorps.delete(addr);
+    this.saveState();
+    this.record('info', `[CorpBot] 🔓 Corp ${addr.slice(0,10)}.. UNLOCKED — bot will resume managing it`);
+    return { ok: true, corp: addr };
+  }
+
+  /** Resolve a corp identifier (full addr OR 1-based index) to lowercased address. */
+  private resolveCorp(arg: string): string | null {
+    const s = (arg || '').trim();
+    if (/^0x[0-9a-fA-F]{40}$/.test(s)) {
+      const lc = s.toLowerCase();
+      const found = this.corps.find(c => c.toLowerCase() === lc);
+      return found ?? null;
+    }
+    // 1-based index?
+    const n = parseInt(s, 10);
+    if (Number.isInteger(n) && n >= 1 && n <= this.corps.length) {
+      return this.corps[n - 1];
+    }
+    return null;
+  }
+
+  /** Public read API for /bot status. */
+  getLockedCorps(): string[] { return [...this.lockedCorps]; }
+  getOperatorOverrides(): Array<{ corp: string; remainingMs: number }> {
+    const now = Date.now();
+    const out: Array<{ corp: string; remainingMs: number }> = [];
+    for (const [corp, until] of this.operatorOverrideUntil) {
+      if (until > now) out.push({ corp, remainingMs: until - now });
+    }
+    return out;
+  }
+
   private fillMixed(firstMode: number, lastMode: number, n: number): number[] {
     if (n <= 1) return [lastMode];
     const lastCount  = Math.max(1, Math.round(n / 3));
@@ -333,6 +578,28 @@ export class CorpBot {
     //    every other signal. We keep auto-trade off until the cooldown clears.
     if (Date.now() < this.circuitBreakerUntil) {
       return { preset: this.presets['paused'], label: 'breaker:paused' };
+    }
+    // 0.5. burn-money auto-revert: if we're in burn-money but the timer
+    //      has expired, drop back to the previous preset automatically.
+    //      This is the SAFETY rail for "operator turned it on and walked
+    //      away". Operator can re-issue /bot burn-money to extend.
+    if (
+      this.manualPresetName === 'burn-money' &&
+      this.burnMoneyExpiresAt > 0 &&
+      Date.now() >= this.burnMoneyExpiresAt
+    ) {
+      const reverted = this.presetBeforeBurn ?? null;
+      this.record('warn', `[CorpBot] burn-money TIMEOUT — auto-reverting to ${reverted ?? 'auto'}`);
+      void this.notify(
+        `⏰ *burn-money timeout*\n\n` +
+        `30min hard limit reached. Reverting to *${reverted ?? 'auto schedule'}*.\n` +
+        `Re-issue \`/bot burn-money\` to start another 30min window.`,
+        `burn-money:timeout`,
+      );
+      this.manualPresetName = reverted;
+      this.burnMoneyExpiresAt = 0;
+      this.presetBeforeBurn = null;
+      this.saveState();
     }
     // 1. Manual override
     if (this.manualPresetName && this.presets[this.manualPresetName]) {
@@ -362,12 +629,23 @@ export class CorpBot {
     if (this.scheduleEnabled) {
       const hour = this.currentHKTHour();
       const name = this.schedule[hour];
-      if (name && this.presets[name]) {
+      // Hard guard: burn-money is operator-only and must NEVER fire from
+      // the auto schedule even if a corrupt schedule entry tries to use it.
+      if (name && name !== 'burn-money' && this.presets[name]) {
         return { preset: this.presets[name], label: `auto:${name}` };
       }
+      // Schedule is on but the slot is empty / invalid — fall through to
+      // the schedule-on fallback (still trade, just default to all-drug
+      // which is the safest single mode under any leverage regime).
+      return { preset: this.presets['all-drug'], label: 'fallback:all-drug' };
     }
-    // 4. Fallback
-    return { preset: this.presets['all-drug'], label: 'fallback:all-drug' };
+    // 4. Schedule-OFF fallback. Operator explicitly disabled the schedule
+    // → the safest interpretation is "don't trade until I tell you what
+    // to do". Previously this fell through to all-drug, which surprised
+    // operators who expected `/bot schedule off` to mean "stop trading".
+    // Now it returns the paused preset so disableAutoTrade() fires on
+    // every corp. Use `/bot schedule on` or set a manual preset to resume.
+    return { preset: this.presets['paused'], label: 'fallback:paused (schedule off)' };
   }
 
   /**
@@ -454,6 +732,7 @@ export class CorpBot {
     }
     this.record('info',
       `[CorpBot] Circuit breaker config: window=${this.cbWindowMs/1000}s threshold=${this.cbThreshold} cooldown=${this.cbCooldownMs/60000}m`);
+    this.saveState();
     return { ok: true };
   }
 
@@ -558,7 +837,13 @@ export class CorpBot {
       // never have concurrent in-flight txs from this process.
       const wallet  = new ethers.Wallet('0x' + cleaned, this.provider);
       this.signer   = wallet;
-      logger.info({ address: wallet.address }, '[CorpBot] Signer loaded');
+      // Privacy hygiene: log only the last 4 hex chars so the operator can
+      // visually confirm the right key loaded without persisting the full
+      // address in pm2 stderr (which lives on disk and is rotated).
+      logger.info(
+        { addressTail: '...' + wallet.address.slice(-4) },
+        '[CorpBot] Signer loaded',
+      );
 
       this.contracts = this.corps.map(addr =>
         new ethers.Contract(addr, CORP_ABI, wallet)
@@ -662,6 +947,7 @@ export class CorpBot {
         threshold:                this.cbThreshold,
         totalTrips:               this.circuitBreakerTrips,
       },
+      copyMode: this.getCopyState(),
       balances,
     };
   }
@@ -680,9 +966,16 @@ export class CorpBot {
    */
   setManualPreset(presetName: string | null): { ok: boolean; reason?: string } {
     if (!presetName || presetName.toLowerCase() === 'auto') {
+      // Clearing burn-money: drop the timer + previous-preset memory too
+      this.burnMoneyExpiresAt = 0;
+      this.presetBeforeBurn = null;
       this.manualPresetName = null;
+      // Also clear copy-mode if it was active.
+      this.copyEnabled = false;
+      this.copyTickQueue = [];
       this.lastSwitch.clear();
       this.record('info', '[CorpBot] Manual preset cleared — schedule resumed');
+      this.saveState();
       void this.runTick();
       return { ok: true };
     }
@@ -690,11 +983,127 @@ export class CorpBot {
     if (!this.presets[key]) {
       return { ok: false, reason: `unknown preset '${presetName}'. Try /bot preset list` };
     }
+    // burn-money goes through enableBurnMoney() instead — it requires the
+    // dedicated entry point so the auto-revert timer is set up correctly.
+    if (key === 'burn-money') {
+      return { ok: false, reason: `'burn-money' must be activated via /bot burn-money (two-step confirmation required)` };
+    }
+    // copy must go through enableCopyMode() so the hooks are validated and
+    // the safety check is active.
+    if (key === 'copy') {
+      return { ok: false, reason: `'copy' must be activated via /bot copy on` };
+    }
+    // Switching AWAY from copy: clear the flag so tick() drops out of the
+    // queue-consuming branch.
+    if (this.copyEnabled && key !== 'copy') {
+      this.copyEnabled = false;
+      this.copyTickQueue = [];
+    }
     this.manualPresetName = key;
-    this.lastSwitch.clear(); // bypass debounce so the change applies immediately
+    this.lastSwitch.clear();
     this.record('info', `[CorpBot] Manual preset → ${key}`);
+    this.saveState();
     void this.runTick();
     return { ok: true };
+  }
+
+  /**
+   * Enable the burn-money preset (all corps Extortion). High-risk; the
+   * caller MUST have completed the two-step confirmation flow before
+   * invoking this. Auto-reverts after BURN_MONEY_MAX_DURATION_MS so the
+   * bot can't run all-Ext indefinitely without re-confirmation.
+   *
+   * Returns the previous preset name + scheduled revert timestamp so
+   * the caller can show "will revert to X at HH:MM HKT" in the UI.
+   */
+  enableBurnMoney(): { ok: true; revertsTo: string | null; revertsAt: number } {
+    // Capture current preset for auto-revert. If we're already in
+    // burn-money (operator extending the window), keep the original
+    // pre-burn preset rather than overwriting with 'burn-money'.
+    if (this.manualPresetName !== 'burn-money') {
+      this.presetBeforeBurn = this.manualPresetName;  // null = was on auto schedule
+    }
+    this.burnMoneyExpiresAt = Date.now() + CorpBot.BURN_MONEY_MAX_DURATION_MS;
+    this.manualPresetName = 'burn-money';
+    this.lastSwitch.clear();
+    this.record('warn',
+      `[CorpBot] 🔥 BURN-MONEY ENGAGED — all corps → Extortion. ` +
+      `Auto-reverts in ${CorpBot.BURN_MONEY_MAX_DURATION_MS / 60_000}min to ${this.presetBeforeBurn ?? 'auto'}`,
+    );
+    this.saveState();
+    void this.runTick();
+    return {
+      ok: true,
+      revertsTo: this.presetBeforeBurn,
+      revertsAt: this.burnMoneyExpiresAt,
+    };
+  }
+
+  /**
+   * Wire the copy-mode hooks. Call once at startup with a reference to the
+   * WhaleCopyFeed (or anything implementing CopyModeHooks). Without this,
+   * /bot copy on returns an error.
+   */
+  setCopyHooks(hooks: CopyModeHooks): void {
+    this.copyHooks = hooks;
+  }
+
+  /**
+   * Turn copy-mode on. Sets the active preset to 'copy' so the tick loop
+   * starts consuming the WhaleCopyFeed queue. Returns the pool's current
+   * mean SR so the caller can include it in confirmation messages.
+   *
+   * Pre-conditions:
+   *   - copyHooks must be set (via setCopyHooks)
+   *   - WhaleCopyFeed must have a non-empty pool (mean SR > 0)
+   */
+  enableCopyMode(): { ok: boolean; reason?: string; poolMeanSr?: number } {
+    if (!this.copyHooks) return { ok: false, reason: 'copy hooks not wired' };
+    const meanSr = this.copyHooks.getPoolMeanSr();
+    if (meanSr <= 0) {
+      return { ok: false, reason: 'no qualifying whales in pool yet — wait for next 15min refresh' };
+    }
+    this.copyEnabled = true;
+    this.manualPresetName = 'copy';
+    this.lastSwitch.clear();
+    this.record('info', `[CorpBot] 🧬 COPY MODE ENABLED — pool mean SR ${(meanSr*100).toFixed(1)}%`);
+    this.saveState();
+    void this.runTick();
+    return { ok: true, poolMeanSr: meanSr };
+  }
+
+  /** Turn copy-mode off and release back to the auto schedule. */
+  disableCopyMode(reason: string = 'operator'): { ok: true } {
+    if (!this.copyEnabled && this.manualPresetName !== 'copy') return { ok: true };
+    this.copyEnabled = false;
+    if (this.manualPresetName === 'copy') this.manualPresetName = null;
+    this.copyTickQueue = [];
+    this.lastSwitch.clear();
+    this.record('warn', `[CorpBot] copy mode disabled (${reason})`);
+    this.saveState();
+    void this.runTick();
+    return { ok: true };
+  }
+
+  /** Snapshot for /bot copy status. */
+  getCopyState(): { enabled: boolean; poolMeanSr: number; recent: { fired: number; resolved: number; wins: number; sr: number | null } | null } {
+    const poolMeanSr = this.copyHooks?.getPoolMeanSr() ?? 0;
+    let recent = null;
+    try {
+      recent = this.storage?.getRecentCopySR(20) ?? null;
+    } catch { /* best-effort */ }
+    return { enabled: this.copyEnabled, poolMeanSr, recent };
+  }
+
+  /** Snapshot of burn-money state for /bot status / dashboard. */
+  getBurnMoneyState(): { active: boolean; revertsAt: number; revertsTo: string | null; remainingMs: number } {
+    const active = this.manualPresetName === 'burn-money';
+    return {
+      active,
+      revertsAt: this.burnMoneyExpiresAt,
+      revertsTo: this.presetBeforeBurn,
+      remainingMs: active ? Math.max(0, this.burnMoneyExpiresAt - Date.now()) : 0,
+    };
   }
 
   /** Define or overwrite a custom preset by name. Extortion (mode 0) is
@@ -727,13 +1136,17 @@ export class CorpBot {
     }
     for (const h of hours) this.schedule[h] = key;
     this.record('info', `[CorpBot] Schedule updated: hours [${hours.join(',')}] → ${key}`);
+    // Note: schedule slots themselves aren't persisted (they live in code as
+    // the v2 default). If we ever expose runtime schedule editing as a
+    // persisted operator preference, save the schedule array too.
     return { ok: true };
   }
 
-  /** Toggle schedule on/off entirely. When off, bot uses 'all-drug' as default. */
+  /** Toggle schedule on/off entirely. When off, bot falls back to `paused`. */
   setScheduleEnabled(enabled: boolean) {
     this.scheduleEnabled = enabled;
     this.record('info', `[CorpBot] Schedule ${enabled ? 'ENABLED' : 'DISABLED'}`);
+    this.saveState();
   }
 
   /** Update the panic-mode danger threshold. */
@@ -743,6 +1156,7 @@ export class CorpBot {
     }
     this.panicThreshold = Math.round(threshold);
     this.record('info', `[CorpBot] Panic threshold = ${this.panicThreshold}`);
+    this.saveState();
     return { ok: true };
   }
 
@@ -827,6 +1241,7 @@ export class CorpBot {
     this.dangerHigh = Math.round(high);
     this.dangerLow  = Math.round(low);
     this.record('info', `[CorpBot] Thresholds updated: HIGH=${this.dangerHigh} LOW=${this.dangerLow}`);
+    this.saveState();
     return { ok: true };
   }
 
@@ -876,6 +1291,18 @@ export class CorpBot {
     this.lastDanger = score;
   }
 
+  /**
+   * Per-op safety scores (0..100) injected from the engine each tick.
+   * These power the SafetyGate that runs BEFORE startTrade() bootstrap.
+   * 100 = model says op is safe; 0 = certain to fail per the model.
+   */
+  private lastSafety: { extortion: number | null; arms: number | null; drug: number | null } = {
+    extortion: null, arms: null, drug: null,
+  };
+  onSafetyScores(scores: { extortion: number | null; arms: number | null; drug: number | null }) {
+    this.lastSafety = scores;
+  }
+
   private async tick() {
     if (!this.signer) return;
     const now = Date.now();
@@ -887,6 +1314,76 @@ export class CorpBot {
     this.activePresetName = presetLabel;
     this.targetModes      = [...preset.modes];
     this.targetPaused     = !!preset.paused;
+
+    // ── Copy-mode: drain queue + run safety check at top of tick ──
+    // Only acts if copyEnabled AND the resolved preset is 'copy' (sanity
+    // check — they should always agree because enableCopyMode sets the
+    // manual preset, but if the preset changed for some other reason we
+    // bail out so we don't surprise-fire copies).
+    if (this.copyEnabled && this.copyHooks && presetLabel === 'manual:copy') {
+      // Safety: only fire if pool's mean SR > network's rolling SR.
+      // The pool filter already enforces ≥75% per whale, but if the
+      // network meta improves dramatically (mean SR climbs to match)
+      // copying loses its edge. Conservative auto-disable when we have
+      // enough resolved samples to trust the comparison.
+      const poolSr = this.copyHooks.getPoolMeanSr();
+      const netSr  = this.copyHooks.getNetworkSr?.() ?? null;
+      const recent = this.storage?.getRecentCopySR(20) ?? null;
+
+      // Hard auto-disable: our last-20 resolved copy SR has dropped below
+      // the network's rolling SR. We need ≥10 resolved samples before
+      // trusting the comparison (avoids early-life noise tripping it).
+      if (recent && recent.resolved >= 10 && recent.sr != null && netSr != null && recent.sr < netSr) {
+        this.record('warn',
+          `[CorpBot] copy-mode auto-DISABLED — last-${recent.resolved} copy SR ${(recent.sr*100).toFixed(1)}% < network ${(netSr*100).toFixed(1)}%`);
+        void this.notify(
+          `🛑 *Copy-mode auto-disabled*\n` +
+          `Our recent copy SR (${(recent.sr*100).toFixed(1)}%, n=${recent.resolved}) ` +
+          `dropped below network SR (${(netSr*100).toFixed(1)}%).\n` +
+          `Bot reverted to auto schedule. Re-enable with /bot copy on.`,
+          'copy-auto-disable',
+        );
+        this.disableCopyMode('auto: SR below network');
+        // Re-resolve preset for the rest of this tick — copy is gone.
+        const { preset: p2, label: l2 } = this.resolveActivePreset();
+        this.activePresetName = l2;
+        this.targetModes      = [...p2.modes];
+        this.targetPaused     = !!p2.paused;
+      } else if (poolSr <= 0) {
+        // Pool empty — sit and wait. Don't bootstrap anything; act like 'paused'
+        // for free corps but still finish trades + claim rewards.
+        this.copyTickQueue = [];
+      } else {
+        // Pull this tick's batch of copy events (caller drains lazily).
+        this.copyTickQueue = this.copyHooks.drainQueue();
+        if (this.copyTickQueue.length > 0) {
+          // Persist each event as 'queued' before we consume it, so we can
+          // resolve outcomes later via fired_ts / our_corp join. Mutates
+          // each entry to attach the new logId for the bootstrap path.
+          for (const e of this.copyTickQueue) {
+            try {
+              if (this.storage && e.logId == null) {
+                e.logId = this.storage.insertWhaleCopy({
+                  ts: e.ts,
+                  source_whale: e.whale,
+                  source_mode: e.mode,
+                  source_corp: e.sourceCorp,
+                  status: 'queued',
+                  drop_reason: null,
+                  our_corp: null,
+                  fired_ts: null,
+                  outcome: null,
+                  outcome_ts: null,
+                  outcome_dirty: null,
+                });
+              }
+            } catch (err: any) {
+              logger.warn({ err: err.message }, '[CorpBot] insertWhaleCopy failed (non-fatal)');
+            }
+          }
+        }
+      }
+    }
 
     // If preset changed since last tick, DM the operator (rate-limited).
     if (this.lastNotifiedPreset !== presetLabel &&
@@ -907,7 +1404,26 @@ export class CorpBot {
       const contract = this.contracts[i];
       const addr = this.corps[i];
       const label = addr.slice(0, 10);
-      const targetMode = this.targetModes[i] ?? MODE_DRUG;
+      // mutable so copy-mode can substitute the mode from a queued whale event
+      let targetMode = this.targetModes[i] ?? MODE_DRUG;
+      // The whale_copy_log row id assigned to this corp's bootstrap, if any.
+      // Set in the bootstrap branch when copy-mode pops an event off the queue.
+      let copyLogId: number | null = null;
+
+      // Fix C: skip locked corps entirely. Operator has full manual
+      // control — no claim, no mode switch, no auto-trade meddling.
+      if (this.lockedCorps.has(addr.toLowerCase())) {
+        // Still snapshot the corp's state for /bot status, but don't
+        // act on it. Keep the snapshot read non-blocking via try/catch.
+        try {
+          const [autoOn, curModeRaw] = await Promise.all([
+            contract.autoTradeEnabled(),
+            contract.autoTradeMode(),
+          ]);
+          snapshot.push({ addr, auto: !!autoOn, mode: Number(curModeRaw) });
+        } catch { /* skip snapshot on RPC error */ }
+        continue;
+      }
 
       try {
         // --- Auto-claim ---
@@ -951,6 +1467,14 @@ export class CorpBot {
         // Operator-pause flag (legacy /bot pause) — observe only.
         if (this.paused) continue;
 
+        // Fix B: if the corp now shows auto=ON, clear any stale grace
+        // marker (operator turned it back on themselves, OR our re-enable
+        // succeeded). Keeps `operatorOverrideUntil` from accumulating
+        // dead entries.
+        if (autoOn && this.operatorOverrideUntil.has(addr)) {
+          this.operatorOverrideUntil.delete(addr);
+        }
+
         const lastSw  = this.lastSwitch.get(addr) ?? 0;
         const cooledDown = (now - lastSw) > MODE_SWITCH_COOLDOWN_MS;
 
@@ -989,6 +1513,37 @@ export class CorpBot {
         let needBootstrap = false;
 
         if (!autoOn) {
+          // Fix B (operator-override grace): if the bot's active preset
+          // expects auto-trade ON but the corp has it OFF, the operator
+          // must have disabled it via the in-game UI. Don't fight them
+          // — record a per-corp grace deadline and skip re-enable until
+          // it expires. Set BOT_OPERATOR_GRACE_MIN=0 to disable grace.
+          const graceMs = appConfig.botOperatorGraceMin * 60_000;
+          if (graceMs > 0 && !this.targetPaused) {
+            const graceUntil = this.operatorOverrideUntil.get(addr) ?? 0;
+            if (graceUntil === 0) {
+              // First time we see operator-disabled — start grace
+              this.operatorOverrideUntil.set(addr, now + graceMs);
+              const minutes = appConfig.botOperatorGraceMin;
+              this.record('info',
+                `[CorpBot] Operator disabled ${label}.. — granting ${minutes}min grace before re-enable`);
+              void this.notify(
+                `✋ *Operator grace*\n` +
+                `Corp: \`${label}\`\n` +
+                `You disabled auto-trade. Bot will leave it alone for *${minutes} min*.\n` +
+                `Run \`/bot lockcorp ${i+1}\` for permanent manual control.`,
+                `grace:${addr}`
+              );
+              continue;
+            }
+            if (now < graceUntil) {
+              // Still in grace — skip silently
+              continue;
+            }
+            // Grace expired — clear marker and proceed with re-enable
+            this.operatorOverrideUntil.delete(addr);
+            this.record('info', `[CorpBot] ${label}.. grace expired — resuming auto-trade`);
+          }
           // Auto-trade is off — turn it back on in target mode
           this.record('info', `[CorpBot] Re-enabling auto-trade ${label}.. → ${MODE_NAMES[targetMode]}`);
           const tx = await contract.enableAutoTrade(targetMode);
@@ -1019,13 +1574,110 @@ export class CorpBot {
         //   • Corps where auto-restart got "stuck" after a previous trade
         //   • Anything where state shows idle+auto+no-cooldown
         if (needBootstrap) {
+          // Copy-mode override: pop the next whale event off the queue. If
+          // no event is queued, we DO NOT bootstrap with a default mode —
+          // copy-mode means we ONLY copy. Skip until a whale acts.
+          if (this.copyEnabled) {
+            const ev = this.copyTickQueue.shift();
+            if (!ev) {
+              this.record('info',
+                `[CorpBot] copy-mode: ${label}.. idle, no whale event queued — waiting`);
+              continue;
+            }
+            targetMode = ev.mode;
+            copyLogId = ev.logId ?? null;
+            this.record('info',
+              `[CorpBot] copy-mode: ${label}.. → ${MODE_NAMES[targetMode]} (from whale ${ev.whale.slice(0,10)}..)`);
+          }
+          // Op-spacing gate: when multiple corps are eligible at once, only
+          // allow one bootstrap per `botStaggerMin` minutes. Waits decorrelate
+          // op exposure to ETH wicks. Skip when staggerMin=0 (disabled).
+          const staggerMs = appConfig.botStaggerMin * 60_000;
+          if (staggerMs > 0 && now < this.nextBootstrapAllowedTs) {
+            const waitSec = Math.ceil((this.nextBootstrapAllowedTs - now) / 1000);
+            this.record('info',
+              `[CorpBot] Bootstrap deferred ${label}.. stagger gate (next slot in ${waitSec}s)`);
+            // If we popped a copy event but stagger blocks us, mark it
+            // dropped so it doesn't pollute SR stats. The next event will
+            // get a fresh shot at this corp on a later tick.
+            if (copyLogId != null) {
+              try { this.storage?.markCopyDropped(copyLogId, 'stagger_gate'); }
+              catch { /* best-effort */ }
+            }
+            continue;
+          }
+
+          // Safety Gate (shadow by default). Logs a "would-block" decision
+          // when the per-op-type safety score is below threshold. In
+          // shadow mode the bootstrap proceeds anyway; in live mode the
+          // bootstrap is skipped for THIS tick (next tick re-evaluates).
+          // See SafetyGate config in src/config.ts; calibration analysis
+          // notes in CLAUDE.md.
+          if (!appConfig.safetyGateDisabled) {
+            const opTypeName = ['extortion', 'arms', 'drug'][targetMode] as 'extortion' | 'arms' | 'drug';
+            const threshold =
+              targetMode === MODE_DRUG  ? appConfig.safetyGateDrugThreshold :
+              targetMode === MODE_ARMS  ? appConfig.safetyGateArmsThreshold :
+              appConfig.safetyGateExtThreshold;
+            const safetyScore = this.lastSafety[opTypeName];
+            // threshold == 0 means gate is OFF for this op type
+            const gateActive = threshold > 0;
+            const wouldBlock = gateActive
+              && safetyScore != null
+              && safetyScore < threshold;
+            if (gateActive) {
+              const reason = safetyScore == null
+                ? 'safety score not available — bootstrap allowed'
+                : wouldBlock
+                  ? `safety ${safetyScore.toFixed(1)} < threshold ${threshold}`
+                  : `safety ${safetyScore.toFixed(1)} ≥ threshold ${threshold}`;
+              try {
+                this.storage?.insertSafetyGateDecision({
+                  ts: Date.now(),
+                  corp: addr,
+                  mode: targetMode as 0 | 1 | 2,
+                  op_type: opTypeName,
+                  safety_score: safetyScore,
+                  threshold,
+                  decision: wouldBlock ? 'block' : 'allow',
+                  shadow: appConfig.safetyGateShadow ? 1 : 0,
+                  reason,
+                });
+              } catch { /* logging is best-effort */ }
+              if (wouldBlock) {
+                if (appConfig.safetyGateShadow) {
+                  this.record('info',
+                    `[SafetyGate] would-block ${label}.. ${opTypeName} (${reason}) [shadow — bootstrap proceeds]`);
+                } else {
+                  this.record('warn',
+                    `[SafetyGate] BLOCKED ${label}.. ${opTypeName} (${reason}) — skipping bootstrap`);
+                  continue;
+                }
+              }
+            }
+          }
+
           this.record('info',
             `[CorpBot] Bootstrap startTrade ${label}.. mode=${MODE_NAMES[targetMode]} (cooldownEnd=${cooldownEnd})`);
           try {
             const tx = await contract.startTrade(targetMode);
             await tx.wait();
             this.lastSwitch.set(addr, now);
+            // Push the global gate so the NEXT eligible corp waits.
+            if (staggerMs > 0) {
+              this.nextBootstrapAllowedTs = Date.now() + staggerMs;
+            }
             this.record('info', `[CorpBot] ✅ Manually started trade ${label}.. → ${MODE_NAMES[targetMode]}`);
+            // If this bootstrap was driven by a copy event, mark the
+            // whale_copy_log row as fired with our_corp + fired_ts so the
+            // outcome can be joined later via op_outcomes on this corp.
+            if (copyLogId != null) {
+              try {
+                this.storage?.markCopyFired(copyLogId, addr, Date.now());
+              } catch (err: any) {
+                logger.warn({ err: err.message }, '[CorpBot] markCopyFired failed (non-fatal)');
+              }
+            }
             void this.notify(
               `▶️ *Trade started*\n` +
               `Corp: \`${label}\`\n` +
@@ -1042,6 +1694,12 @@ export class CorpBot {
           }
           continue;
         }
+
+        // In copy-mode, we do NOT enforce a static target mode on already-
+        // running corps. The mode they're running was set at the most recent
+        // bootstrap (which copied a whale's choice). Forcing a switch here
+        // would interrupt an in-progress whale-aligned op for no good reason.
+        if (this.copyEnabled) continue;
 
         if (curMode !== targetMode && cooledDown) {
           // Mode mismatch and cooldown passed — switch
@@ -1068,5 +1726,47 @@ export class CorpBot {
 
     // Replace the cached snapshot atomically once the tick completes.
     if (snapshot.length > 0) this.lastCorpSnapshot = snapshot;
+
+    // Mark any copy events that didn't get a corp this tick as dropped.
+    // The queue is drain-once per tick; we'd rather record "no_corp_available"
+    // than re-queue stale events (they'd grow stale and skew SR stats).
+    if (this.copyTickQueue.length > 0) {
+      for (const e of this.copyTickQueue) {
+        if (e.logId != null && this.storage) {
+          try { this.storage.markCopyDropped(e.logId, 'no_corp_available'); }
+          catch { /* best-effort */ }
+        }
+      }
+      this.copyTickQueue = [];
+    }
+  }
+
+  /**
+   * Called when a TradeCompleted/TradeLiquidated event lands on one of our
+   * corps. If copy-mode was active when this corp last bootstrapped (within
+   * tolerance), attach the outcome to the matching whale_copy_log row so we
+   * can compute our copy SR. No-op when storage isn't wired.
+   *
+   * Tolerance: ops run 5min (Ext) / 30min (Arms) / 90min (Drug). We accept
+   * up to 95min between fired_ts and outcome_ts to cover Drug + slack.
+   */
+  recordOpOutcome(opts: {
+    corp: string;
+    succeeded: boolean;
+    dirtyEarned: number;
+    ts: number;
+  }): void {
+    if (!this.storage) return;
+    try {
+      this.storage.attachOutcomeToRecentCopy({
+        ourCorp: opts.corp,
+        outcomeTs: opts.ts,
+        toleranceMs: 95 * 60_000,
+        outcome: opts.succeeded ? 'win' : 'loss',
+        dirty: opts.dirtyEarned,
+      });
+    } catch (err: any) {
+      logger.warn({ err: err.message }, '[CorpBot] recordOpOutcome failed (non-fatal)');
+    }
   }
 }

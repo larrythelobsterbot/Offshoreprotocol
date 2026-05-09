@@ -5,12 +5,14 @@ import fastifyCors from '@fastify/cors';
 import path from 'path';
 import { timingSafeEqual } from 'crypto';
 import type { WebSocket } from 'ws';
-import type { DashboardState, StoredIndicator } from '../types';
+import type { DashboardState } from '../types';
 // (config used at runtime to gate operator-only endpoints in PUBLIC_MODE)
 import { Storage } from '../storage/db';
 import { config } from '../config';
 import { logger } from '../logger';
 import type { WalletTracker } from '../feeds/wallet-tracker';
+import { walletLogTag } from '../feeds/wallet-tracker';
+import type { ScheduleEvidenceFeed } from '../feeds/schedule-evidence';
 
 // --- Public-safe state picker (FlowDirty.fun) ---
 // Strips operator-private fields from DashboardState before broadcasting on
@@ -31,18 +33,25 @@ function pickPublicState(state: DashboardState): any {
       }
     : null;
 
-  // Sample the current per-op INF stake from any active corp's tradeInfo.
-  // This is a network parameter (game contract-decided cost — same for any
-  // wallet running the same op mode), not operator-specific. We just happen
-  // to have it readily available because we already poll our own corps.
-  // Falls through to null if no corps are currently active.
+  // Current per-op INF stake. Floats with $DIRTY price. Two sources, in
+  // order of preference:
+  //   1. OpParamsFeed.infCostPerOp — network-wide median across all active
+  //      trades (works even when operator has no active corps).
+  //   2. Operator's own active corp's tradeInfo.influence (legacy fallback).
+  // The feed approach is more robust on FlowDirty's public surface; the
+  // fallback handles edge cases where the feed hasn't completed first poll.
   let opCostInf: number | null = null;
   try {
-    const corps = (state as any).corpState?.corps;
-    if (Array.isArray(corps)) {
-      const active = corps.find((c: any) => c?.tradeInfo?.active && c?.tradeInfo?.influence);
-      if (active) {
-        opCostInf = Number(BigInt(active.tradeInfo.influence)) / 1e18;
+    const feedCost = (state as any).opParams?.infCostPerOp;
+    if (typeof feedCost === 'number' && Number.isFinite(feedCost) && feedCost > 0) {
+      opCostInf = feedCost;
+    } else {
+      const corps = (state as any).corpState?.corps;
+      if (Array.isArray(corps)) {
+        const active = corps.find((c: any) => c?.tradeInfo?.active && c?.tradeInfo?.influence);
+        if (active) {
+          opCostInf = Number(BigInt(active.tradeInfo.influence)) / 1e18;
+        }
       }
     }
   } catch { /* swallow */ }
@@ -70,6 +79,8 @@ function pickPublicState(state: DashboardState): any {
     meta: (state as any).meta,
     calibration: (state as any).calibration,
     opCostInf,                     // current INF stake per op (FlowDirty topbar)
+    // Live liquidation thresholds + weekend mode flag — public-safe (chain-derived)
+    opParams: (state as any).opParams ?? null,
     // EXPLICITLY OMITTED — never reach the public stream:
     //   walletBalances, corpState, loadouts.user
   };
@@ -116,8 +127,24 @@ function deepDiff(prev: any, next: any): any | null {
 
 export class ApiServer {
   private app = Fastify({
+    // PRIVACY: disable auto request logging entirely. Fastify's default
+    // "incoming request" / "request completed" lines include req.url,
+    // which on /api/track/<wallet> contains the user's address. We use
+    // explicit, redacted logging in the handler instead. See the
+    // wallet-tracker handler below for the privacy-safe call.
+    disableRequestLogging: true,
     logger: {
       level: config.logLevel,
+      // Defense in depth: even if a downstream caller passes req.url
+      // into a log line, redact the wallet portion in pino's serializer.
+      serializers: {
+        req(req: any) {
+          const url = typeof req.url === 'string'
+            ? req.url.replace(/\/api\/track\/0x[0-9a-fA-F]{40}/g, '/api/track/[redacted]')
+            : req.url;
+          return { method: req.method, url, host: req.headers?.host };
+        },
+      },
       ...(process.env.NODE_ENV !== 'production' && {
         transport: { target: 'pino-pretty', options: { colorize: true, translateTime: 'HH:MM:ss' } },
       }),
@@ -133,17 +160,20 @@ export class ApiServer {
   private getState: () => DashboardState;
   private onOpStatsChanged?: () => void;
   private walletTracker?: WalletTracker;
+  private scheduleEvidence?: ScheduleEvidenceFeed;
 
   constructor(
     storage: Storage,
     getState: () => DashboardState,
     onOpStatsChanged?: () => void,
     walletTracker?: WalletTracker,
+    scheduleEvidence?: ScheduleEvidenceFeed,
   ) {
     this.storage = storage;
     this.getState = getState;
     this.onOpStatsChanged = onOpStatsChanged;
     this.walletTracker = walletTracker;
+    this.scheduleEvidence = scheduleEvidence;
   }
 
   async start() {
@@ -421,6 +451,32 @@ export class ApiServer {
       return (this.getState() as any).activity;
     }));
 
+    // Schedule evidence — rolling 7-day network-wide hourly stats with
+    // best/worst hours per op type. Operator-only (gated by publicGate).
+    // The dashboard's "Schedule Evidence" panel reads from here.
+    this.app.get<{ Querystring: { days?: string; sinceLeverageMs?: string } }>(
+      '/api/schedule-evidence',
+      {
+        schema: {
+          querystring: {
+            type: 'object',
+            properties: {
+              days: { type: 'integer', minimum: 1, maximum: 30 },
+              // Cutoff timestamp. Rows older than this are excluded from
+              // the rolling sample (used to invalidate pre-leverage-v2 data).
+              sinceLeverageMs: { type: 'integer', minimum: 0 },
+            },
+          },
+        },
+      },
+      publicGate(async (req: any) => {
+        if (!this.scheduleEvidence) return { error: 'Not configured' };
+        const days = req.query?.days ? Number(req.query.days) : 7;
+        const cutoff = req.query?.sinceLeverageMs ? Number(req.query.sinceLeverageMs) : undefined;
+        return this.scheduleEvidence.getRollingStats(days, cutoff);
+      }),
+    );
+
     // List recent outcomes (for verification / undo UI).
     this.app.get<{ Querystring: { limit?: string; opType?: 'extortion' | 'arms' | 'drug' } }>(
       '/api/op-results',
@@ -465,23 +521,32 @@ export class ApiServer {
     // from sweeping arbitrary addresses to scrape the network. The
     // wallet-tracker has its own 30s cache so cache hits don't even hit
     // the limiter's RPC budget.
+    //
+    // PRIVACY: we store HASHED wallet tags (sha256 prefix) instead of raw
+    // addresses. The cap behavior is identical (same number of distinct
+    // hashes ↔ distinct wallets) but the IP→wallet join can't be
+    // reconstructed even if a memory dump leaked. Buckets evict after
+    // ~2min anyway, so this is a defense-in-depth move.
     if (this.walletTracker) {
       const RL_WINDOW_MS = 60_000;
       const RL_MAX_REQ_PER_WINDOW = 60;
       const RL_MAX_DISTINCT_WALLETS = 10;
-      type Bucket = { count: number; windowStart: number; wallets: Set<string> };
+      type Bucket = { count: number; windowStart: number; walletTags: Set<string> };
       const buckets = new Map<string, Bucket>();
 
-      const rateLimited = (req: any, wallet: string): { ok: boolean; retryAfter?: number } => {
-        // X-Forwarded-For (set by trusted proxy/CF) takes precedence; fall
-        // back to socket. We only use the FIRST hop so a malicious header
-        // can't inject many fake IPs.
+      const rateLimited = (req: any, walletTag: string): { ok: boolean; retryAfter?: number } => {
+        // SECURITY: prefer X-Real-IP (set by nginx from $remote_addr,
+        // which is rewritten from CF-Connecting-IP via set_real_ip_from).
+        // X-Forwarded-For is client-controllable on direct origin hits
+        // and on any path that bypasses CF, so it's an unreliable bucket
+        // key. Fall back to XFF (first hop only) and finally req.ip.
+        const xri = (req.headers['x-real-ip'] || '').toString().trim();
         const xff = (req.headers['x-forwarded-for'] || '').toString().split(',')[0]?.trim();
-        const ip = xff || req.ip || 'unknown';
+        const ip = xri || xff || req.ip || 'unknown';
         const now = Date.now();
         let b = buckets.get(ip);
         if (!b || now - b.windowStart > RL_WINDOW_MS) {
-          b = { count: 0, windowStart: now, wallets: new Set() };
+          b = { count: 0, windowStart: now, walletTags: new Set() };
           buckets.set(ip, b);
         }
         if (b.count >= RL_MAX_REQ_PER_WINDOW) {
@@ -489,12 +554,14 @@ export class ApiServer {
           return { ok: false, retryAfter };
         }
         // Distinct-wallet cap is checked AFTER req-count so a flood from
-        // one IP can't ingest 60 unique wallets in a window.
-        if (!b.wallets.has(wallet) && b.wallets.size >= RL_MAX_DISTINCT_WALLETS) {
+        // one IP can't ingest 60 unique wallets in a window. We compare
+        // hashed tags, not addresses, so the limiter never holds raw
+        // wallet/IP pairs in RAM.
+        if (!b.walletTags.has(walletTag) && b.walletTags.size >= RL_MAX_DISTINCT_WALLETS) {
           return { ok: false, retryAfter: Math.ceil((RL_WINDOW_MS - (now - b.windowStart)) / 1000) };
         }
         b.count++;
-        b.wallets.add(wallet);
+        b.walletTags.add(walletTag);
         return { ok: true };
       };
 
@@ -522,7 +589,8 @@ export class ApiServer {
         },
         async (req, reply) => {
           const wallet = req.params.wallet.toLowerCase();
-          const limit = rateLimited(req, wallet);
+          const tag = walletLogTag(wallet);
+          const limit = rateLimited(req, tag);
           if (!limit.ok) {
             return reply
               .status(429)
@@ -536,7 +604,8 @@ export class ApiServer {
             reply.header('Cache-Control', 'public, max-age=15, s-maxage=30');
             return result;
           } catch (err: any) {
-            logger.warn({ err: err.message, wallet }, '[track] fetch failed');
+            // Privacy: log only the hashed tag, never the raw wallet.
+            logger.warn({ err: err.message, walletTag: tag }, '[track] fetch failed');
             return reply.status(503).send({ error: 'Service Unavailable', message: 'Chain read failed; please retry shortly.' });
           }
         },

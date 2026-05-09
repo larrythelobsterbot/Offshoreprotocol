@@ -1190,6 +1190,250 @@
 </nav>
 
 <!-- Tokenomics panel (always visible — public network data, no PII) -->
+<!-- Defense v2 — danger-v2 leading indicator panel. Operator-only.
+     Shows live network-health + ETH-velocity snapshots, current trip
+     status, and shadow vs live mode for each signal. -->
+<div style="padding: 0 24px 8px;" data-pane="ops market">
+  <div class="card" id="defenseV2Card" style="display:block;padding:12px 16px;border-color:#ff6b1a;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#ff6b1a">DEFENSE v2 · LEADING SIGNALS</span>
+        <span class="info-pill" title="Two new danger-v2 signals running in shadow mode by default. NetworkHealth tracks live game-internal TC + TL events (op-type aware). EthVelocity tracks signed ETH price rate-of-change. Both LOG decisions to defense_shadow_log without pausing the bot until promoted via env flag.">?</span>
+      </div>
+      <div id="defenseV2Mode" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);"></div>
+    </div>
+
+    <!-- Two side-by-side signal cards -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      <!-- NetworkHealth -->
+      <div style="background:rgba(0,0,0,0.4);border:1px solid var(--border);padding:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
+          <span style="font-size:10px;letter-spacing:0.16em;color:#ff6b1a;font-weight:700;">NETWORK HEALTH</span>
+          <span id="nhMode" style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--dim);">—</span>
+        </div>
+        <div id="nhSummary" style="font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:var(--text-mid);">
+          waiting for first scan...
+        </div>
+        <div id="nhTrip" style="margin-top:6px;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;"></div>
+      </div>
+
+      <!-- EthVelocity -->
+      <div style="background:rgba(0,0,0,0.4);border:1px solid var(--border);padding:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
+          <span style="font-size:10px;letter-spacing:0.16em;color:#22F0FF;font-weight:700;">ETH VELOCITY</span>
+          <span id="evMode" style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--dim);">—</span>
+        </div>
+        <div id="evSummary" style="font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:var(--text-mid);">
+          waiting for first sample...
+        </div>
+        <div id="evTrip" style="margin-top:6px;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;"></div>
+      </div>
+    </div>
+
+    <div style="margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);line-height:1.5;">
+      <b>SHADOW</b> = compute & log only, bot unaffected. <b>LIVE</b> = will force-pause on trip.
+      Flip via env (<code>NETWORK_HEALTH_SHADOW=0</code> or <code>ETH_VELOCITY_SHADOW=0</code>) once defense_shadow_log shows good precision/recall.
+    </div>
+  </div>
+</div>
+
+<!-- Vault Claims (CycleRewards) — who actually harvested USDM at cycle end.
+     Highest-alpha "who's winning the meta" signal. Operator-only. -->
+<div style="padding: 0 24px 8px;" data-pane="network">
+  <div class="card" id="whaleClaimsCard" style="display:block;padding:12px 16px;border-color:#39ff14;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#39ff14">VAULT CLAIMS</span>
+        <span class="info-pill" title="CycleRewards.claim() events. At each 8h cycle end, every active player claims their pro-rata USDM share. The list of who claimed how much is the cleanest 'who's actually winning the meta' signal we have on-chain.">?</span>
+      </div>
+      <div id="whaleClaimsMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading...</div>
+    </div>
+    <!-- Per-cycle aggregate strip -->
+    <div id="whaleClaimsCycleStrip" style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;font-family:'JetBrains Mono',monospace;font-size:10px;"></div>
+    <!-- Top claims table -->
+    <div style="overflow-x:auto;max-height:340px;overflow-y:auto;">
+      <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead style="position:sticky;top:0;background:var(--bg);z-index:1;">
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
+            <th style="text-align:left;padding:4px 8px;">When</th>
+            <th style="text-align:right;padding:4px 8px;">Cycle</th>
+            <th style="text-align:left;padding:4px 8px;">Claimer</th>
+            <th style="text-align:right;padding:4px 8px;">USDM</th>
+            <th style="text-align:left;padding:4px 8px;">Tx</th>
+          </tr>
+        </thead>
+        <tbody id="whaleClaimsTbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Kumbaya LP events — pool liquidity adds/removes -->
+<div style="padding: 0 24px 8px;" data-pane="network">
+  <div class="card" id="kumbayaLpCard" style="display:block;padding:12px 16px;border-color:#ffe600;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#ffe600">KUMBAYA LP EVENTS</span>
+        <span class="info-pill" title="Mint = LP added (someone deposited DIRTY+USDM into the pool). Burn = LP removed (withdrew). Collect = fees claimed. Owner is usually the Univ3 Position Manager NFT, not the end user. Aggregate inflow/outflow signals DIRTY price stability.">?</span>
+      </div>
+      <div id="kumbayaLpMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading...</div>
+    </div>
+    <!-- 24h totals strip -->
+    <div id="kumbayaLpTotals" style="display:flex;gap:12px;margin-bottom:10px;font-family:'JetBrains Mono',monospace;font-size:11px;"></div>
+    <!-- Recent events -->
+    <div style="overflow-x:auto;max-height:300px;overflow-y:auto;">
+      <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead style="position:sticky;top:0;background:var(--bg);z-index:1;">
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
+            <th style="text-align:left;padding:4px 8px;">When</th>
+            <th style="text-align:left;padding:4px 8px;">Kind</th>
+            <th style="text-align:right;padding:4px 8px;">DIRTY</th>
+            <th style="text-align:right;padding:4px 8px;">USDM</th>
+            <th style="text-align:left;padding:4px 8px;">Owner</th>
+            <th style="text-align:left;padding:4px 8px;">Tx</th>
+          </tr>
+        </thead>
+        <tbody id="kumbayaLpTbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Whale Stance — 24h aggregate per whale (cross-table summary) -->
+<div style="padding: 0 24px 8px;" data-pane="network">
+  <div class="card" id="whaleStanceCard" style="display:block;padding:12px 16px;border-color:#a855f7;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#a855f7">WHALE STANCE — 24h</span>
+        <span class="info-pill" title="Per-whale 24h activity rollup: DEX buys vs sells, asset purchases, Status upgrades, op payouts received, cycle claims. Sorted by total $ activity. The buy/sell column is the bullish/bearish read.">?</span>
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">cross-table 24h rollup</div>
+    </div>
+    <div style="overflow-x:auto;max-height:420px;overflow-y:auto;">
+      <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead style="position:sticky;top:0;background:var(--bg);z-index:1;">
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
+            <th style="text-align:left;padding:4px 8px;">Whale</th>
+            <th style="text-align:right;padding:4px 8px;color:#39ff14">Buys ($)</th>
+            <th style="text-align:right;padding:4px 8px;color:#ff1744">Sells ($)</th>
+            <th style="text-align:right;padding:4px 8px;">Net</th>
+            <th style="text-align:right;padding:4px 8px;color:#ffe600">Asset $$</th>
+            <th style="text-align:right;padding:4px 8px;color:#ff9100">Upgrade $$</th>
+            <th style="text-align:right;padding:4px 8px;color:#a855f7">Claimed $</th>
+            <th style="text-align:right;padding:4px 8px;color:var(--cyan)">Op pay $</th>
+            <th style="text-align:left;padding:4px 8px;">Stance</th>
+          </tr>
+        </thead>
+        <tbody id="whaleStanceTbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Whale Trades — every DIRTY transfer involving a top-25 player.
+     Operator-only intel; not exposed on the public surface. -->
+<div style="padding: 0 24px 8px;" data-pane="network">
+  <div class="card" id="whaleTradesCard" style="display:block;padding:12px 16px;border-color:#a855f7;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#a855f7">WHALE TRADES</span>
+        <span class="info-pill" title="Every DIRTY transfer involving a top-25 player. Buys/sells via Kumbaya DEX, asset purchases (Gacha), op payouts (TradeRouter), upgrade burns, and whale-to-whale transfers. Polled every 30s.">?</span>
+      </div>
+      <div id="whaleTradesMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading...</div>
+    </div>
+
+    <!-- Filter chips. Default ALL view excludes op_payout + mint because
+         those are just successful-op rewards and they drown out the
+         interesting signals (DEX trades, asset purchases, upgrades). -->
+    <div id="whaleTradesFilters" style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.06em;">
+      <button class="wt-filter active" data-side="all"        onclick="setWhaleFilter('all')">SIGNAL</button>
+      <button class="wt-filter"        data-side="dex"        onclick="setWhaleFilter('dex')" style="color:#39ff14;border-color:#39ff14">DEX TRADES</button>
+      <button class="wt-filter"        data-side="buy"        onclick="setWhaleFilter('buy')" style="color:#39ff14;border-color:rgba(57,255,20,0.3)">BUYS</button>
+      <button class="wt-filter"        data-side="sell"       onclick="setWhaleFilter('sell')" style="color:#ff1744;border-color:rgba(255,23,68,0.3)">SELLS</button>
+      <button class="wt-filter"        data-side="asset_buy"  onclick="setWhaleFilter('asset_buy')" style="color:#ffe600;border-color:rgba(255,230,0,0.3)">ASSET PACKS</button>
+      <button class="wt-filter"        data-side="upgrade"    onclick="setWhaleFilter('upgrade')" style="color:#ff9100;border-color:rgba(255,145,0,0.3)">UPGRADES</button>
+      <button class="wt-filter"        data-side="op_payout"  onclick="setWhaleFilter('op_payout')" style="color:var(--cyan);border-color:rgba(34,240,255,0.3)">OP PAYOUTS</button>
+      <button class="wt-filter"        data-side="big"        onclick="setWhaleFilter('big')" style="color:#a855f7;border-color:rgba(168,85,247,0.3)">$1K+ ONLY</button>
+      <button class="wt-filter"        data-side="all_incl"   onclick="setWhaleFilter('all_incl')" style="color:var(--dim);">EVERYTHING</button>
+    </div>
+
+    <div style="overflow-x:auto;max-height:520px;overflow-y:auto;">
+      <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead style="position:sticky;top:0;background:var(--bg);z-index:1;">
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
+            <th style="text-align:left;padding:4px 8px;">When</th>
+            <th style="text-align:left;padding:4px 8px;">Whale</th>
+            <th style="text-align:left;padding:4px 8px;">Side</th>
+            <th style="text-align:right;padding:4px 8px;">DIRTY</th>
+            <th style="text-align:right;padding:4px 8px;">USD</th>
+            <th style="text-align:left;padding:4px 8px;">Counterparty</th>
+            <th style="text-align:left;padding:4px 8px;">Tx</th>
+          </tr>
+        </thead>
+        <tbody id="whaleTradesTbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<style>
+.wt-filter {
+  background: rgba(0,0,0,0.4);
+  border: 1px solid var(--border);
+  color: var(--text-mid);
+  padding: 4px 10px;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: all 160ms;
+}
+.wt-filter.active {
+  background: rgba(168,85,247,0.15);
+  border-color: #a855f7;
+  color: #a855f7;
+}
+.wt-filter:hover { background: rgba(255,255,255,0.05); }
+</style>
+
+<!-- Schedule Evidence — 7d rolling network stats per HKT hour. Operator-only. -->
+<div style="padding: 0 24px 8px;" data-pane="ops">
+  <div class="card" id="scheduleEvidenceCard" style="display:block;padding:12px 16px;border-color:#39ff14;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#39ff14">SCHEDULE EVIDENCE</span>
+        <span class="info-pill" title="Network-wide TC + TL events scanned daily, bucketed by HKT hour. 7-day rolling window. Best/worst hours per op type are scored on a composite of network success rate × that op type's share of liquidations. Used to evidence-base schedule edits, not vibes.">?</span>
+      </div>
+      <div id="scheduleEvidenceMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading...</div>
+    </div>
+    <!-- Best/Worst summary tiles -->
+    <div id="scheduleEvidenceSummary" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;">
+      <!-- 3 tiles injected: Drug, Arms, Ext (each with best + worst hours) -->
+    </div>
+    <!-- Per-hour table -->
+    <div style="overflow-x:auto;">
+      <table id="scheduleEvidenceTable" style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
+            <th style="text-align:left;padding:4px 8px;">HKT</th>
+            <th style="text-align:right;padding:4px 8px;">net SR</th>
+            <th style="text-align:right;padding:4px 8px;">ops/d</th>
+            <th style="text-align:right;padding:4px 8px;color:#a855f7;">drug liq/d</th>
+            <th style="text-align:right;padding:4px 8px;color:#39ff14;">arms liq/d</th>
+            <th style="text-align:right;padding:4px 8px;color:#ff1744;">ext liq/d</th>
+            <th style="text-align:right;padding:4px 8px;">drug danger</th>
+            <th style="text-align:right;padding:4px 8px;">arms danger</th>
+            <th style="text-align:right;padding:4px 8px;">verdict</th>
+          </tr>
+        </thead>
+        <tbody id="scheduleEvidenceTbody"></tbody>
+      </table>
+    </div>
+    <div style="margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);line-height:1.5;">
+      <b>danger</b> = (1 − network SR) × that op type's share of liquidations. Lower is better.
+      Verdict suggests the safer op for that hour based on relative danger; ⏸ = pause (network SR &lt; 30%).
+    </div>
+  </div>
+</div>
+
 <div style="padding: 0 24px 8px;" data-pane="network">
   <div class="card tokenomics-card" id="tokenomicsCard" style="display:none;padding:12px 16px;">
     <div class="tokenomics-header">
@@ -1221,7 +1465,7 @@
   </div>
 </div>
 
-<div style="padding: 0 24px 8px;" data-pane="enterprise network">
+<div style="padding: 0 24px 8px;" data-pane="enterprise">
   <div class="card loadout-card" id="assetMetaCard" style="display:none;padding:12px 16px;border-color:#fbbf24;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
       <div>
@@ -1234,7 +1478,7 @@
   </div>
 </div>
 
-<div style="padding: 0 24px 8px;" data-pane="enterprise network">
+<div style="padding: 0 24px 8px;" data-pane="network">
   <div class="card loadout-card" id="topPlayersCard" style="display:none;padding:12px 16px;border-color:#22d3ee;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
       <div>
@@ -1244,6 +1488,38 @@
       <div id="topPlayersStatus" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);"></div>
     </div>
     <div id="topPlayersBody"></div>
+  </div>
+</div>
+
+<!-- TOP SR — wallets with highest 28h success rate. Min 50 ops to filter
+     out small-sample noise. Discipline benchmark: who's winning the
+     timing/danger-gate game. -->
+<div style="padding: 0 24px 8px;" data-pane="network">
+  <div class="card" id="topSrCard" style="display:none;padding:12px 16px;border-color:#39ff14;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#39ff14">TOP SR — last 28h</span>
+        <span class="info-pill" title="Wallets ranked by op success rate over the last ~28h. Min 50 ops to filter out small-sample 100% wallets. The leaders here have the best timing discipline (skipping bad windows). Loadout doesn't drive op SR — vault settlement is separate. SR signal is purely 'did ETH cross the threshold during my op window'.">?</span>
+      </div>
+      <div id="topSrStatus" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);"></div>
+    </div>
+    <div style="overflow-x:auto;max-height:520px;overflow-y:auto;">
+      <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead style="position:sticky;top:0;background:var(--bg);z-index:1;">
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
+            <th style="text-align:left;padding:4px 8px;">Rank</th>
+            <th style="text-align:left;padding:4px 8px;">Wallet</th>
+            <th style="text-align:right;padding:4px 8px;color:#39ff14;">SR</th>
+            <th style="text-align:right;padding:4px 8px;">W / L</th>
+            <th style="text-align:right;padding:4px 8px;">Ops</th>
+            <th style="text-align:right;padding:4px 8px;">DIRTY</th>
+            <th style="text-align:right;padding:4px 8px;color:#a855f7;">Claim 7d</th>
+            <th style="text-align:left;padding:4px 8px;">Explorer</th>
+          </tr>
+        </thead>
+        <tbody id="topSrTbody"></tbody>
+      </table>
+    </div>
   </div>
 </div>
 
@@ -1379,6 +1655,11 @@
         <div class="wallet-value" id="walletRunway">--</div>
         <div class="wallet-rate" id="walletRunwaySub">to 25 floor</div>
       </div>
+      <div class="wallet-cell" title="Current INF cost per op — live-sampled from active trades on chain. Floats with $DIRTY price; same value across all op modes.">
+        <div class="wallet-label">INF / OP</div>
+        <div class="wallet-value" id="walletInfPerOp">--</div>
+        <div class="wallet-rate" id="walletInfPerOpSub">network-wide median</div>
+      </div>
     </div>
   </div>
 </div>
@@ -1403,16 +1684,14 @@
 </div>
 
 <!-- Calibration context bar -->
+<!-- Suggestion strip — HOUR RISK removed 2026-05-09 (redundant with the
+     SCHEDULE EVIDENCE panel + Composite Danger). Kept the SUGGESTION
+     and BEST EV/INF readouts which are still actionable. -->
 <div style="padding: 8px 24px;" data-pane="ops market">
   <div class="card" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;">
     <div style="display:flex;align-items:center;gap:12px;">
       <span class="card-title" style="margin:0">SUGGESTION</span><span class="info-pill" title="Real-time recommendation based on calibrated probability of operation failure under current ETH conditions. Updated every second.">?</span>
       <span id="suggestion" style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:var(--cyan)">--</span>
-    </div>
-    <div style="display:flex;align-items:center;gap:12px;">
-      <span class="card-title" style="margin:0">HOUR RISK</span><span class="info-pill" title="Hourly multiplier applied to baseline failure rate. Derived from 180-day backtest. 14:00–17:00 UTC is historically the worst window (US market open).">?</span>
-      <span id="hourlyRisk" class="vol-regime unknown" style="font-size:11px">--</span>
-      <span id="utcHour" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim)">--:00 UTC</span>
     </div>
     <div style="display:flex;align-items:center;gap:12px;">
       <span class="badge-best-ev" id="badgeBestEv">BEST EV/INF: --</span>
@@ -1422,116 +1701,34 @@
   </div>
 </div>
 
-<!-- Op outcome logger: capture observed in-game results so the
-     economics module can replace the placeholder failure-reward
-     fractions with empirical values. -->
-<div style="padding: 0 24px 8px;" data-pane="ops">
-  <div class="card" style="padding:12px 16px;">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-      <div style="display:flex;align-items:center;gap:10px;">
-        <span class="card-title" style="margin:0">OP OUTCOME LOG</span>
-        <span style="font-size:10px;color:var(--dim);font-family:'JetBrains Mono',monospace;">
-          Logs your observed wins/losses to fit the partial-failure fraction empirically
-        </span>
-      </div>
-      <button class="op-log-toggle" id="opLogToggle" onclick="toggleOpLog()">▼ Show</button>
-    </div>
+<!-- Op outcome logger removed 2026-05-09: legacy from before op-scraper
+     auto-logged outcomes via TradeCompleted/TradeLiquidated events.
+     The data still flows into op_outcomes via the scraper; this manual
+     form was redundant. The /api/op-result endpoint and underlying
+     stats remain for the empirical-failure-fraction calibration. -->
 
-    <div id="opLogBody" style="display:none;">
-      <!-- Logging form -->
-      <div class="op-log-form">
-        <label>
-          <span>OP</span>
-          <select id="opLogType">
-            <option value="extortion">Extortion</option>
-            <option value="arms">Arms Deal</option>
-            <option value="drug" selected>Drug Deal</option>
-          </select>
-        </label>
-        <label>
-          <span>OUTCOME</span>
-          <select id="opLogOutcome">
-            <option value="true" selected>✓ Success</option>
-            <option value="false">✗ Failure</option>
-          </select>
-        </label>
-        <label>
-          <span>$DIRTY EARNED</span>
-          <input type="number" id="opLogDirty" min="0" max="500" step="0.01" placeholder="100" style="width:90px;" />
-        </label>
-        <label>
-          <span>BASE REWARD</span>
-          <input type="number" id="opLogBase" min="1" max="500" step="1" value="100" style="width:70px;" />
-        </label>
-        <button class="op-log-submit" onclick="logOpOutcome()">+ LOG</button>
-        <span id="opLogStatus" style="font-size:11px;color:var(--dim);margin-left:8px;"></span>
-      </div>
-
-      <!-- Per-op empirical stats -->
-      <div class="op-log-stats">
-        <div class="op-log-stat" id="opStatExtortion">
-          <div class="op-log-stat-name">EXTORTION</div>
-          <div class="op-log-stat-row"><span>N</span><span class="ls-n">0</span></div>
-          <div class="op-log-stat-row"><span>Success</span><span class="ls-sr">--</span></div>
-          <div class="op-log-stat-row"><span>Avg fail $</span><span class="ls-fav">--</span></div>
-          <div class="op-log-stat-row"><span>Empirical fail frac</span><span class="ls-frac">--</span></div>
-          <div class="op-log-stat-row"><span>Default</span><span class="ls-default">0.0</span></div>
-          <div class="op-log-stat-row"><span>Status</span><span class="ls-status">low</span></div>
-        </div>
-        <div class="op-log-stat" id="opStatArms">
-          <div class="op-log-stat-name">ARMS DEAL</div>
-          <div class="op-log-stat-row"><span>N</span><span class="ls-n">0</span></div>
-          <div class="op-log-stat-row"><span>Success</span><span class="ls-sr">--</span></div>
-          <div class="op-log-stat-row"><span>Avg fail $</span><span class="ls-fav">--</span></div>
-          <div class="op-log-stat-row"><span>Empirical fail frac</span><span class="ls-frac">--</span></div>
-          <div class="op-log-stat-row"><span>Default</span><span class="ls-default">0.5</span></div>
-          <div class="op-log-stat-row"><span>Status</span><span class="ls-status">low</span></div>
-        </div>
-        <div class="op-log-stat" id="opStatDrug">
-          <div class="op-log-stat-name">DRUG DEAL</div>
-          <div class="op-log-stat-row"><span>N</span><span class="ls-n">0</span></div>
-          <div class="op-log-stat-row"><span>Success</span><span class="ls-sr">--</span></div>
-          <div class="op-log-stat-row"><span>Avg fail $</span><span class="ls-fav">--</span></div>
-          <div class="op-log-stat-row"><span>Empirical fail frac</span><span class="ls-frac">--</span></div>
-          <div class="op-log-stat-row"><span>Default</span><span class="ls-default">0.5</span></div>
-          <div class="op-log-stat-row"><span>Status</span><span class="ls-status">low</span></div>
-        </div>
-      </div>
-
-      <!-- Recent log -->
-      <div style="margin-top:10px;">
-        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);margin-bottom:4px;">
-          RECENT (last 10)
-        </div>
-        <div id="opLogRecent" class="op-log-recent">
-          <span style="color:var(--dim);font-size:11px;">No outcomes logged yet.</span>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
 
 <!-- Operation safety cards -->
 <div class="ops-grid" data-pane="ops market">
   <div class="op-card" id="opExtortion">
-    <div class="op-name">EXTORTION<span class="info-pill" title="5-minute leveraged short on ETH at 2,565x. Fails if ETH drops &gt;0.039% within the window. Binary outcome: full reward (100 $DIRTY at PL1) on success, ZERO on failure.">?</span></div>
-    <div class="op-meta">5 min • 2,565x • 0.039% • binary</div>
+    <div class="op-name">EXTORTION<span class="info-pill" title="5-minute leveraged short on ETH. Threshold and leverage live-sampled from chain (recalibrated by devs every ~48h plus weekend mode Fri-Sun HKT).">?</span></div>
+    <div class="op-meta">5 min • <span id="metaLevExt">—</span> • <span id="metaThExt">—</span> • binary</div>
     <div class="op-ev" id="evExt">--</div>
     <div class="op-score-label">EV ($DIRTY/op)</div>
     <div class="op-secondary"><span id="probExt">P(fail): --</span> &nbsp;•&nbsp; <span id="dpiExt">$/INF: --</span></div>
     <div class="op-score-mini" id="scoreExt">SAFETY --</div>
   </div>
   <div class="op-card" id="opArms">
-    <div class="op-name">ARMS DEAL<span class="info-pill" title="30-minute leveraged short on ETH at 567x. Fails if ETH drops &gt;0.176% within the window. Progressive failure: partial $DIRTY refund based on how much past threshold ETH dropped.">?</span></div>
-    <div class="op-meta">30 min • 567x • 0.176% • progressive</div>
+    <div class="op-name">ARMS DEAL<span class="info-pill" title="30-minute leveraged short on ETH. Threshold and leverage live-sampled from chain (recalibrated by devs every ~48h plus weekend mode Fri-Sun HKT).">?</span></div>
+    <div class="op-meta">30 min • <span id="metaLevArms">—</span> • <span id="metaThArms">—</span> • progressive</div>
     <div class="op-ev" id="evArms">--</div>
     <div class="op-score-label">EV ($DIRTY/op)</div>
     <div class="op-secondary"><span id="probArms">P(fail): --</span> &nbsp;•&nbsp; <span id="dpiArms">$/INF: --</span></div>
     <div class="op-score-mini" id="scoreArms">SAFETY --</div>
   </div>
   <div class="op-card" id="opDrug">
-    <div class="op-name">DRUG DEAL<span class="info-pill" title="90-minute leveraged short on ETH at 193x. Fails if ETH drops &gt;0.518% within the window. Progressive failure: partial $DIRTY refund. Highest empirical $DIRTY-per-INF on average market days.">?</span></div>
-    <div class="op-meta">90 min • 193x • 0.518% • progressive</div>
+    <div class="op-name">DRUG DEAL<span class="info-pill" title="90-minute leveraged short on ETH. Threshold and leverage live-sampled from chain (recalibrated by devs every ~48h plus weekend mode Fri-Sun HKT).">?</span></div>
+    <div class="op-meta">90 min • <span id="metaLevDrug">—</span> • <span id="metaThDrug">—</span> • progressive</div>
     <div class="op-ev" id="evDrug">--</div>
     <div class="op-score-label">EV ($DIRTY/op)</div>
     <div class="op-secondary"><span id="probDrug">P(fail): --</span> &nbsp;•&nbsp; <span id="dpiDrug">$/INF: --</span></div>
@@ -1675,24 +1872,15 @@
     </div>
   </div>
 
-  <!-- Coinglass Heatmap -->
-  <div class="card">
-    <div class="card-title">LIQUIDATION HEATMAP</div>
-    <div id="heatmapContainer">
-      <div style="color:var(--dim);font-size:12px;">Waiting for Coinglass data...</div>
-    </div>
-  </div>
+  <!-- LIQUIDATION HEATMAP removed 2026-05-09: required Coinglass API
+       key (paid tier) which we don't have configured. Card was always
+       blank — deleted to remove dead-state visual noise. -->
 </div>
 
-<!-- Alerts -->
-<div style="padding: 0 24px 12px;">
-  <div class="card">
-    <div class="card-title">ALERT FEED</div>
-    <div id="alertFeed" style="max-height:150px;overflow-y:auto;">
-      <div style="color:var(--dim);font-size:12px;">No alerts yet</div>
-    </div>
-  </div>
-</div>
+<!-- ALERT FEED removed 2026-05-09: TG bot handles real-time alerts
+     directly to the operator. The dashboard alert log was just a
+     duplicate render of the same events. -->
+
 
 <!-- Meta bar -->
 <div class="meta-bar" id="metaBar">
@@ -1710,7 +1898,6 @@
 
 let ws = null;
 let reconnectTimer = null;
-const alerts = [];
 let currentState = null;
 
 // Deep merge: apply a partial delta onto a full state object
@@ -1765,9 +1952,10 @@ function connect() {
           currentState = deepMerge(currentState, msg.data);
         }
         if (currentState) render(currentState);
-      } else if (msg.type === 'alert') {
-        addAlert(msg.data);
       }
+      // (msg.type === 'alert' branch removed 2026-05-09 — alerts now go through
+      //  the Telegram bot exclusively. The dashboard's in-memory alert array
+      //  + addAlert() were removed in the same pass.)
     } catch {}
   };
 
@@ -2058,8 +2246,16 @@ function renderTopPlayers(L) {
     return;
   }
   card.style.display = '';
+  // Status line — what metric is driving the ranking right now?
+  // Look at the first player's rankMetric to label it. Mixed lists (some
+  // claim-ranked, some ops-ranked when claim data is sparse) show as
+  // "claim USDM (7d)" since that's the primary axis when available.
+  const primaryMetric = L.topPlayers[0]?.rankMetric ?? 'ops_count';
+  const metricLabel = primaryMetric === 'claim_usdm'
+    ? `<b style="color:#a855f7">claim USDM (7d)</b>`
+    : `<b style="color:var(--text-mid)">ops count (28h)</b>`;
   document.getElementById('topPlayersStatus').innerHTML =
-    `Top <b style="color:var(--text)">${L.topPlayers.length}</b> by activity (last 28h) · click any row to expand`;
+    `Top <b style="color:var(--text)">${L.topPlayers.length}</b> by ${metricLabel} · click any row to expand`;
 
   const body = document.getElementById('topPlayersBody');
   const html = L.topPlayers.map(p => renderWhaleRow(p)).join('');
@@ -2088,17 +2284,26 @@ function renderWhaleRow(p) {
   // Compact summary line
   const bal = p.balances || { inf: 0, dirty: 0, usdm: 0 };
 
+  // Headline metric — claim USDM is the new ranking axis (replaced ops
+  // count on 2026-05-09). Show it prominently. Ops count is preserved as
+  // a secondary stat so we can see who's grinding without claiming.
+  const claimUsd = p.claimUsdm7d || 0;
+  const claimsN  = p.claimsCount7d || 0;
+  const claimDisplay = claimUsd > 0
+    ? `<span title="USDM claimed from CycleRewards in last 7d (${claimsN} claims) — primary ranking metric" style="color:#a855f7;font-weight:700;">💰 $${fmtBig(claimUsd)}</span>`
+    : `<span title="No claims in last 7d" style="color:var(--dim)">💰 —</span>`;
+
   const compact = `
     <div class="whale-compact">
       <span class="whale-rank">#${p.rank}</span>
       <a class="player-addr" href="${explorerUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${trunc}</a>
       <span class="whale-stats">
+        ${claimDisplay}
         <span title="DIRTY balance">💸 ${fmtBig(bal.dirty)}</span>
         <span title="INF balance">⚡ ${fmtBig(bal.inf)}</span>
         <span title="USDM balance">💵 ${fmtBig(bal.usdm)}</span>
         <span title="Total active corps (PL indicator)">🏢 ${p.corpCount || 0}</span>
-        <span title="Operations in last 28h">📊 ${p.opsCount.toLocaleString()}</span>
-        <span title="DIRTY earned in last 28h">+${fmtBig(p.dirtyEarned)}</span>
+        <span title="Operations in last 28h (secondary metric)">📊 ${p.opsCount.toLocaleString()}</span>
       </span>
       <span class="whale-toggle">▾</span>
     </div>
@@ -2166,6 +2371,57 @@ function renderLoadouts(L) {
   renderMyLoadouts(L);
   renderAssetMeta(L);
   renderTopPlayers(L);
+  renderTopBySr(L);
+}
+
+// ─── TOP SR — discipline-ranked wallet leaderboard ────────────────────
+// Min 50 ops over the rank window to filter small-sample 100%s. The
+// leaders here are the wallets winning the timing/danger-gate game.
+// Loadout doesn't drive op SR (loadouts run in vault, ops are ETH bets);
+// this panel exposes who's actually running tighter discipline.
+function renderTopBySr(L) {
+  const card = document.getElementById('topSrCard');
+  const tbody = document.getElementById('topSrTbody');
+  const status = document.getElementById('topSrStatus');
+  const rows = (L && L.topBySr) || [];
+  if (rows.length === 0) {
+    if (card) card.style.display = 'none';
+    return;
+  }
+  card.style.display = '';
+  // Network avg from current rows isn't available without a proper
+  // computation; surface the leader's SR as the headline instead.
+  const leader = rows[0];
+  status.innerHTML =
+    `Top <b style="color:var(--text)">${rows.length}</b> by SR · min 50 ops · ` +
+    `leader <b style="color:#39ff14">${(leader.successRate*100).toFixed(1)}%</b> ` +
+    `(${leader.wins}/${leader.opsCount})`;
+  const fmtAddr = (a) => a ? a.slice(0, 8) + '..' + a.slice(-4) : '—';
+  const fmtBig = (n) => n == null ? '—' :
+    n >= 1e6 ? (n/1e6).toFixed(2) + 'M' :
+    n >= 1e3 ? (n/1e3).toFixed(1) + 'K' :
+    n.toFixed(0);
+  tbody.innerHTML = rows.map(r => {
+    const srColor = r.successRate >= 0.80 ? '#39ff14' :
+                    r.successRate >= 0.70 ? '#a3e635' :
+                    r.successRate >= 0.60 ? '#fbbf24' : 'var(--text-mid)';
+    const claimDisplay = r.claimUsdm > 0
+      ? `$${fmtBig(r.claimUsdm)}`
+      : `<span style="color:var(--dim)">—</span>`;
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+      <td style="padding:4px 8px;font-weight:700;color:#39ff14;">#${r.rank}</td>
+      <td style="padding:4px 8px;font-size:10px;color:var(--text-mid);">${fmtAddr(r.address)}</td>
+      <td style="padding:4px 8px;text-align:right;color:${srColor};font-weight:700;">${(r.successRate*100).toFixed(1)}%</td>
+      <td style="padding:4px 8px;text-align:right;color:var(--text-mid);">${r.wins} / ${r.losses}</td>
+      <td style="padding:4px 8px;text-align:right;">${r.opsCount}</td>
+      <td style="padding:4px 8px;text-align:right;color:#fbbf24;">${fmtBig(r.dirtyEarned)}</td>
+      <td style="padding:4px 8px;text-align:right;">${claimDisplay}</td>
+      <td style="padding:4px 8px;">
+        <a href="https://www.megaexplorer.xyz/address/${r.address}" target="_blank" rel="noopener"
+           style="color:var(--cyan);text-decoration:none;font-size:10px;">view↗</a>
+      </td>
+    </tr>`;
+  }).join('');
 }
 
 // ============================================================
@@ -2337,6 +2593,434 @@ function drawDirtyChart(p) {
   ctx.fillText(fmtDate(series[series.length - 1].ts),            xFor(series[series.length - 1].ts), padT + plotH + 4);
 }
 
+// ─── Whale Claims (CycleRewards harvest events) ────────────────────────
+function renderWhaleClaims(s) {
+  if (!s) return;
+  const meta = document.getElementById('whaleClaimsMeta');
+  if (meta) {
+    const ageSec = Math.round((Date.now() - s.scannedAt) / 1000);
+    meta.textContent = `${(s.recent || []).length} recent claims · last scan ${ageSec}s ago · block ${s.lastIngestBlock}`;
+  }
+  // Cycle aggregate strip
+  const strip = document.getElementById('whaleClaimsCycleStrip');
+  if (strip) {
+    const cycles = (s.cycleTotals || []).slice(0, 6);
+    strip.innerHTML = cycles.map(c => `
+      <div style="background:rgba(0,0,0,0.4);border:1px solid var(--border);padding:6px 10px;">
+        <span style="color:#39ff14;font-weight:700;">CYCLE ${c.cycle_id}</span>
+        &nbsp;·&nbsp; <span style="color:var(--text-pure);">$${c.total_usdm.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
+        &nbsp;·&nbsp; <span style="color:var(--dim);">${c.n_claims} claims · max $${c.max_claim.toFixed(0)}</span>
+      </div>
+    `).join('');
+  }
+  // Top claims table — sorted by USDM amount, top 50
+  const tbody = document.getElementById('whaleClaimsTbody');
+  if (!tbody) return;
+  const sorted = [...(s.recent || [])].sort((a, b) => b.usdm_amount - a.usdm_amount).slice(0, 50);
+  if (sorted.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:18px;color:var(--dim);">no claims yet — wait for the next 8h cycle settlement</td></tr>`;
+    return;
+  }
+  const fmtAge = (ts) => {
+    const sec = (Date.now() - ts) / 1000;
+    if (sec < 60) return Math.round(sec) + 's';
+    if (sec < 3600) return Math.round(sec / 60) + 'm';
+    if (sec < 86400) return Math.round(sec / 3600) + 'h';
+    return Math.round(sec / 86400) + 'd';
+  };
+  const fmtAddr = (a) => a ? a.slice(0, 8) + '..' + a.slice(-4) : '—';
+  tbody.innerHTML = sorted.map(r => {
+    const rankTag = r.whale_rank
+      ? `<span style="color:#a855f7;font-weight:700;">#${r.whale_rank}</span>`
+      : `<span style="color:var(--dim);">—</span>`;
+    const usdHi = r.usdm_amount >= 100 ? 'font-weight:700;color:#39ff14;' : '';
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+      <td style="padding:4px 8px;color:var(--dim);">${fmtAge(r.ts)} ago</td>
+      <td style="padding:4px 8px;text-align:right;color:var(--text-mid);">#${r.cycle_id}</td>
+      <td style="padding:4px 8px;">${rankTag} <span style="font-size:10px;color:var(--text-mid);">${fmtAddr(r.claimer)}</span></td>
+      <td style="padding:4px 8px;text-align:right;${usdHi}">$${r.usdm_amount.toLocaleString('en-US', { maximumFractionDigits: 2 })}</td>
+      <td style="padding:4px 8px;">
+        <a href="https://www.megaexplorer.xyz/tx/${r.tx_hash}" target="_blank" rel="noopener"
+           style="color:var(--cyan);text-decoration:none;font-size:10px;">${r.tx_hash.slice(0, 10)}↗</a>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+// ─── Kumbaya LP events ─────────────────────────────────────────────────
+function renderKumbayaLp(s) {
+  if (!s) return;
+  const meta = document.getElementById('kumbayaLpMeta');
+  if (meta) {
+    const ageSec = Math.round((Date.now() - s.scannedAt) / 1000);
+    meta.textContent = `last scan ${ageSec}s ago · block ${s.lastIngestBlock}`;
+  }
+  const totalsEl = document.getElementById('kumbayaLpTotals');
+  const t = s.totals24h;
+  if (totalsEl && t) {
+    const tile = (label, n, dirty, usdm, color) => `
+      <div style="flex:1;background:rgba(0,0,0,0.4);border:1px solid var(--border);padding:8px 12px;">
+        <div style="font-size:10px;color:${color};font-weight:700;letter-spacing:0.12em;margin-bottom:4px;">${label}</div>
+        <div style="color:var(--text-pure);">${n} events</div>
+        <div style="font-size:10px;color:var(--text-mid);margin-top:2px;">${dirty.toLocaleString('en-US', { maximumFractionDigits: 0 })} DIRTY · ${usdm.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDM</div>
+      </div>
+    `;
+    totalsEl.innerHTML = [
+      tile('MINTS (24h)',    t.mint_n,    t.mint_dirty,    t.mint_usdm,    '#39ff14'),
+      tile('BURNS (24h)',    t.burn_n,    t.burn_dirty,    t.burn_usdm,    '#ff1744'),
+      tile('COLLECTS (24h)', t.collect_n, t.collect_dirty, t.collect_usdm, 'var(--cyan)'),
+    ].join('');
+  }
+  const tbody = document.getElementById('kumbayaLpTbody');
+  if (!tbody) return;
+  const rows = s.recent || [];
+  if (rows.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:18px;color:var(--dim);">no LP events ingested yet</td></tr>`;
+    return;
+  }
+  const fmtAge = (ts) => {
+    const sec = (Date.now() - ts) / 1000;
+    if (sec < 60) return Math.round(sec) + 's';
+    if (sec < 3600) return Math.round(sec / 60) + 'm';
+    if (sec < 86400) return Math.round(sec / 3600) + 'h';
+    return Math.round(sec / 86400) + 'd';
+  };
+  const fmtAddr = (a) => a ? a.slice(0, 8) + '..' + a.slice(-4) : '—';
+  const kindColor = { mint: '#39ff14', burn: '#ff1744', collect: 'var(--cyan)' };
+  const kindLabel = { mint: '+ MINT', burn: '− BURN', collect: '· COLLECT' };
+  tbody.innerHTML = rows.map(r => `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+    <td style="padding:4px 8px;color:var(--dim);">${fmtAge(r.ts)} ago</td>
+    <td style="padding:4px 8px;color:${kindColor[r.kind]};font-weight:600;">${kindLabel[r.kind]}</td>
+    <td style="padding:4px 8px;text-align:right;">${r.dirty_amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}</td>
+    <td style="padding:4px 8px;text-align:right;">${r.usdm_amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}</td>
+    <td style="padding:4px 8px;color:var(--text-mid);font-size:10px;">${fmtAddr(r.owner)}</td>
+    <td style="padding:4px 8px;">
+      <a href="https://www.megaexplorer.xyz/tx/${r.tx_hash}" target="_blank" rel="noopener"
+         style="color:var(--cyan);text-decoration:none;font-size:10px;">${r.tx_hash.slice(0, 10)}↗</a>
+    </td>
+  </tr>`).join('');
+}
+
+// ─── Whale Stance (24h aggregate per whale) ────────────────────────────
+function renderWhaleStance(rows) {
+  const tbody = document.getElementById('whaleStanceTbody');
+  if (!tbody) return;
+  if (!rows || rows.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:18px;color:var(--dim);">no whale activity in last 24h yet</td></tr>`;
+    return;
+  }
+  const fmtAddr = (a) => a ? a.slice(0, 8) + '..' + a.slice(-4) : '—';
+  const fmt = (n) => n == null || n === 0 ? '—' : '$' + n.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  // dirty-amount columns aren't $-denominated; show as DIRTY units
+  const fmtD = (n) => n == null || n === 0 ? '—' : n.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  tbody.innerHTML = rows.map(r => {
+    const net = r.buys_usd - r.sells_usd;
+    const stance =
+      net > 100 ? `<span style="color:#39ff14;font-weight:700;">accumulating</span>` :
+      net < -100 ? `<span style="color:#ff1744;font-weight:700;">distributing</span>` :
+      r.asset_buys_n > 0 ? `<span style="color:#ffe600;">building</span>` :
+      r.upgrades_n > 0 ? `<span style="color:#ff9100;">upgrading</span>` :
+      r.claims_n > 0 ? `<span style="color:#a855f7;">harvesting</span>` :
+      `<span style="color:var(--dim);">grinding</span>`;
+    const rankTag = r.whale_rank
+      ? `<span style="color:#a855f7;font-weight:700;">#${r.whale_rank}</span>`
+      : `<span style="color:var(--dim);">—</span>`;
+    const netColor = net > 0 ? '#39ff14' : net < 0 ? '#ff1744' : 'var(--dim)';
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+      <td style="padding:4px 8px;">${rankTag} <span style="font-size:10px;color:var(--text-mid);">${fmtAddr(r.whale_address)}</span></td>
+      <td style="padding:4px 8px;text-align:right;color:#39ff14;">${fmt(r.buys_usd)}</td>
+      <td style="padding:4px 8px;text-align:right;color:#ff1744;">${fmt(r.sells_usd)}</td>
+      <td style="padding:4px 8px;text-align:right;color:${netColor};font-weight:600;">${net !== 0 ? fmt(Math.abs(net)) : '—'}</td>
+      <td style="padding:4px 8px;text-align:right;color:#ffe600;">${fmtD(r.asset_buys_dirty)}</td>
+      <td style="padding:4px 8px;text-align:right;color:#ff9100;">${fmtD(r.upgrades_dirty)}</td>
+      <td style="padding:4px 8px;text-align:right;color:#a855f7;">${fmt(r.claims_usdm)}</td>
+      <td style="padding:4px 8px;text-align:right;color:var(--cyan);">${fmtD(r.op_payouts_dirty)}</td>
+      <td style="padding:4px 8px;">${stance}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ─── Whale Trades (top-25 player DIRTY activity) ──────────────────────
+let __whaleFilter = 'all';
+function setWhaleFilter(side) {
+  __whaleFilter = side;
+  document.querySelectorAll('.wt-filter').forEach(b => {
+    b.classList.toggle('active', b.dataset.side === side);
+  });
+  // Re-render from cached state
+  if (window.__lastState?.whaleTrades) renderWhaleTrades(window.__lastState.whaleTrades);
+}
+function whaleSideLabel(side) {
+  switch (side) {
+    case 'buy':       return { txt: '🟢 BUY',       color: '#39ff14' };
+    case 'sell':      return { txt: '🔴 SELL',      color: '#ff1744' };
+    case 'asset_buy': return { txt: '🟡 PACK',      color: '#ffe600' };
+    case 'op_payout': return { txt: '💎 PAYOUT',    color: 'var(--cyan)' };
+    case 'upgrade':   return { txt: '🔥 UPGRADE',   color: '#ff9100' };
+    case 'mint':      return { txt: '✨ MINT',      color: 'var(--cyan)' };
+    case 'wt_send':   return { txt: '↗ W2W SEND',  color: '#a855f7' };
+    case 'wt_recv':   return { txt: '↙ W2W RECV',  color: '#a855f7' };
+    default:          return { txt: '· OTHER',      color: 'var(--dim)' };
+  }
+}
+function renderWhaleTrades(s) {
+  if (!s) return;
+  const meta = document.getElementById('whaleTradesMeta');
+  if (meta) {
+    const ageSec = Math.round((Date.now() - s.scannedAt) / 1000);
+    meta.textContent = `tracking top-${s.topN} (${s.trackedWallets} wallets) · last scan ${ageSec}s ago · block ${s.lastIngestBlock}`;
+  }
+  const tbody = document.getElementById('whaleTradesTbody');
+  if (!tbody) return;
+
+  // Filter. Default 'all' (now labeled SIGNAL) excludes op_payout + mint
+  // because those are just standard op rewards and drown out the actually
+  // interesting events. Use the EVERYTHING chip to see them too.
+  const NOISE_SIDES = new Set(['op_payout', 'mint']);
+  let rows = s.recent || [];
+  if (__whaleFilter === 'all')           rows = rows.filter(r => !NOISE_SIDES.has(r.side));
+  else if (__whaleFilter === 'all_incl') rows = rows; // everything, no filter
+  else if (__whaleFilter === 'dex')      rows = rows.filter(r => r.side === 'buy' || r.side === 'sell');
+  else if (__whaleFilter === 'big')      rows = rows.filter(r => (r.usd_value ?? 0) >= 1000);
+  else                                    rows = rows.filter(r => r.side === __whaleFilter);
+
+  if (rows.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:18px;color:var(--dim);">no trades match this filter</td></tr>`;
+    return;
+  }
+
+  const fmtAge = (ts) => {
+    const sec = (Date.now() - ts) / 1000;
+    if (sec < 60)        return Math.round(sec) + 's';
+    if (sec < 3600)      return Math.round(sec / 60) + 'm';
+    if (sec < 86400)     return Math.round(sec / 3600) + 'h';
+    return Math.round(sec / 86400) + 'd';
+  };
+  const fmtAddr = (a) => a ? a.slice(0, 6) + '..' + a.slice(-4) : '—';
+  const fmtDirty = (n) => n.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  const fmtUsd = (n) => n == null ? '—' : '$' + n.toLocaleString('en-US', { maximumFractionDigits: 0 });
+
+  tbody.innerHTML = rows.map(r => {
+    const sideLabel = whaleSideLabel(r.side);
+    const cpLabel = r.counterparty_label || fmtAddr(r.counterparty);
+    const txShort = r.tx_hash ? r.tx_hash.slice(0, 10) : '—';
+    const usdHi = (r.usd_value ?? 0) >= 1000 ? 'font-weight:700;' : '';
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+      <td style="padding:4px 8px;color:var(--dim);">${fmtAge(r.ts)} ago</td>
+      <td style="padding:4px 8px;">
+        <span style="color:#a855f7;font-weight:700;">#${r.whale_rank ?? '?'}</span>
+        <span style="color:var(--text-mid);font-size:10px;margin-left:4px;">${fmtAddr(r.whale_address)}</span>
+      </td>
+      <td style="padding:4px 8px;color:${sideLabel.color};font-weight:600;">${sideLabel.txt}</td>
+      <td style="padding:4px 8px;text-align:right;">${fmtDirty(r.dirty_amount)}</td>
+      <td style="padding:4px 8px;text-align:right;${usdHi}">${fmtUsd(r.usd_value)}</td>
+      <td style="padding:4px 8px;color:var(--text-mid);font-size:10px;">${cpLabel}</td>
+      <td style="padding:4px 8px;">
+        <a href="https://www.megaexplorer.xyz/tx/${r.tx_hash}" target="_blank" rel="noopener"
+           style="color:var(--cyan);text-decoration:none;font-size:10px;">${txShort}↗</a>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+// ─── Live op-params (thresholds + leverage) ──────────────────────────
+// Populates the op-card meta spans from state.opParams. Devs recalibrate
+// leverage every ~48h plus apply weekend mode Fri-Sun HKT — these
+// numbers reflect what's CURRENTLY active on-chain.
+function renderOpParams(op) {
+  if (!op || !op.thresholds) return;
+  const setMeta = (idTh, idLev, frac) => {
+    const elTh = document.getElementById(idTh);
+    const elLev = document.getElementById(idLev);
+    if (!Number.isFinite(frac) || frac <= 0) return;
+    if (elTh) elTh.textContent = (frac * 100).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') + '%';
+    if (elLev) elLev.textContent = Math.round(1 / frac).toLocaleString() + '×';
+  };
+  setMeta('metaThExt',  'metaLevExt',  op.thresholds[0]);
+  setMeta('metaThArms', 'metaLevArms', op.thresholds[1]);
+  setMeta('metaThDrug', 'metaLevDrug', op.thresholds[2]);
+
+  // Wallet card "INF / OP" cell. Tracks the live network-wide median.
+  // Falls back to em dash if the feed hasn't completed first poll.
+  const infPerOpEl = document.getElementById('walletInfPerOp');
+  const infPerOpSub = document.getElementById('walletInfPerOpSub');
+  if (infPerOpEl) {
+    if (Number.isFinite(op.infCostPerOp) && op.infCostPerOp > 0) {
+      infPerOpEl.textContent = op.infCostPerOp.toLocaleString('en-US', {
+        minimumFractionDigits: 2, maximumFractionDigits: 2,
+      });
+      if (infPerOpSub) {
+        const n = op.infCostSampleCount ?? 0;
+        infPerOpSub.textContent = n > 0
+          ? `n=${n} active trades`
+          : 'cached (no fresh samples)';
+      }
+    } else {
+      infPerOpEl.textContent = '--';
+    }
+  }
+}
+
+// ─── Defense v2 (NetworkHealth + EthVelocity live snapshots) ──────────
+function renderDefenseV2(s) {
+  const nh = s.networkHealth;
+  const ev = s.ethVelocity;
+  // header mode line
+  const modeLine = [
+    nh ? `NH:${nh.shadow ? 'shadow' : 'LIVE'}`  : 'NH:off',
+    ev ? `EV:${ev.shadow ? 'shadow' : 'LIVE'}`  : 'EV:off',
+  ].join('  ·  ');
+  document.getElementById('defenseV2Mode').textContent = modeLine;
+
+  // ── Network Health ──
+  const nhMode = document.getElementById('nhMode');
+  const nhSummary = document.getElementById('nhSummary');
+  const nhTrip = document.getElementById('nhTrip');
+  if (!nh) {
+    nhMode.textContent = 'OFF';
+    nhSummary.textContent = 'feed not running';
+    nhTrip.textContent = '';
+  } else {
+    nhMode.textContent = nh.shadow ? 'SHADOW' : 'LIVE';
+    nhMode.style.color = nh.shadow ? 'var(--dim)' : '#ff1744';
+    const sr = nh.networkSR5min == null ? '—' : (nh.networkSR5min * 100).toFixed(0) + '%';
+    nhSummary.innerHTML = `
+      5min: TC <b style="color:#39ff14">${nh.tc5min}</b> · TL <b style="color:#ff1744">${nh.tl5min}</b> · SR <b>${sr}</b><br/>
+      TL by op: drug <b style="color:#a855f7">${nh.tlDrug5min}</b> · arms <b style="color:#39ff14">${nh.tlArms5min}</b> · ext <b style="color:#ff1744">${nh.tlExt5min}</b><br/>
+      vel/min (60s): drug ${nh.velDrugPerMin.toFixed(0)} · arms ${nh.velArmsPerMin.toFixed(0)} · ext ${nh.velExtPerMin.toFixed(0)}
+    `;
+    if (nh.wouldPause) {
+      const tag = nh.wouldPauseOpType ? `pause-${nh.wouldPauseOpType}` : 'PAUSE-ALL';
+      nhTrip.innerHTML = `<span style="color:#ff1744">▲ TRIPPED · ${tag} · ${nh.reason || ''}</span>`;
+    } else {
+      const riskColor = (r) => r === 'critical' ? '#ff1744' : r === 'elevated' ? '#ff9100' : '#39ff14';
+      nhTrip.innerHTML = `risk: <span style="color:${riskColor(nh.cascadeRisk)}">cascade ${nh.cascadeRisk}</span> · drug <span style="color:${riskColor(nh.drugRisk)}">${nh.drugRisk}</span> · arms <span style="color:${riskColor(nh.armsRisk)}">${nh.armsRisk}</span>`;
+    }
+  }
+
+  // ── ETH Velocity ──
+  const evMode = document.getElementById('evMode');
+  const evSummary = document.getElementById('evSummary');
+  const evTrip = document.getElementById('evTrip');
+  if (!ev) {
+    evMode.textContent = 'OFF';
+    evSummary.textContent = 'feed not running';
+    evTrip.textContent = '';
+  } else {
+    evMode.textContent = ev.shadow ? 'SHADOW' : 'LIVE';
+    evMode.style.color = ev.shadow ? 'var(--dim)' : '#ff1744';
+    if (ev.bps1m == null) {
+      evSummary.textContent = 'gathering 1-min returns...';
+      evTrip.textContent = '';
+    } else {
+      const fmt = (n) => (n >= 0 ? '+' : '') + n.toFixed(1);
+      const colorBps = (n) => n <= -30 ? '#ff1744' : n <= -10 ? '#ff9100' : n >= 10 ? '#39ff14' : 'var(--text-mid)';
+      evSummary.innerHTML = `
+        1m: <b style="color:${colorBps(ev.bps1m)}">${fmt(ev.bps1m)}</b> bps/min<br/>
+        5m: <b style="color:${colorBps(ev.bps5m)}">${fmt(ev.bps5m)}</b> bps/min<br/>
+        accel: <b style="color:${colorBps(ev.accel)}">${fmt(ev.accel)}</b>
+      `;
+      if (ev.wouldPause) {
+        const tag = ev.wouldPauseOpType ? `pause-${ev.wouldPauseOpType}` : 'PAUSE-ALL';
+        evTrip.innerHTML = `<span style="color:#ff1744">▲ TRIPPED · ${tag} · ${ev.reason || ''}</span>`;
+      } else {
+        const riskColor = ev.risk === 'critical' ? '#ff1744' : ev.risk === 'elevated' ? '#ff9100' : '#39ff14';
+        evTrip.innerHTML = `risk: <span style="color:${riskColor}">${ev.risk}</span>`;
+      }
+    }
+  }
+}
+
+// ─── Schedule Evidence (7d rolling network stats) ─────────────────────
+async function fetchScheduleEvidence() {
+  try {
+    const r = await fetch('/api/schedule-evidence');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.error) return;
+    renderScheduleEvidence(d);
+  } catch (err) { /* keep last render */ }
+}
+function renderScheduleEvidence(s) {
+  const meta = document.getElementById('scheduleEvidenceMeta');
+  if (!s || !s.hours) return;
+  const sr = s.globalSR != null ? (s.globalSR * 100).toFixed(1) + '%' : '--';
+  meta.textContent = `${s.windowDays}d window · global SR ${sr} · updated ${new Date(s.generatedAt).toUTCString().slice(17, 22)} UTC`;
+
+  // Summary tiles
+  const sum = document.getElementById('scheduleEvidenceSummary');
+  const tile = (label, color, best, worst) => `
+    <div style="background:rgba(0,0,0,0.4);border:1px solid var(--border);padding:10px;">
+      <div style="font-size:10px;letter-spacing:0.16em;color:${color};font-weight:600;margin-bottom:6px;">${label}</div>
+      <div style="font-size:11px;color:var(--text-mid);margin-bottom:4px;">
+        BEST: <b style="color:var(--text-pure);font-family:'JetBrains Mono',monospace;">
+          ${best.length ? best.map(h => String(h).padStart(2,'0')+'h').join(' · ') : '—'}
+        </b>
+      </div>
+      <div style="font-size:11px;color:var(--text-mid);">
+        WORST: <b style="color:#ff1744;font-family:'JetBrains Mono',monospace;">
+          ${worst.length ? worst.map(h => String(h).padStart(2,'0')+'h').join(' · ') : '—'}
+        </b>
+      </div>
+    </div>`;
+  // Tile labels use live thresholds (from window.__lastState.opParams) so
+  // they reflect current leverage, not stale hardcoded percentages.
+  const op = (window.__lastState || {}).opParams;
+  const fmtTh = (m, fallback) => {
+    const t = op?.thresholds?.[m];
+    return Number.isFinite(t)
+      ? (t * 100).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') + '%'
+      : fallback;
+  };
+  sum.innerHTML = [
+    tile(`DRUG (90m / ${fmtTh(2, '0.518%')})`,    '#a855f7', s.bestHours.drug,      s.worstHours.drug),
+    tile(`ARMS (30m / ${fmtTh(1, '0.176%')})`,    '#39ff14', s.bestHours.arms,      s.worstHours.arms),
+    tile(`EXTORTION (5m / ${fmtTh(0, '0.039%')})`, '#ff1744', s.bestHours.extortion, s.worstHours.extortion),
+  ].join('');
+
+  // Per-hour table
+  const tbody = document.getElementById('scheduleEvidenceTbody');
+  const fmtPct = (p) => p == null ? '—' : (p * 100).toFixed(0) + '%';
+  const fmtN = (n) => n == null ? '—' : n.toFixed(1);
+  const fmtD = (d) => d == null ? '<span style="color:var(--dim)">—</span>' : d.toFixed(2);
+  const colorPct = (p) => {
+    if (p == null) return 'color:var(--dim);';
+    if (p >= 0.65) return 'color:#39ff14;';
+    if (p >= 0.45) return 'color:#ffe600;';
+    if (p >= 0.30) return 'color:#ff9100;';
+    return 'color:#ff1744;font-weight:700;';
+  };
+  const verdict = (h) => {
+    if (h.network_sr == null) return '<span style="color:var(--dim)">—</span>';
+    if (h.network_sr < 0.30) return '<span style="color:#ff1744;font-weight:700;">⏸ PAUSE</span>';
+    // Pick the op with the lower danger (only among well-sampled types)
+    const opts = [
+      { op: 'drug', d: h.danger_drug, color: '#a855f7' },
+      { op: 'arms', d: h.danger_arms, color: '#39ff14' },
+    ].filter(o => o.d != null);
+    if (opts.length === 0) return '<span style="color:var(--dim)">thin</span>';
+    opts.sort((a, b) => a.d - b.d);
+    const winner = opts[0];
+    return `<span style="color:${winner.color};font-weight:600;">${winner.op.toUpperCase()}</span>`;
+  };
+  tbody.innerHTML = s.hours.map(h => {
+    const opsd = h.days_covered > 0 ? (h.total_ops / h.days_covered).toFixed(0) : '0';
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+      <td style="padding:3px 8px;font-weight:600;">${String(h.hour_hkt).padStart(2,'0')}h</td>
+      <td style="padding:3px 8px;text-align:right;${colorPct(h.network_sr)}">${fmtPct(h.network_sr)}</td>
+      <td style="padding:3px 8px;text-align:right;color:var(--text-mid);">${opsd}</td>
+      <td style="padding:3px 8px;text-align:right;color:#a855f7;">${fmtN(h.liq_per_day_drug)}</td>
+      <td style="padding:3px 8px;text-align:right;color:#39ff14;">${fmtN(h.liq_per_day_arms)}</td>
+      <td style="padding:3px 8px;text-align:right;color:#ff1744;">${fmtN(h.liq_per_day_extortion)}</td>
+      <td style="padding:3px 8px;text-align:right;">${fmtD(h.danger_drug)}</td>
+      <td style="padding:3px 8px;text-align:right;">${fmtD(h.danger_arms)}</td>
+      <td style="padding:3px 8px;text-align:right;">${verdict(h)}</td>
+    </tr>`;
+  }).join('');
+}
+fetchScheduleEvidence();
+setInterval(fetchScheduleEvidence, 5 * 60 * 1000); // refresh every 5min
+
 function renderTokenomics(t) {
   const card = document.getElementById('tokenomicsCard');
   if (!t) { card.style.display = 'none'; return; }
@@ -2396,9 +3080,6 @@ function applyPublicMode(isPublic, botUsername, channelUsername) {
     'corpCard',       // per-corp state table
     'activityCard',   // activity rollup (24h/1h/session) — uses op_outcomes which is the operator's
   ];
-  // The op outcome logger (manual log) is also operator-only.
-  const opLogToggleVisibilityIds = ['opLogBody'];
-
   if (isPublic) {
     heroCard.style.display = '';
     if (botUsername) {
@@ -2422,14 +3103,6 @@ function applyPublicMode(isPublic, botUsername, channelUsername) {
         el.dataset.publicHidden = '1';
       }
     }
-    // Hide the op logger card entirely (not just collapsed).
-    const logger = document.querySelector('.card .card-title');
-    document.querySelectorAll('.card').forEach(c => {
-      const title = c.querySelector('.card-title');
-      if (title && title.textContent.trim() === 'OP OUTCOME LOG') {
-        c.parentElement.style.display = 'none';
-      }
-    });
   } else {
     heroCard.style.display = 'none';
     for (const id of personalPanelIds) {
@@ -2733,89 +3406,6 @@ function setRate(id, value, suffix, dp = 2) {
 // OP OUTCOME LOGGER
 // ============================================================
 
-function toggleOpLog() {
-  const body = document.getElementById('opLogBody');
-  const btn = document.getElementById('opLogToggle');
-  const open = body.style.display !== 'none';
-  body.style.display = open ? 'none' : 'block';
-  btn.textContent = open ? '▼ Show' : '▲ Hide';
-  if (!open) refreshRecentOpLog();
-}
-
-async function logOpOutcome() {
-  const opType = document.getElementById('opLogType').value;
-  const succeeded = document.getElementById('opLogOutcome').value === 'true';
-  const dirtyEarned = parseFloat(document.getElementById('opLogDirty').value);
-  const baseReward = parseFloat(document.getElementById('opLogBase').value);
-  const status = document.getElementById('opLogStatus');
-
-  if (!Number.isFinite(dirtyEarned) || dirtyEarned < 0) {
-    status.textContent = 'Enter $DIRTY earned (0 if total fail)';
-    status.style.color = 'var(--red)';
-    return;
-  }
-  if (!Number.isFinite(baseReward) || baseReward < 1) {
-    status.textContent = 'Enter base reward (100 at PL1)';
-    status.style.color = 'var(--red)';
-    return;
-  }
-
-  status.textContent = 'Logging...';
-  status.style.color = 'var(--dim)';
-
-  try {
-    const res = await fetch('/api/op-result', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ opType, succeeded, dirtyEarned, baseReward }),
-    });
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.message || 'Failed');
-    status.textContent = `✓ logged #${json.id}`;
-    status.style.color = 'var(--green)';
-    document.getElementById('opLogDirty').value = '';
-    refreshRecentOpLog();
-    setTimeout(() => { status.textContent = ''; }, 3000);
-  } catch (err) {
-    status.textContent = `✗ ${err.message}`;
-    status.style.color = 'var(--red)';
-  }
-}
-
-async function deleteOpOutcome(id) {
-  if (!confirm(`Delete log entry #${id}?`)) return;
-  try {
-    const res = await fetch(`/api/op-result/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('delete failed');
-    refreshRecentOpLog();
-  } catch (err) {
-    alert('Delete failed: ' + err.message);
-  }
-}
-
-async function refreshRecentOpLog() {
-  try {
-    const res = await fetch('/api/op-results?limit=10');
-    const rows = await res.json();
-    const container = document.getElementById('opLogRecent');
-    if (!Array.isArray(rows) || rows.length === 0) {
-      container.innerHTML = '<span style="color:var(--dim);font-size:11px;">No outcomes logged yet.</span>';
-      return;
-    }
-    container.innerHTML = rows.map(r => {
-      const win = r.succeeded === 1;
-      const ago = humanAgo(Date.now() - r.ts);
-      return `<div class="op-log-recent-row">
-        <span class="op-name">${r.opType.toUpperCase()}</span>
-        <span class="op-outcome ${win ? 'win' : 'loss'}">${win ? '✓ WIN' : '✗ FAIL'}</span>
-        <span class="op-amount">${r.dirtyEarned} $</span>
-        <span class="op-time">${ago} ago</span>
-        <button onclick="deleteOpOutcome(${r.id})">×</button>
-      </div>`;
-    }).join('');
-  } catch {}
-}
-
 function humanAgo(ms) {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
@@ -2832,6 +3422,9 @@ function renderOpStats(stats) {
   for (const op of ['extortion', 'arms', 'drug']) {
     const s = stats[op];
     const card = document.getElementById('opStat' + op[0].toUpperCase() + op.slice(1));
+    // The opStat* per-op cards were removed in the 2026-05-09 cleanup;
+    // skip silently when the DOM target is gone. The underlying empirical-
+    // fraction calculation still feeds the bot's danger calc.
     if (!card || !s) continue;
 
     card.classList.toggle('has-override', !!s.shouldOverrideDefault);
@@ -2928,6 +3521,19 @@ function render(s) {
   if (s.dirtyPrice) renderDirtyPrice(s.dirtyPrice);
   if (s.loadouts)   renderLoadouts(s.loadouts);
 
+  // Danger-v2 leading-indicator panel (operator-only)
+  renderDefenseV2(s);
+
+  // Live op thresholds + leverage in the op-cards header rows
+  renderOpParams(s.opParams);
+
+  // Whale trades panel (operator-only — null when public mode is on)
+  if (s.whaleTrades) renderWhaleTrades(s.whaleTrades);
+  // Vault claims, LP events, and whale stance (operator-only)
+  if (s.whaleClaims) renderWhaleClaims(s.whaleClaims);
+  if (s.kumbayaLp)   renderKumbayaLp(s.kumbayaLp);
+  if (s.whaleStance) renderWhaleStance(s.whaleStance);
+
   // On-chain wallet + corp state + activity rollups
   if (s.walletBalances) renderWallet(s.walletBalances, s.ammRate);
   if (s.corpState) renderCorps(s.corpState);
@@ -2983,11 +3589,6 @@ function render(s) {
     document.getElementById('hlVolume').textContent = '$' + fmtUsd(hl.dayVolume);
   }
 
-  // Heatmap
-  if (s.heatmap && s.heatmap.length > 0 && s.ethPrice) {
-    renderHeatmap(s.heatmap, s.ethPrice);
-  }
-
   // Meta
   document.getElementById('metaTicks').textContent = s.meta.tickCount.toLocaleString();
   document.getElementById('metaRate').textContent = s.meta.tradeRate;
@@ -2998,11 +3599,16 @@ function render(s) {
   // Calibration context
   if (s.calibration) {
     document.getElementById('suggestion').textContent = s.calibration.suggestion;
+    // hourlyRisk + utcHour cards were removed in the 2026-05-09 cleanup;
+    // null-guard the lookups so the suggestion still renders.
     const hr = document.getElementById('hourlyRisk');
-    const risk = s.calibration.hourlyRisk;
-    hr.textContent = risk.toUpperCase();
-    hr.className = 'vol-regime ' + (risk === 'safe' ? 'low' : risk === 'danger' ? 'high' : 'medium');
-    document.getElementById('utcHour').textContent = String(s.calibration.utcHour).padStart(2, '0') + ':00 UTC';
+    const utcHourEl = document.getElementById('utcHour');
+    if (hr) {
+      const risk = s.calibration.hourlyRisk;
+      hr.textContent = risk.toUpperCase();
+      hr.className = 'vol-regime ' + (risk === 'safe' ? 'low' : risk === 'danger' ? 'high' : 'medium');
+    }
+    if (utcHourEl) utcHourEl.textContent = String(s.calibration.utcHour).padStart(2, '0') + ':00 UTC';
 
     // Color the suggestion
     const sg = document.getElementById('suggestion');
@@ -3064,23 +3670,6 @@ function renderConnections(conns) {
   ).join('');
 }
 
-function renderHeatmap(levels, currentPrice) {
-  const container = document.getElementById('heatmapContainer');
-  const maxVal = Math.max(...levels.map(l => l.totalValue));
-  container.innerHTML = levels.slice(0, 6).map(l => {
-    const pct = (l.totalValue / maxVal * 100).toFixed(0);
-    const dist = ((l.price - currentPrice) / currentPrice * 100).toFixed(2);
-    const color = l.side === 'long' ? 'var(--green)' : 'var(--red)';
-    const fmtVal = l.totalValue >= 1e6 ? (l.totalValue / 1e6).toFixed(1) + 'M' : (l.totalValue / 1e3).toFixed(0) + 'K';
-    return `<div class="heatmap-row">
-      <span style="width:60px;color:${color}">$${l.price.toFixed(0)}</span>
-      <div class="heatmap-bar" style="width:${pct}%;background:${color};opacity:0.5"></div>
-      <span style="width:50px;text-align:right">${fmtVal}</span>
-      <span style="width:50px;text-align:right;color:var(--dim)">${dist}%</span>
-    </div>`;
-  }).join('');
-}
-
 function drawCvdChart(history) {
   const canvas = document.getElementById('cvdChart');
   if (!canvas || history.length < 2) return;
@@ -3118,24 +3707,6 @@ function drawCvdChart(history) {
   }
 }
 
-function addAlert(alert) {
-  alerts.unshift(alert);
-  if (alerts.length > 20) alerts.pop();
-  
-  const feed = document.getElementById('alertFeed');
-  feed.innerHTML = alerts.map(a => {
-    const time = new Date(a.timestamp).toLocaleTimeString();
-    return `<div class="alert-item ${a.type}">
-      <span class="alert-time">${time}</span> ${a.message}
-    </div>`;
-  }).join('');
-
-  // Browser notification
-  if (Notification.permission === 'granted') {
-    new Notification('Offshore Terminal', { body: alert.message });
-  }
-}
-
 function formatUptime(ms) {
   const s = Math.floor(ms / 1000);
   if (s < 60) return s + 's';
@@ -3143,11 +3714,6 @@ function formatUptime(ms) {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   return h + 'h ' + m + 'm';
-}
-
-// Request notification permission
-if ('Notification' in window && Notification.permission === 'default') {
-  Notification.requestPermission();
 }
 
 // Start

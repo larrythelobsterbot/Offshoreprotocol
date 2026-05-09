@@ -49,10 +49,6 @@ function encodeMulticall3Aggregate3(calls: { target: string; allowFailure: boole
   // Each tuple is dynamic because of bytes — so the array elements are
   // themselves offsets to inline-encoded tuples.
 
-  const head: string[] = [];
-  const tail: string[] = [];
-  const TUPLE_HEAD_SIZE = 32 * 3; // target(32) + allowFailure(32) + callDataOffset(32)
-
   // First, compute each tuple's encoded body and figure out where in the
   // tail it goes.
   const tupleBodies: string[] = calls.map(c => {

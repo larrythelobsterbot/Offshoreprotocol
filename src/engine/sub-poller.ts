@@ -33,7 +33,6 @@ const SEL_GET_USER_COMPANIES = '0x068e4f69';
 const SEL_IS_COMPLETABLE      = '0x9f3de032';
 const SEL_PENDING_REWARD      = '0x137ee36e';
 const SEL_AUTO_TRADE_ENABLED  = '0x90cc5c90';
-const SEL_GET_TRADE_INFO      = '0xd6694027';
 const SEL_BALANCE_OF          = '0x70a08231';
 
 const POLL_INTERVAL_MS_DEFAULT = 30_000;
