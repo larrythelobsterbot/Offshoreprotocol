@@ -454,7 +454,7 @@ export class ApiServer {
     // Schedule evidence — rolling 7-day network-wide hourly stats with
     // best/worst hours per op type. Operator-only (gated by publicGate).
     // The dashboard's "Schedule Evidence" panel reads from here.
-    this.app.get<{ Querystring: { days?: string; sinceLeverageMs?: string } }>(
+    this.app.get<{ Querystring: { days?: string; sinceLeverageMs?: string; regime?: 'all' | 'weekday' | 'weekend' | 'split' } }>(
       '/api/schedule-evidence',
       {
         schema: {
@@ -465,6 +465,10 @@ export class ApiServer {
               // Cutoff timestamp. Rows older than this are excluded from
               // the rolling sample (used to invalidate pre-leverage-v2 data).
               sinceLeverageMs: { type: 'integer', minimum: 0 },
+              // 'split' returns { all, weekday, weekend } — the dashboard
+              // uses this to show weekday/weekend tables separately so
+              // weekend leverage doesn't bias the weekday model.
+              regime: { type: 'string', enum: ['all', 'weekday', 'weekend', 'split'] },
             },
           },
         },
@@ -473,7 +477,60 @@ export class ApiServer {
         if (!this.scheduleEvidence) return { error: 'Not configured' };
         const days = req.query?.days ? Number(req.query.days) : 7;
         const cutoff = req.query?.sinceLeverageMs ? Number(req.query.sinceLeverageMs) : undefined;
-        return this.scheduleEvidence.getRollingStats(days, cutoff);
+        const regime = req.query?.regime ?? 'all';
+        if (regime === 'split') {
+          return this.scheduleEvidence.getRollingStatsByRegime(days, cutoff);
+        }
+        // Single-regime call still routes through the same regime-aware
+        // computation; default 'all' preserves backward compat.
+        const split = this.scheduleEvidence.getRollingStatsByRegime(days, cutoff);
+        return split[regime as 'all' | 'weekday' | 'weekend'] ?? split.all;
+      }),
+    );
+
+    // Strategy attribution — per-strategy SR + DIRTY/INF over a window.
+    // The dashboard's STRATEGY ATTRIBUTION panel uses this to answer
+    // "which decision path is actually paying off?". Operator-only.
+    this.app.get<{ Querystring: { hours?: string } }>(
+      '/api/strategy-attribution',
+      {
+        schema: {
+          querystring: {
+            type: 'object',
+            properties: {
+              hours: { type: 'integer', minimum: 1, maximum: 720 },  // up to 30d
+            },
+          },
+        },
+      },
+      publicGate(async (req: any) => {
+        const hours = req.query?.hours ? Number(req.query.hours) : 168;  // 7d default
+        const sinceMs = Date.now() - hours * 3600_000;
+        const rows = this.storage.getStrategyAttribution(sinceMs);
+        // Compute baseline (all strategies combined) so the UI can show
+        // "how does this strategy compare to overall?". Useful sanity
+        // check before retiring underperformers.
+        const totals = rows.reduce(
+          (acc, r) => ({
+            ops:         acc.ops + r.ops,
+            wins:        acc.wins + r.wins,
+            dirtyEarned: acc.dirtyEarned + r.dirtyEarned,
+            infBurned:   acc.infBurned + r.infBurned,
+          }),
+          { ops: 0, wins: 0, dirtyEarned: 0, infBurned: 0 },
+        );
+        return {
+          windowHours: hours,
+          generatedAt: Date.now(),
+          rows,
+          baseline: {
+            ops: totals.ops,
+            successRate: totals.ops > 0 ? totals.wins / totals.ops : 0,
+            dirtyEarned: totals.dirtyEarned,
+            infBurned:   totals.infBurned,
+            dirtyPerInf: totals.infBurned > 0 ? totals.dirtyEarned / totals.infBurned : null,
+          },
+        };
       }),
     );
 

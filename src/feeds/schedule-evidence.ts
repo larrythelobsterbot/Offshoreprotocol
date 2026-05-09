@@ -121,6 +121,31 @@ export class ScheduleEvidenceFeed {
     return { ...stats, leverageCutoffMs: sinceLeverageMs ?? null } as RollingStats;
   }
 
+  /**
+   * Returns the rolling stats split three ways: all / weekday / weekend.
+   * The contract applies different liquidation leverage on weekends
+   * (Fri-Sun HKT), so the right schedule for "today" depends on which
+   * regime "today" is in. Dashboard renders the appropriate slice
+   * highlighted; the others are still visible for context.
+   */
+  getRollingStatsByRegime(days = 7, sinceLeverageMs?: number): RollingStatsByRegime {
+    const windowSinceMs = Date.now() - days * 86400_000;
+    const sinceMs = sinceLeverageMs != null
+      ? Math.max(windowSinceMs, sinceLeverageMs)
+      : windowSinceMs;
+    const rows = this.storage.getNetworkHourlySince(sinceMs);
+    const split = computeRollingAllRegimes(rows);
+    // Annotate every slice with the leverage cutoff so the UI can show
+    // "limited sample" in either column independently.
+    const annotate = (s: RollingStats): RollingStats =>
+      ({ ...s, leverageCutoffMs: sinceLeverageMs ?? null });
+    return {
+      all:     annotate(split.all),
+      weekday: annotate(split.weekday),
+      weekend: annotate(split.weekend),
+    };
+  }
+
   // ──────────────────────────────────────────────────────────────────
   // Internals
   // ──────────────────────────────────────────────────────────────────
@@ -338,6 +363,20 @@ export interface RollingStats {
   generatedAt: number;
   /** Optional cutoff timestamp — rows older than this excluded from sample. */
   leverageCutoffMs?: number | null;
+  /** 'all' | 'weekday' | 'weekend' — which slice of the data this represents. */
+  regime?: 'all' | 'weekday' | 'weekend';
+}
+
+/**
+ * Three-way regime split. The contract applies different liquidation
+ * leverage on weekends (Fri evening → Sun evening HKT), so mixing
+ * weekday + weekend rows produces a model that's wrong in BOTH regimes.
+ * Splitting lets callers query the right table for the current moment.
+ */
+export interface RollingStatsByRegime {
+  all:     RollingStats;
+  weekday: RollingStats;
+  weekend: RollingStats;
 }
 
 const MIN_TOTAL_OPS_FOR_SR = 50;   // need 50+ ops/hour over the window to trust SR
@@ -364,10 +403,38 @@ function dangerFor(
   return (1 - networkSR) * liqShare;
 }
 
-export function computeRolling(rows: NetworkHourlyRow[]): RollingStats {
+/**
+ * Determines whether a given HKT date string ('YYYY-MM-DD') falls on a
+ * weekend per the contract's weekend-leverage rule. Mirrors `isHktWeekend`
+ * in op-params.ts (Fri/Sat/Sun HKT). Pure function — no side effects.
+ *
+ * The date is interpreted as midnight HKT, so dow is computed in HKT
+ * (UTC+8) to match the contract's regime boundaries.
+ */
+export function isHktWeekendDate(dateHkt: string): boolean {
+  // 'YYYY-MM-DD' → parse as UTC, then add 8h to land at HKT midnight.
+  // Day-of-week is the same regardless of time-of-day within the date.
+  const [y, m, d] = dateHkt.split('-').map(Number);
+  if (!y || !m || !d) return false;
+  // Date.UTC gives midnight UTC; HKT midnight is 16:00 UTC the day before
+  // but day-of-week is fixed by the date itself, no offset needed.
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  return dow === 0 || dow === 5 || dow === 6;
+}
+
+export function computeRolling(
+  rows: NetworkHourlyRow[],
+  regime: 'all' | 'weekday' | 'weekend' = 'all',
+): RollingStats {
+  // Filter input rows by regime if requested. Done at the very top so
+  // every downstream aggregation honors the split (sample sizes, day
+  // counts, danger scores).
+  const filtered = regime === 'all'
+    ? rows
+    : rows.filter(r => isHktWeekendDate(r.date_hkt) === (regime === 'weekend'));
   const byHour: Map<number, NetworkHourlyRow[]> = new Map();
   for (let h = 0; h < 24; h++) byHour.set(h, []);
-  for (const r of rows) byHour.get(r.hour_hkt)!.push(r);
+  for (const r of filtered) byHour.get(r.hour_hkt)!.push(r);
 
   const hours: HourStats[] = [];
   let totalCompleted = 0, totalLiquidated = 0;
@@ -433,7 +500,7 @@ export function computeRolling(rows: NetworkHourlyRow[]): RollingStats {
 
   const totalOps = totalCompleted + totalLiquidated;
   const globalSR = totalOps > 0 ? totalCompleted / totalOps : null;
-  const allDates = new Set(rows.map(r => r.date_hkt));
+  const allDates = new Set(filtered.map(r => r.date_hkt));
 
   return {
     hours,
@@ -442,5 +509,18 @@ export function computeRolling(rows: NetworkHourlyRow[]): RollingStats {
     globalSR,
     windowDays: allDates.size,
     generatedAt: Date.now(),
+    regime,
+  };
+}
+
+/**
+ * Compute all three regime slices in a single pass. Cheaper than three
+ * `computeRolling` calls because each only iterates the input once.
+ */
+export function computeRollingAllRegimes(rows: NetworkHourlyRow[]): RollingStatsByRegime {
+  return {
+    all:     computeRolling(rows, 'all'),
+    weekday: computeRolling(rows, 'weekday'),
+    weekend: computeRolling(rows, 'weekend'),
   };
 }

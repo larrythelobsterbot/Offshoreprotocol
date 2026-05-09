@@ -138,6 +138,33 @@ export interface OpOutcome {
   dirtyEarned: number;
   baseReward: number;
   note?: string | null;
+  /** Strategy that bootstrapped this op (e.g. 'auto:all-drug', 'manual:copy'). NULL on legacy rows. */
+  strategy?: string | null;
+  /** Corp address that ran this op. NULL on legacy rows. */
+  corp?: string | null;
+  /** INF cost at the time of bootstrap (sourced from op_params_history). NULL when unknown. */
+  infCost?: number | null;
+}
+
+export interface BootstrapLogRow {
+  id?: number;
+  ts: number;
+  corp: string;
+  mode: 0 | 1 | 2;
+  strategy: string;
+  copy_source_whale: string | null;
+  copy_log_id: number | null;
+}
+
+export interface StrategyAggregate {
+  strategy: string;
+  ops: number;
+  wins: number;
+  losses: number;
+  successRate: number;          // wins / ops
+  dirtyEarned: number;
+  infBurned: number;            // sum of inf_cost across ops
+  dirtyPerInf: number | null;   // dirtyEarned / infBurned (null when no inf data)
 }
 
 export class Storage {
@@ -276,10 +303,44 @@ export class Storage {
         succeeded INTEGER NOT NULL CHECK(succeeded IN (0,1)),
         dirty_earned REAL NOT NULL,
         base_reward REAL NOT NULL,
-        note TEXT
+        note TEXT,
+        -- Strategy attribution: which decision path bootstrapped the op.
+        -- One of: 'auto:<preset>', 'manual:<preset>', 'manual:copy',
+        -- 'breaker:paused', 'danger:panic', 'fallback:<preset>'. NULL on
+        -- legacy rows (pre-attribution) and on outcomes the bot didn't
+        -- bootstrap (e.g. ops that were already running when copy-mode
+        -- enabled, or the rare contract auto-restart).
+        strategy TEXT,
+        -- Corp address that ran this op. Lets us join multiple op_outcomes
+        -- to a single bootstrap_log row by (corp, ts within window).
+        corp TEXT,
+        -- INF cost for this op at the time it was bootstrapped. Sourced
+        -- from op_params_history. Lets us compute DIRTY/INF per strategy
+        -- without re-querying threshold history at aggregation time.
+        inf_cost REAL
       );
       CREATE INDEX IF NOT EXISTS idx_op_ts ON op_outcomes(ts);
       CREATE INDEX IF NOT EXISTS idx_op_type ON op_outcomes(op_type);
+      CREATE INDEX IF NOT EXISTS idx_op_strategy ON op_outcomes(strategy, ts);
+      CREATE INDEX IF NOT EXISTS idx_op_corp_ts  ON op_outcomes(corp, ts);
+
+      -- Bootstrap log: one row per startTrade() call by CorpBot. Lets the
+      -- op-scraper attach strategy to op_outcomes via (corp, ts within
+      -- ~95min tolerance) — that window covers the longest op (Drug 90m)
+      -- plus settlement slack.
+      CREATE TABLE IF NOT EXISTS bootstrap_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,            -- ms when startTrade() was called
+        corp TEXT NOT NULL,             -- corp address that was bootstrapped
+        mode INTEGER NOT NULL CHECK(mode IN (0,1,2)),
+        strategy TEXT NOT NULL,         -- 'auto:all-drug', 'manual:copy', etc.
+        -- Optional whale-copy-specific fields (NULL when strategy != copy)
+        copy_source_whale TEXT,
+        copy_log_id INTEGER             -- whale_copy_log.id of the matching event
+      );
+      CREATE INDEX IF NOT EXISTS idx_boot_ts        ON bootstrap_log(ts);
+      CREATE INDEX IF NOT EXISTS idx_boot_corp_ts   ON bootstrap_log(corp, ts);
+      CREATE INDEX IF NOT EXISTS idx_boot_strategy  ON bootstrap_log(strategy, ts);
 
       -- Network-wide hourly stats. One row per (HKT date, HKT hour). The
       -- schedule-evidence feed scans TradeCompleted + TradeLiquidated
@@ -480,6 +541,31 @@ export class Storage {
     } catch (err: any) {
       logger.warn({ err: err.message }, '[Storage] op_params_history migration failed (non-fatal)');
     }
+
+    // Online migration: add strategy / corp / inf_cost columns to op_outcomes
+    // for the strategy attribution ledger. Legacy rows stay NULL on these
+    // fields; only ops bootstrapped after this deploy get tagged.
+    try {
+      const cols = this.db.prepare(`PRAGMA table_info(op_outcomes)`).all() as { name: string }[];
+      const have = new Set(cols.map(c => c.name));
+      if (cols.length > 0) {
+        if (!have.has('strategy')) {
+          this.db.exec(`ALTER TABLE op_outcomes ADD COLUMN strategy TEXT`);
+          logger.info('[Storage] migrated op_outcomes: added strategy column');
+        }
+        if (!have.has('corp')) {
+          this.db.exec(`ALTER TABLE op_outcomes ADD COLUMN corp TEXT`);
+          logger.info('[Storage] migrated op_outcomes: added corp column');
+        }
+        if (!have.has('inf_cost')) {
+          this.db.exec(`ALTER TABLE op_outcomes ADD COLUMN inf_cost REAL`);
+          logger.info('[Storage] migrated op_outcomes: added inf_cost column');
+        }
+        // Indexes are CREATE IF NOT EXISTS in init() — already idempotent.
+      }
+    } catch (err: any) {
+      logger.warn({ err: err.message }, '[Storage] op_outcomes migration failed (non-fatal)');
+    }
   }
 
   private prepareStatements() {
@@ -501,7 +587,9 @@ export class Storage {
       'INSERT INTO alerts (timestamp, type, message, danger_score) VALUES (?, ?, ?, ?)'
     );
     this._insertOp = this.db.prepare(
-      'INSERT INTO op_outcomes (ts, op_type, succeeded, dirty_earned, base_reward, note) VALUES (?, ?, ?, ?, ?, ?)'
+      `INSERT INTO op_outcomes (ts, op_type, succeeded, dirty_earned, base_reward, note,
+                                strategy, corp, inf_cost)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     this._deleteOp = this.db.prepare(
       'DELETE FROM op_outcomes WHERE id = ?'
@@ -549,6 +637,9 @@ export class Storage {
       o.dirtyEarned,
       o.baseReward,
       o.note ?? null,
+      o.strategy ?? null,
+      o.corp ? o.corp.toLowerCase() : null,
+      o.infCost ?? null,
     );
     return Number(info.lastInsertRowid);
   }
@@ -565,7 +656,10 @@ export class Storage {
    */
   getOpOutcomesSince(sinceTs: number): OpOutcome[] {
     return this.db.prepare(
-      'SELECT id, ts, op_type as opType, succeeded, dirty_earned as dirtyEarned, base_reward as baseReward, note FROM op_outcomes WHERE ts >= ? ORDER BY ts DESC'
+      `SELECT id, ts, op_type as opType, succeeded, dirty_earned as dirtyEarned,
+              base_reward as baseReward, note,
+              strategy, corp, inf_cost as infCost
+         FROM op_outcomes WHERE ts >= ? ORDER BY ts DESC`,
     ).all(sinceTs) as OpOutcome[];
   }
 
@@ -576,16 +670,93 @@ export class Storage {
    */
   getOpOutcomes(opts: { opType?: 'extortion' | 'arms' | 'drug'; limit?: number } = {}): OpOutcome[] {
     const limit = Math.max(1, Math.min(opts.limit ?? 500, 5000));
+    const cols = `id, ts, op_type as opType, succeeded,
+                  dirty_earned as dirtyEarned, base_reward as baseReward, note,
+                  strategy, corp, inf_cost as infCost`;
     let sql: string;
     let params: any[];
     if (opts.opType) {
-      sql = 'SELECT id, ts, op_type as opType, succeeded, dirty_earned as dirtyEarned, base_reward as baseReward, note FROM op_outcomes WHERE op_type = ? ORDER BY ts DESC LIMIT ?';
+      sql = `SELECT ${cols} FROM op_outcomes WHERE op_type = ? ORDER BY ts DESC LIMIT ?`;
       params = [opts.opType, limit];
     } else {
-      sql = 'SELECT id, ts, op_type as opType, succeeded, dirty_earned as dirtyEarned, base_reward as baseReward, note FROM op_outcomes ORDER BY ts DESC LIMIT ?';
+      sql = `SELECT ${cols} FROM op_outcomes ORDER BY ts DESC LIMIT ?`;
       params = [limit];
     }
     return this.db.prepare(sql).all(...params) as OpOutcome[];
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Bootstrap log + strategy attribution
+  // ────────────────────────────────────────────────────────────
+
+  insertBootstrap(r: Omit<BootstrapLogRow, 'id'>): number {
+    const info = this.db.prepare(`
+      INSERT INTO bootstrap_log (ts, corp, mode, strategy, copy_source_whale, copy_log_id)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      r.ts, r.corp.toLowerCase(), r.mode, r.strategy,
+      r.copy_source_whale ? r.copy_source_whale.toLowerCase() : null,
+      r.copy_log_id,
+    );
+    return Number(info.lastInsertRowid);
+  }
+
+  /**
+   * Find the most recent bootstrap on `corp` that lines up with `outcomeTs`
+   * (within ~95min — covers the longest op + slack). Returns null if no
+   * matching bootstrap, in which case the outcome is logged with NULL
+   * strategy (could be a pre-attribution legacy bootstrap, contract
+   * auto-restart, or operator UI startTrade).
+   */
+  findBootstrapForOutcome(corp: string, outcomeTs: number, toleranceMs = 95 * 60_000): BootstrapLogRow | null {
+    const minTs = outcomeTs - toleranceMs;
+    return (this.db.prepare(`
+      SELECT id, ts, corp, mode, strategy, copy_source_whale, copy_log_id
+        FROM bootstrap_log
+       WHERE corp = ? AND ts BETWEEN ? AND ?
+       ORDER BY ts DESC LIMIT 1
+    `).get(corp.toLowerCase(), minTs, outcomeTs) as BootstrapLogRow | undefined) ?? null;
+  }
+
+  /**
+   * Aggregate op_outcomes by strategy over a window. Returns one row per
+   * distinct strategy with SR + DIRTY/INF — the headline metrics for the
+   * attribution dashboard. Excludes ops with NULL strategy (legacy + the
+   * occasional contract auto-restart we couldn't tag).
+   */
+  getStrategyAttribution(sinceMs: number): StrategyAggregate[] {
+    const rows = this.db.prepare(`
+      SELECT
+        strategy,
+        COUNT(*)                                              AS ops,
+        SUM(CASE WHEN succeeded = 1 THEN 1 ELSE 0 END)        AS wins,
+        SUM(CASE WHEN succeeded = 0 THEN 1 ELSE 0 END)        AS losses,
+        SUM(dirty_earned)                                     AS dirty_earned,
+        SUM(COALESCE(inf_cost, 0))                            AS inf_burned,
+        SUM(CASE WHEN inf_cost IS NOT NULL THEN 1 ELSE 0 END) AS inf_samples
+      FROM op_outcomes
+      WHERE strategy IS NOT NULL AND ts >= ?
+      GROUP BY strategy
+      ORDER BY ops DESC
+    `).all(sinceMs) as Array<{
+      strategy: string; ops: number; wins: number; losses: number;
+      dirty_earned: number; inf_burned: number; inf_samples: number;
+    }>;
+    return rows.map(r => ({
+      strategy: r.strategy,
+      ops: r.ops,
+      wins: r.wins,
+      losses: r.losses,
+      successRate: r.ops > 0 ? r.wins / r.ops : 0,
+      dirtyEarned: r.dirty_earned,
+      infBurned: r.inf_burned,
+      // Only meaningful when at least some ops have inf_cost recorded.
+      // A strategy with all-NULL inf_cost falls back to null DIRTY/INF
+      // rather than a misleading division by 0.
+      dirtyPerInf: r.inf_samples > 0 && r.inf_burned > 0
+        ? r.dirty_earned / r.inf_burned
+        : null,
+    }));
   }
 
   // --- Queries ---

@@ -257,6 +257,17 @@ async function main() {
           );
           return;
         }
+        // Strategy attribution: look up the bootstrap_log row that fired
+        // this op (matched by corp + ts within ~95min — covers Drug 90m
+        // + slack). NULL when no match (legacy op, contract auto-restart,
+        // or operator UI startTrade — all expected occasionally).
+        const bootstrap = storage.findBootstrapForOutcome(o.corp, o.ts);
+        // INF cost at outcome time — pulled from op_params live snapshot.
+        // This is "cost when settled", not "cost when bootstrapped". For
+        // attribution it's close enough since the price floats slowly.
+        const opSnap = opParams.getSnapshot();
+        const infCost = opSnap?.infCostPerOp ?? null;
+
         storage.insertOpOutcome({
           ts: o.ts,
           opType: o.opType,
@@ -264,6 +275,9 @@ async function main() {
           dirtyEarned: o.rewardDirty,
           baseReward: base,
           note: `auto:${o.txHash.slice(0, 12)}...:${o.corp.slice(0, 8)}:m${o.mode}`,
+          strategy: bootstrap?.strategy ?? null,
+          corp: o.corp,
+          infCost,
         });
         // Recompute cached op stats for the next dashboard broadcast.
         onOpStatsChanged();

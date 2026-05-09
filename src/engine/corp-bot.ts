@@ -1409,6 +1409,10 @@ export class CorpBot {
       // The whale_copy_log row id assigned to this corp's bootstrap, if any.
       // Set in the bootstrap branch when copy-mode pops an event off the queue.
       let copyLogId: number | null = null;
+      // Source whale address (lowercase) when this bootstrap is a copy event.
+      // Persisted to bootstrap_log so the strategy attribution dashboard can
+      // show "copies of whale 0x… earned X DIRTY/INF over Y ops".
+      let copySourceWhale: string | null = null;
 
       // Fix C: skip locked corps entirely. Operator has full manual
       // control — no claim, no mode switch, no auto-trade meddling.
@@ -1586,6 +1590,7 @@ export class CorpBot {
             }
             targetMode = ev.mode;
             copyLogId = ev.logId ?? null;
+            copySourceWhale = ev.whale;
             this.record('info',
               `[CorpBot] copy-mode: ${label}.. → ${MODE_NAMES[targetMode]} (from whale ${ev.whale.slice(0,10)}..)`);
           }
@@ -1677,6 +1682,22 @@ export class CorpBot {
               } catch (err: any) {
                 logger.warn({ err: err.message }, '[CorpBot] markCopyFired failed (non-fatal)');
               }
+            }
+            // Strategy attribution: record the bootstrap so the op-scraper
+            // can join outcomes back to the strategy that fired the op.
+            // `presetLabel` already encodes source: 'auto:all-drug',
+            // 'manual:copy', 'breaker:paused', 'danger:panic', etc.
+            try {
+              this.storage?.insertBootstrap({
+                ts: Date.now(),
+                corp: addr,
+                mode: targetMode as 0 | 1 | 2,
+                strategy: presetLabel,
+                copy_source_whale: copySourceWhale,
+                copy_log_id: copyLogId,
+              });
+            } catch (err: any) {
+              logger.warn({ err: err.message }, '[CorpBot] insertBootstrap failed (non-fatal)');
             }
             void this.notify(
               `▶️ *Trade started*\n` +

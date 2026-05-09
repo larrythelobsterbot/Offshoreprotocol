@@ -1401,6 +1401,21 @@
       <div>
         <span class="card-title" style="margin:0;color:#39ff14">SCHEDULE EVIDENCE</span>
         <span class="info-pill" title="Network-wide TC + TL events scanned daily, bucketed by HKT hour. 7-day rolling window. Best/worst hours per op type are scored on a composite of network success rate × that op type's share of liquidations. Used to evidence-base schedule edits, not vibes.">?</span>
+        <!-- Regime selector — split weekend vs weekday because the contract
+             applies different liquidation leverage on weekends (Fri-Sun HKT).
+             Mixing them under-models BOTH regimes. -->
+        <span style="margin-left:12px;display:inline-flex;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
+          <button class="regime-tab active" data-regime="all"
+                  onclick="setScheduleRegime('all')"
+                  style="background:transparent;border:1px solid #39ff14;color:#39ff14;padding:2px 8px;border-radius:3px;cursor:pointer;">ALL</button>
+          <button class="regime-tab" data-regime="weekday"
+                  onclick="setScheduleRegime('weekday')"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">WEEKDAY</button>
+          <button class="regime-tab" data-regime="weekend"
+                  onclick="setScheduleRegime('weekend')"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">WEEKEND</button>
+          <span id="scheduleRegimeNow" style="margin-left:8px;color:var(--dim);" title="Which regime the network is in right now (Fri-Sun HKT = weekend leverage)."></span>
+        </span>
       </div>
       <div id="scheduleEvidenceMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading...</div>
     </div>
@@ -1430,6 +1445,53 @@
     <div style="margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);line-height:1.5;">
       <b>danger</b> = (1 − network SR) × that op type's share of liquidations. Lower is better.
       Verdict suggests the safer op for that hour based on relative danger; ⏸ = pause (network SR &lt; 30%).
+    </div>
+  </div>
+</div>
+
+<!-- Strategy Attribution — per-decision-path SR + DIRTY/INF. Operator-only. -->
+<div style="padding: 0 24px 8px;" data-pane="ops">
+  <div class="card" id="strategyAttributionCard" style="display:block;padding:12px 16px;border-color:#00e0ff;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#00e0ff">STRATEGY ATTRIBUTION</span>
+        <span class="info-pill" title="Each op is tagged at bootstrap-time with the decision path that fired it (auto schedule, manual preset, copy-mode, danger override, breaker, fallback). This panel rolls up SR + DIRTY/INF per strategy so you can see which paths are actually paying off vs adding complexity for no edge. Legacy ops (pre-attribution) and contract auto-restarts show as untagged and are excluded from the breakdown.">?</span>
+        <!-- Window selector — start with 24h to surface drift quickly,
+             default to 7d for stable signal. -->
+        <span style="margin-left:12px;display:inline-flex;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
+          <button class="attr-tab" data-hours="24"
+                  onclick="setAttrWindow(24)"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">24H</button>
+          <button class="attr-tab active" data-hours="168"
+                  onclick="setAttrWindow(168)"
+                  style="background:transparent;border:1px solid #00e0ff;color:#00e0ff;padding:2px 8px;border-radius:3px;cursor:pointer;">7D</button>
+          <button class="attr-tab" data-hours="720"
+                  onclick="setAttrWindow(720)"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">30D</button>
+        </span>
+      </div>
+      <div id="strategyAttributionMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading...</div>
+    </div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
+            <th style="text-align:left;padding:4px 8px;">strategy</th>
+            <th style="text-align:right;padding:4px 8px;">ops</th>
+            <th style="text-align:right;padding:4px 8px;">SR</th>
+            <th style="text-align:right;padding:4px 8px;">vs base</th>
+            <th style="text-align:right;padding:4px 8px;color:#a855f7;">DIRTY</th>
+            <th style="text-align:right;padding:4px 8px;color:#ff9100;">INF</th>
+            <th style="text-align:right;padding:4px 8px;color:#ffe600;">DIRTY/INF</th>
+          </tr>
+        </thead>
+        <tbody id="strategyAttributionTbody"></tbody>
+        <tfoot id="strategyAttributionTfoot"></tfoot>
+      </table>
+    </div>
+    <div style="margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);line-height:1.5;">
+      <b>vs base</b> = SR delta vs the all-strategy baseline. <b>DIRTY/INF</b> is the headline efficiency
+      number — higher is better. A strategy with high SR but low DIRTY/INF is winning safe ops at high cost.
     </div>
   </div>
 </div>
@@ -2932,20 +2994,56 @@ function renderDefenseV2(s) {
 }
 
 // ─── Schedule Evidence (7d rolling network stats) ─────────────────────
+// Persist across renders + survive panel reloads. The currently selected
+// regime determines which slice of /api/schedule-evidence?regime=split
+// renders — we always fetch all three so toggling is instant.
+let scheduleRegime = localStorage.getItem('schedule-regime') || 'all';
+let scheduleSplitData = null;  // { all, weekday, weekend }
+
 async function fetchScheduleEvidence() {
   try {
-    const r = await fetch('/api/schedule-evidence');
+    // regime=split returns all three slices in one request — cheap enough
+    // and lets the UI flip instantly without re-fetching.
+    const r = await fetch('/api/schedule-evidence?regime=split');
     if (!r.ok) return;
     const d = await r.json();
-    if (d.error) return;
-    renderScheduleEvidence(d);
+    if (d.error || !d.all) return;
+    scheduleSplitData = d;
+    // Mark which regime "now" is in (label next to tabs).
+    const nowEl = document.getElementById('scheduleRegimeNow');
+    if (nowEl) {
+      const dow = new Date(Date.now() + 8 * 3600_000).getUTCDay();
+      const isWeekend = dow === 0 || dow === 5 || dow === 6;
+      nowEl.textContent = isWeekend ? '· now: WEEKEND' : '· now: WEEKDAY';
+      nowEl.style.color = isWeekend ? '#ff9100' : 'var(--dim)';
+    }
+    renderScheduleEvidence(d[scheduleRegime] || d.all);
   } catch (err) { /* keep last render */ }
+}
+
+function setScheduleRegime(regime) {
+  scheduleRegime = regime;
+  localStorage.setItem('schedule-regime', regime);
+  // Highlight selected tab
+  document.querySelectorAll('.regime-tab').forEach(btn => {
+    const sel = btn.dataset.regime === regime;
+    btn.style.borderColor = sel ? '#39ff14' : 'var(--border)';
+    btn.style.color       = sel ? '#39ff14' : 'var(--dim)';
+    btn.classList.toggle('active', sel);
+  });
+  if (scheduleSplitData) {
+    renderScheduleEvidence(scheduleSplitData[regime] || scheduleSplitData.all);
+  }
 }
 function renderScheduleEvidence(s) {
   const meta = document.getElementById('scheduleEvidenceMeta');
   if (!s || !s.hours) return;
   const sr = s.globalSR != null ? (s.globalSR * 100).toFixed(1) + '%' : '--';
-  meta.textContent = `${s.windowDays}d window · global SR ${sr} · updated ${new Date(s.generatedAt).toUTCString().slice(17, 22)} UTC`;
+  // Annotate with regime so the operator always knows which slice they're looking at.
+  const regimeTag = s.regime && s.regime !== 'all'
+    ? ` · ${s.regime.toUpperCase()}`
+    : '';
+  meta.textContent = `${s.windowDays}d window${regimeTag} · global SR ${sr} · updated ${new Date(s.generatedAt).toUTCString().slice(17, 22)} UTC`;
 
   // Summary tiles
   const sum = document.getElementById('scheduleEvidenceSummary');
@@ -3018,8 +3116,107 @@ function renderScheduleEvidence(s) {
     </tr>`;
   }).join('');
 }
+// Apply persisted regime selection (highlights the right tab) before first fetch.
+setScheduleRegime(scheduleRegime);
 fetchScheduleEvidence();
 setInterval(fetchScheduleEvidence, 5 * 60 * 1000); // refresh every 5min
+
+// ─── Strategy Attribution (per-decision-path SR + DIRTY/INF) ─────────
+let attrWindowHours = parseInt(localStorage.getItem('attr-window') || '168', 10);
+async function fetchStrategyAttribution() {
+  try {
+    const r = await fetch(`/api/strategy-attribution?hours=${attrWindowHours}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.error) return;
+    renderStrategyAttribution(d);
+  } catch { /* keep last render */ }
+}
+function setAttrWindow(hours) {
+  attrWindowHours = hours;
+  localStorage.setItem('attr-window', String(hours));
+  document.querySelectorAll('.attr-tab').forEach(btn => {
+    const sel = parseInt(btn.dataset.hours, 10) === hours;
+    btn.style.borderColor = sel ? '#00e0ff' : 'var(--border)';
+    btn.style.color       = sel ? '#00e0ff' : 'var(--dim)';
+    btn.classList.toggle('active', sel);
+  });
+  fetchStrategyAttribution();
+}
+function renderStrategyAttribution(d) {
+  const meta = document.getElementById('strategyAttributionMeta');
+  const tbody = document.getElementById('strategyAttributionTbody');
+  const tfoot = document.getElementById('strategyAttributionTfoot');
+  if (!d || !d.rows) return;
+
+  const baseSR = d.baseline.successRate;
+  const baseDPI = d.baseline.dirtyPerInf;
+  const winLabel = d.windowHours < 48
+    ? `${d.windowHours}h`
+    : `${Math.round(d.windowHours / 24)}d`;
+  meta.textContent = `${winLabel} window · ${d.baseline.ops} tagged ops · base SR ${(baseSR * 100).toFixed(1)}%${baseDPI != null ? ' · base DIRTY/INF ' + baseDPI.toFixed(2) : ''}`;
+
+  if (d.rows.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" style="padding:16px;text-align:center;color:var(--dim);">
+      No tagged ops yet in this window. Strategy attribution starts on the next bootstrap after deploy.
+    </td></tr>`;
+    tfoot.innerHTML = '';
+    return;
+  }
+
+  // Color-code SR vs network baseline
+  const colorSR = (sr) => {
+    if (sr >= 0.65) return '#39ff14';
+    if (sr >= 0.45) return '#ffe600';
+    if (sr >= 0.30) return '#ff9100';
+    return '#ff1744';
+  };
+  // Color-code DIRTY/INF vs baseline (positive delta = green)
+  const colorDPI = (dpi) => {
+    if (baseDPI == null || dpi == null) return 'var(--text-mid)';
+    const delta = dpi - baseDPI;
+    if (delta > 0.5)  return '#39ff14';
+    if (delta > 0)    return '#ffe600';
+    if (delta > -0.5) return '#ff9100';
+    return '#ff1744';
+  };
+  const fmtSR = (sr) => (sr * 100).toFixed(1) + '%';
+  const fmtDPI = (dpi) => dpi == null ? '—' : dpi.toFixed(2);
+
+  // Sort by ops descending so the most-fired strategies are at the top.
+  const rows = [...d.rows].sort((a, b) => b.ops - a.ops);
+
+  tbody.innerHTML = rows.map(r => {
+    const srDelta = (r.successRate - baseSR) * 100;
+    const srDeltaStr = (srDelta >= 0 ? '+' : '') + srDelta.toFixed(1) + 'pp';
+    const srDeltaColor = srDelta >= 1 ? '#39ff14'
+                       : srDelta <= -1 ? '#ff1744'
+                       : 'var(--dim)';
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+      <td style="padding:3px 8px;color:var(--text-pure);">${r.strategy}</td>
+      <td style="padding:3px 8px;text-align:right;color:var(--text-mid);">${r.ops}</td>
+      <td style="padding:3px 8px;text-align:right;color:${colorSR(r.successRate)};font-weight:600;">${fmtSR(r.successRate)}</td>
+      <td style="padding:3px 8px;text-align:right;color:${srDeltaColor};">${srDeltaStr}</td>
+      <td style="padding:3px 8px;text-align:right;color:#a855f7;">${r.dirtyEarned.toFixed(0)}</td>
+      <td style="padding:3px 8px;text-align:right;color:#ff9100;">${r.infBurned > 0 ? r.infBurned.toFixed(0) : '—'}</td>
+      <td style="padding:3px 8px;text-align:right;color:${colorDPI(r.dirtyPerInf)};font-weight:600;">${fmtDPI(r.dirtyPerInf)}</td>
+    </tr>`;
+  }).join('');
+
+  tfoot.innerHTML = `<tr style="border-top:1px solid var(--border);color:var(--dim);">
+    <td style="padding:6px 8px;font-weight:600;">BASELINE</td>
+    <td style="padding:6px 8px;text-align:right;">${d.baseline.ops}</td>
+    <td style="padding:6px 8px;text-align:right;font-weight:600;">${fmtSR(baseSR)}</td>
+    <td style="padding:6px 8px;text-align:right;">—</td>
+    <td style="padding:6px 8px;text-align:right;color:#a855f7;">${d.baseline.dirtyEarned.toFixed(0)}</td>
+    <td style="padding:6px 8px;text-align:right;color:#ff9100;">${d.baseline.infBurned > 0 ? d.baseline.infBurned.toFixed(0) : '—'}</td>
+    <td style="padding:6px 8px;text-align:right;color:#ffe600;font-weight:600;">${fmtDPI(baseDPI)}</td>
+  </tr>`;
+}
+// Apply persisted window selection to highlight the right tab on load.
+setAttrWindow(attrWindowHours);
+fetchStrategyAttribution();
+setInterval(fetchStrategyAttribution, 60 * 1000); // refresh every 60s
 
 function renderTokenomics(t) {
   const card = document.getElementById('tokenomicsCard');
