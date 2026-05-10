@@ -3962,13 +3962,7 @@ function renderInfEfficiency() {
     return b.dirty_per_inf - a.dirty_per_inf;
   });
 
-  // Helper: render a DPI value, treating Infinity as "∞ / no losses".
-  // Used in both the YOU and NETWORK columns so the symbol is consistent.
-  const fmtDpi = (v) => {
-    if (v == null) return '—';
-    if (!Number.isFinite(v)) return '∞';
-    return v.toFixed(2);
-  };
+  // (fmtDpi already declared earlier in this function — reuse it.)
 
   tbody.innerHTML = rows.map(r => {
     const net = r.isOpType ? networkByOpType[r.op_type] : null;
