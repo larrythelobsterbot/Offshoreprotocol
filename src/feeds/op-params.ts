@@ -76,12 +76,20 @@ export interface OpParamsSnapshot {
 }
 
 function isHktWeekend(now = new Date()): boolean {
-  // Per dev: weekend leverage runs Fri evening through Sun evening HKT.
-  // Without exact start/end times yet, conservatively treat the entire
-  // Fri/Sat/Sun HKT day as weekend. Refine when operator confirms.
+  // Operator confirmed (2026-05-09) that the weekend leverage cycle runs
+  // Saturday 17:00 HKT → Monday 17:00 HKT (48 hours).
+  // - Sat 00:00–16:59  → weekday
+  // - Sat 17:00–23:59  → WEEKEND
+  // - Sun 00:00–23:59  → WEEKEND
+  // - Mon 00:00–16:59  → WEEKEND
+  // - Mon 17:00 onward → weekday
   const hkt = new Date(now.getTime() + 8 * 3600_000);
-  const dow = hkt.getUTCDay(); // 0=Sun, 5=Fri, 6=Sat
-  return dow === 0 || dow === 5 || dow === 6;
+  const dow  = hkt.getUTCDay();   // 0=Sun, 1=Mon, ... 6=Sat
+  const hour = hkt.getUTCHours(); // 0..23 (HKT after the +8h shift above)
+  if (dow === 6 && hour >= 17) return true;  // Sat evening
+  if (dow === 0)               return true;  // Sun all day
+  if (dow === 1 && hour < 17)  return true;  // Mon until 17:00
+  return false;
 }
 
 function decodeTradeInfo(hex: string) {

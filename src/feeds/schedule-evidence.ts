@@ -404,22 +404,26 @@ function dangerFor(
 }
 
 /**
- * Determines whether a given HKT date string ('YYYY-MM-DD') falls on a
- * weekend per the contract's weekend-leverage rule. Mirrors `isHktWeekend`
- * in op-params.ts (Fri/Sat/Sun HKT). Pure function — no side effects.
+ * Determines whether a given (HKT date, HKT hour) bucket falls inside the
+ * contract's weekend-leverage cycle. Mirrors `isHktWeekend` in op-params.ts.
  *
- * The date is interpreted as midnight HKT, so dow is computed in HKT
- * (UTC+8) to match the contract's regime boundaries.
+ * Operator-confirmed (2026-05-09): the weekend cycle runs
+ *   Saturday 17:00 HKT → Monday 17:00 HKT  (48 hours).
+ *
+ * Hour-granular because Saturday and Monday are SPLIT days — half-weekday,
+ * half-weekend. A pure date-level classifier would mislabel either Sat
+ * morning or Mon morning. Pure function — no side effects.
  */
-export function isHktWeekendDate(dateHkt: string): boolean {
-  // 'YYYY-MM-DD' → parse as UTC, then add 8h to land at HKT midnight.
-  // Day-of-week is the same regardless of time-of-day within the date.
+export function isHktWeekendHour(dateHkt: string, hourHkt: number): boolean {
   const [y, m, d] = dateHkt.split('-').map(Number);
   if (!y || !m || !d) return false;
-  // Date.UTC gives midnight UTC; HKT midnight is 16:00 UTC the day before
-  // but day-of-week is fixed by the date itself, no offset needed.
-  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
-  return dow === 0 || dow === 5 || dow === 6;
+  // Date.UTC parses the calendar date; day-of-week is invariant within the
+  // date so we don't need to offset by HKT for the dow lookup.
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();   // 0=Sun, 6=Sat
+  if (dow === 6 && hourHkt >= 17) return true;   // Sat evening onward
+  if (dow === 0)                  return true;   // Sun all day
+  if (dow === 1 && hourHkt < 17)  return true;   // Mon until 17:00
+  return false;
 }
 
 export function computeRolling(
@@ -429,9 +433,12 @@ export function computeRolling(
   // Filter input rows by regime if requested. Done at the very top so
   // every downstream aggregation honors the split (sample sizes, day
   // counts, danger scores).
+  //
+  // Hour-aware classification — see isHktWeekendHour above. Saturday rows
+  // before 17:00 are weekday; Monday rows before 17:00 are weekend.
   const filtered = regime === 'all'
     ? rows
-    : rows.filter(r => isHktWeekendDate(r.date_hkt) === (regime === 'weekend'));
+    : rows.filter(r => isHktWeekendHour(r.date_hkt, r.hour_hkt) === (regime === 'weekend'));
   const byHour: Map<number, NetworkHourlyRow[]> = new Map();
   for (let h = 0; h < 24; h++) byHour.set(h, []);
   for (const r of filtered) byHour.get(r.hour_hkt)!.push(r);

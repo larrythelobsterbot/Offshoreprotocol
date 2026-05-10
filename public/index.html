@@ -3012,8 +3012,16 @@ async function fetchScheduleEvidence() {
     // Mark which regime "now" is in (label next to tabs).
     const nowEl = document.getElementById('scheduleRegimeNow');
     if (nowEl) {
-      const dow = new Date(Date.now() + 8 * 3600_000).getUTCDay();
-      const isWeekend = dow === 0 || dow === 5 || dow === 6;
+      // Weekend cycle (operator-confirmed): Sat 17:00 HKT → Mon 17:00 HKT.
+      // Saturday and Monday are SPLIT days — half-weekday, half-weekend —
+      // so we need hour granularity, not just day-of-week.
+      const hkt = new Date(Date.now() + 8 * 3600_000);
+      const dow = hkt.getUTCDay();      // 0=Sun, 1=Mon, 6=Sat
+      const hour = hkt.getUTCHours();   // 0..23 in HKT after the +8h shift
+      const isWeekend =
+        (dow === 6 && hour >= 17) ||    // Sat from 17:00
+        (dow === 0)                ||    // Sun all day
+        (dow === 1 && hour < 17);        // Mon until 17:00
       nowEl.textContent = isWeekend ? '· now: WEEKEND' : '· now: WEEKDAY';
       nowEl.style.color = isWeekend ? '#ff9100' : 'var(--dim)';
     }
