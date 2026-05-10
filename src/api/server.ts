@@ -13,6 +13,7 @@ import { logger } from '../logger';
 import type { WalletTracker } from '../feeds/wallet-tracker';
 import { walletLogTag } from '../feeds/wallet-tracker';
 import type { ScheduleEvidenceFeed } from '../feeds/schedule-evidence';
+import type { DirtyFlowFeed } from '../feeds/dirty-flow';
 
 // --- Public-safe state picker (FlowDirty.fun) ---
 // Strips operator-private fields from DashboardState before broadcasting on
@@ -161,6 +162,7 @@ export class ApiServer {
   private onOpStatsChanged?: () => void;
   private walletTracker?: WalletTracker;
   private scheduleEvidence?: ScheduleEvidenceFeed;
+  private dirtyFlow?: DirtyFlowFeed;
 
   constructor(
     storage: Storage,
@@ -168,12 +170,14 @@ export class ApiServer {
     onOpStatsChanged?: () => void,
     walletTracker?: WalletTracker,
     scheduleEvidence?: ScheduleEvidenceFeed,
+    dirtyFlow?: DirtyFlowFeed,
   ) {
     this.storage = storage;
     this.getState = getState;
     this.onOpStatsChanged = onOpStatsChanged;
     this.walletTracker = walletTracker;
     this.scheduleEvidence = scheduleEvidence;
+    this.dirtyFlow = dirtyFlow;
   }
 
   async start() {
@@ -531,6 +535,17 @@ export class ApiServer {
             dirtyPerInf: totals.infBurned > 0 ? totals.dirtyEarned / totals.infBurned : null,
           },
         };
+      }),
+    );
+
+    // DIRTY HEALTH — token flow rollup (mints, burns, sells, buys) over
+    // 24h + 7d windows with trend deltas. The dashboard tile uses this
+    // to surface buy-or-sell-DIRTY decision context.
+    this.app.get(
+      '/api/dirty-health',
+      publicGate(async () => {
+        if (!this.dirtyFlow) return { error: 'Not configured' };
+        return this.dirtyFlow.getHealthSnapshot();
       }),
     );
 

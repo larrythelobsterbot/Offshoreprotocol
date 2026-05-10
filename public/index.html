@@ -1496,6 +1496,52 @@
   </div>
 </div>
 
+<!-- DIRTY HEALTH — token flow rollup. Buy/sell decision context. -->
+<div style="padding: 0 24px 8px;" data-pane="network">
+  <div class="card" id="dirtyHealthCard" style="display:block;padding:12px 16px;border-color:#a855f7;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#a855f7">DIRTY HEALTH</span>
+        <span class="info-pill" title="Network-wide DIRTY ERC-20 Transfer events bucketed by counterparty. Mints (TC rewards) vs burns (Status/packs) = net inflation. DEX sells (to Kumbaya pool) vs DEX buys (from pool) + in-game TradeRouter sells/buys = net sell pressure. Burn capture % = how much emission gets absorbed by upgrades. Refresh every 10 min.">?</span>
+        <span style="margin-left:12px;display:inline-flex;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
+          <button class="dh-tab active" data-window="24h"
+                  onclick="setDirtyHealthWindow('24h')"
+                  style="background:transparent;border:1px solid #a855f7;color:#a855f7;padding:2px 8px;border-radius:3px;cursor:pointer;">24H</button>
+          <button class="dh-tab" data-window="7d"
+                  onclick="setDirtyHealthWindow('7d')"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">7D</button>
+        </span>
+      </div>
+      <div id="dirtyHealthMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading…</div>
+    </div>
+
+    <!-- 4 hero tiles: net inflation · net sell pressure · burn capture · pulse -->
+    <div id="dirtyHealthTiles" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px;">
+      <!-- injected by renderDirtyHealth() -->
+    </div>
+
+    <!-- Flow breakdown table -->
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
+            <th style="text-align:left;padding:4px 8px;">flow</th>
+            <th style="text-align:right;padding:4px 8px;">events</th>
+            <th style="text-align:right;padding:4px 8px;">DIRTY</th>
+            <th style="text-align:right;padding:4px 8px;">~USD</th>
+            <th style="text-align:left;padding:4px 8px;color:var(--dim);font-weight:400;">label</th>
+          </tr>
+        </thead>
+        <tbody id="dirtyHealthFlows"></tbody>
+      </table>
+    </div>
+
+    <div style="margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);line-height:1.5;">
+      <b>Net inflation</b> = mints − burns. Negative = supply contracting. <b>Net sell</b> = (DEX+router sells) − (DEX+router buys); positive = sell pressure, negative = buy support. <b>Burn capture</b> = % of newly-minted DIRTY absorbed by Status/pack burns.
+    </div>
+  </div>
+</div>
+
 <div style="padding: 0 24px 8px;" data-pane="network">
   <div class="card tokenomics-card" id="tokenomicsCard" style="display:none;padding:12px 16px;">
     <div class="tokenomics-header">
@@ -3225,6 +3271,148 @@ function renderStrategyAttribution(d) {
 setAttrWindow(attrWindowHours);
 fetchStrategyAttribution();
 setInterval(fetchStrategyAttribution, 60 * 1000); // refresh every 60s
+
+// ─── DIRTY HEALTH (mint/burn/sell/buy rollup) ─────────────────
+let dirtyHealthWindow = localStorage.getItem('dirty-health-window') || '24h';
+let dirtyHealthData = null;
+
+async function fetchDirtyHealth() {
+  try {
+    const r = await fetch('/api/dirty-health');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.error) return;
+    dirtyHealthData = d;
+    renderDirtyHealth(d);
+  } catch { /* keep last render */ }
+}
+
+function setDirtyHealthWindow(w) {
+  dirtyHealthWindow = w;
+  localStorage.setItem('dirty-health-window', w);
+  document.querySelectorAll('.dh-tab').forEach(btn => {
+    const sel = btn.dataset.window === w;
+    btn.style.borderColor = sel ? '#a855f7' : 'var(--border)';
+    btn.style.color       = sel ? '#a855f7' : 'var(--dim)';
+    btn.classList.toggle('active', sel);
+  });
+  if (dirtyHealthData) renderDirtyHealth(dirtyHealthData);
+}
+
+function renderDirtyHealth(d) {
+  const meta = document.getElementById('dirtyHealthMeta');
+  const tilesEl = document.getElementById('dirtyHealthTiles');
+  const tbody = document.getElementById('dirtyHealthFlows');
+  if (!d || !d.last24h) return;
+
+  // Live DIRTY price for $-conversions. Pull from window.__lastState (the
+  // dashboard already broadcasts dirtyPrice via the WS state); fall back
+  // to null when missing — table just shows '—' in the USD column.
+  const price = (window.__lastState || {}).dirtyPrice?.priceUSD ?? null;
+  const fmtUsd = v => price != null ? '$' + Math.round(v * price).toLocaleString() : '—';
+  const fmtD = v => Math.round(v).toLocaleString();
+  const fmtPct = v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
+
+  const w = dirtyHealthWindow === '7d' ? d.last7d : d.last24h;
+  const trendKey = dirtyHealthWindow === '7d' ? null : d.trend; // trend only meaningful for 24h vs 7d-avg
+  const winLabel = dirtyHealthWindow === '7d' ? '7d total' : 'last 24h';
+  meta.textContent = `${winLabel} · ${d.windowDays}d sample · updated ${new Date(d.generatedAt).toUTCString().slice(17, 22)} UTC`;
+
+  // Hero tiles
+  const trendBadge = (val) => {
+    if (val == null || !isFinite(val)) return '';
+    const color = val > 5 ? '#39ff14' : val < -5 ? '#ff1744' : 'var(--dim)';
+    const arrow = val > 0 ? '▲' : val < 0 ? '▼' : '·';
+    return `<span style="color:${color};font-size:10px;margin-left:6px;">${arrow} ${fmtPct(val)} vs 7d avg</span>`;
+  };
+
+  const inflColor = w.netInflation > 0 ? '#ff9100' : w.netInflation < 0 ? '#39ff14' : 'var(--text-mid)';
+  const inflLabel = w.netInflation > 0 ? 'INFLATING' : w.netInflation < 0 ? 'DEFLATING' : 'NEUTRAL';
+  const sellColor = w.netSell > 0 ? '#ff1744' : w.netSell < 0 ? '#39ff14' : 'var(--text-mid)';
+  const sellLabel = w.netSell > 0 ? 'SELL PRESSURE' : w.netSell < 0 ? 'BUY SUPPORT' : 'BALANCED';
+  const burnColor = w.burnCapturePct == null ? 'var(--dim)'
+                  : w.burnCapturePct >= 80 ? '#39ff14'
+                  : w.burnCapturePct >= 40 ? '#ffe600'
+                  : '#ff9100';
+  const verdictColor = (w.netSell < 0 && w.burnCapturePct >= 50) ? '#39ff14'
+                     : (w.netSell > 0 && w.burnCapturePct < 30) ? '#ff1744'
+                     : '#ffe600';
+  const verdictText = (w.netSell < 0 && w.burnCapturePct >= 50) ? 'HOLD / BUY'
+                    : (w.netSell > 0 && w.burnCapturePct < 30) ? 'CONSIDER SELL'
+                    : 'MIXED';
+
+  const tile = (label, value, sub, color, trend) => `
+    <div style="background:rgba(0,0,0,0.4);border:1px solid var(--border);padding:10px;">
+      <div style="font-size:10px;letter-spacing:0.16em;color:${color};font-weight:600;margin-bottom:6px;">${label}</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:18px;color:var(--text-pure);font-weight:600;line-height:1;">
+        ${value}
+      </div>
+      <div style="font-size:11px;color:var(--text-mid);margin-top:4px;">${sub}${trend || ''}</div>
+    </div>`;
+
+  tilesEl.innerHTML = [
+    tile(
+      'NET INFLATION',
+      (w.netInflation >= 0 ? '+' : '') + fmtD(w.netInflation),
+      `<span style="color:${inflColor};">${inflLabel}</span> · ${fmtUsd(w.netInflation)}`,
+      inflColor,
+      trendBadge(trendKey?.netInflation),
+    ),
+    tile(
+      'NET SELL PRESSURE',
+      (w.netSell >= 0 ? '+' : '') + fmtD(w.netSell),
+      `<span style="color:${sellColor};">${sellLabel}</span> · ${fmtUsd(w.netSell)}`,
+      sellColor,
+      trendBadge(trendKey?.netSell),
+    ),
+    tile(
+      'BURN CAPTURE',
+      w.burnCapturePct == null ? '—' : w.burnCapturePct.toFixed(0) + '%',
+      `${fmtD(w.burns)} / ${fmtD(w.mints)} DIRTY`,
+      burnColor,
+      '',
+    ),
+    tile(
+      'SIGNAL',
+      verdictText,
+      'composite of pressure + capture',
+      verdictColor,
+      '',
+    ),
+  ].join('');
+
+  // Flow breakdown: only show if hourly data is available
+  const hourly = d.hourly || [];
+  const cutoff = Date.now() - (dirtyHealthWindow === '7d' ? 7 * 86400_000 : 86400_000);
+  const inWin = hourly.filter(h => {
+    const [y,m,dd] = h.date_hkt.split('-').map(Number);
+    const tsMs = Date.UTC(y, m-1, dd, h.hour_hkt - 8);
+    return tsMs >= cutoff;
+  });
+  const sum = (key) => inWin.reduce((s, r) => s + (r[key] || 0), 0);
+  const flows = [
+    ['mint (TC + dust)',     sum('mint_dirty'),        sum('mint_count'),        '#39ff14', 'new supply'],
+    ['burn (status/packs)',  sum('burn_dirty'),        sum('burn_count'),        '#a855f7', 'destroyed'],
+    ['DEX sell (→ pool)',    sum('sell_pool_dirty'),   sum('sell_pool_count'),   '#ff1744', 'sell pressure'],
+    ['DEX buy (← pool)',     sum('buy_pool_dirty'),    sum('buy_pool_count'),    '#39ff14', 'buy support'],
+    ['game sell (→ router)', sum('sell_router_dirty'), sum('sell_router_count'), '#ff9100', 'in-game sellDirty'],
+    ['game buy (← router)',  sum('buy_router_dirty'),  sum('buy_router_count'),  '#00e0ff', 'in-game buyDirty'],
+    ['peer (wallet ↔)',      sum('peer_dirty'),        sum('peer_count'),        'var(--dim)', 'OTC / contracts'],
+  ];
+  tbody.innerHTML = flows.map(([label, dirty, count, color, note]) => `
+    <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+      <td style="padding:3px 8px;color:${color};font-weight:600;">${label}</td>
+      <td style="padding:3px 8px;text-align:right;color:var(--text-mid);">${count.toLocaleString()}</td>
+      <td style="padding:3px 8px;text-align:right;color:var(--text-pure);">${fmtD(dirty)}</td>
+      <td style="padding:3px 8px;text-align:right;color:var(--text-mid);">${fmtUsd(dirty)}</td>
+      <td style="padding:3px 8px;color:var(--dim);font-size:10px;">${note}</td>
+    </tr>`).join('');
+}
+
+// Apply persisted selection + initial fetch.
+setDirtyHealthWindow(dirtyHealthWindow);
+fetchDirtyHealth();
+setInterval(fetchDirtyHealth, 5 * 60 * 1000); // refresh every 5min (feed re-scans every 10min)
 
 function renderTokenomics(t) {
   const card = document.getElementById('tokenomicsCard');

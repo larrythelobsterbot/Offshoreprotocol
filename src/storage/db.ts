@@ -115,6 +115,19 @@ export interface NetworkHourlyRow {
   scanned_at: number;           // ms when this row was last upserted
 }
 
+export interface DirtyFlowHourlyRow {
+  date_hkt: string;
+  hour_hkt: number;
+  mint_dirty: number;       mint_count: number;
+  burn_dirty: number;       burn_count: number;
+  sell_pool_dirty: number;  sell_pool_count: number;
+  buy_pool_dirty: number;   buy_pool_count: number;
+  sell_router_dirty: number; sell_router_count: number;
+  buy_router_dirty: number;  buy_router_count: number;
+  peer_dirty: number;       peer_count: number;
+  scanned_at: number;
+}
+
 export interface WhaleCopyRow {
   id?: number;
   ts: number;                       // when whale's copy event was observed
@@ -530,6 +543,36 @@ export class Storage {
       CREATE INDEX IF NOT EXISTS idx_wcl_ts     ON whale_copy_log(ts);
       CREATE INDEX IF NOT EXISTS idx_wcl_whale  ON whale_copy_log(source_whale, ts);
       CREATE INDEX IF NOT EXISTS idx_wcl_status ON whale_copy_log(status, ts);
+
+      -- Hourly DIRTY flow rollup. One row per (HKT date, HKT hour). The
+      -- DirtyFlowFeed scans DIRTY Transfer events and bucketizes by the
+      -- counterparty address — mints/burns hit supply, DEX/router flows
+      -- track sell vs buy pressure. Every metric is in DIRTY (1e18 base
+      -- already divided), event counts let us spot anomalous activity.
+      --
+      -- Used by the DIRTY HEALTH dashboard tile + /api/dirty-health to
+      -- decide whether to buy or sell DIRTY at the current moment.
+      CREATE TABLE IF NOT EXISTS dirty_flow_hourly (
+        date_hkt TEXT NOT NULL,                -- 'YYYY-MM-DD' in HKT
+        hour_hkt INTEGER NOT NULL,             -- 0..23
+        mint_dirty       REAL NOT NULL DEFAULT 0,  -- from=0x0 transfers (TC + dust)
+        mint_count       INTEGER NOT NULL DEFAULT 0,
+        burn_dirty       REAL NOT NULL DEFAULT 0,  -- to=0x0 (Status + pack burns)
+        burn_count       INTEGER NOT NULL DEFAULT 0,
+        sell_pool_dirty  REAL NOT NULL DEFAULT 0,  -- to Kumbaya pool (DEX sells)
+        sell_pool_count  INTEGER NOT NULL DEFAULT 0,
+        buy_pool_dirty   REAL NOT NULL DEFAULT 0,  -- from Kumbaya pool (DEX buys)
+        buy_pool_count   INTEGER NOT NULL DEFAULT 0,
+        sell_router_dirty REAL NOT NULL DEFAULT 0, -- to TradeRouter (in-game sell)
+        sell_router_count INTEGER NOT NULL DEFAULT 0,
+        buy_router_dirty  REAL NOT NULL DEFAULT 0, -- from TradeRouter (in-game buy)
+        buy_router_count  INTEGER NOT NULL DEFAULT 0,
+        peer_dirty       REAL NOT NULL DEFAULT 0,  -- wallet ↔ wallet
+        peer_count       INTEGER NOT NULL DEFAULT 0,
+        scanned_at       INTEGER NOT NULL,
+        PRIMARY KEY (date_hkt, hour_hkt)
+      );
+      CREATE INDEX IF NOT EXISTS idx_dfh_date ON dirty_flow_hourly(date_hkt);
     `);
 
     // Online migration: add inf_cost_per_op column to op_params_history if
@@ -961,6 +1004,67 @@ export class Storage {
     return this.db.prepare(
       `SELECT * FROM network_hourly_stats WHERE scanned_at >= ? ORDER BY date_hkt, hour_hkt`,
     ).all(sinceMs) as NetworkHourlyRow[];
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // DIRTY flow hourly (DirtyFlowFeed)
+  // ────────────────────────────────────────────────────────────
+
+  upsertDirtyFlowHourly(row: DirtyFlowHourlyRow): void {
+    this.db.prepare(`
+      INSERT INTO dirty_flow_hourly
+        (date_hkt, hour_hkt,
+         mint_dirty, mint_count,
+         burn_dirty, burn_count,
+         sell_pool_dirty, sell_pool_count,
+         buy_pool_dirty, buy_pool_count,
+         sell_router_dirty, sell_router_count,
+         buy_router_dirty, buy_router_count,
+         peer_dirty, peer_count,
+         scanned_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(date_hkt, hour_hkt) DO UPDATE SET
+        mint_dirty        = excluded.mint_dirty,
+        mint_count        = excluded.mint_count,
+        burn_dirty        = excluded.burn_dirty,
+        burn_count        = excluded.burn_count,
+        sell_pool_dirty   = excluded.sell_pool_dirty,
+        sell_pool_count   = excluded.sell_pool_count,
+        buy_pool_dirty    = excluded.buy_pool_dirty,
+        buy_pool_count    = excluded.buy_pool_count,
+        sell_router_dirty = excluded.sell_router_dirty,
+        sell_router_count = excluded.sell_router_count,
+        buy_router_dirty  = excluded.buy_router_dirty,
+        buy_router_count  = excluded.buy_router_count,
+        peer_dirty        = excluded.peer_dirty,
+        peer_count        = excluded.peer_count,
+        scanned_at        = excluded.scanned_at
+    `).run(
+      row.date_hkt, row.hour_hkt,
+      row.mint_dirty, row.mint_count,
+      row.burn_dirty, row.burn_count,
+      row.sell_pool_dirty, row.sell_pool_count,
+      row.buy_pool_dirty, row.buy_pool_count,
+      row.sell_router_dirty, row.sell_router_count,
+      row.buy_router_dirty, row.buy_router_count,
+      row.peer_dirty, row.peer_count,
+      row.scanned_at,
+    );
+  }
+
+  /** Pull all DIRTY flow rows since `sinceMs` (chronological). */
+  getDirtyFlowSince(sinceMs: number): DirtyFlowHourlyRow[] {
+    return this.db.prepare(
+      `SELECT * FROM dirty_flow_hourly WHERE scanned_at >= ? ORDER BY date_hkt, hour_hkt`,
+    ).all(sinceMs) as DirtyFlowHourlyRow[];
+  }
+
+  /** Distinct (date,hour) buckets already scanned — for backfill skipping. */
+  getDirtyFlowCollectedHours(): Set<string> {
+    const rows = this.db.prepare(
+      `SELECT date_hkt, hour_hkt FROM dirty_flow_hourly`,
+    ).all() as { date_hkt: string; hour_hkt: number }[];
+    return new Set(rows.map(r => `${r.date_hkt}|${r.hour_hkt}`));
   }
 
   // ────────────────────────────────────────────────────────────

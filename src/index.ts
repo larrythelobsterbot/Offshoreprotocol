@@ -16,6 +16,7 @@ import { WhaleTradesFeed } from './feeds/whale-trades';
 import { WhaleClaimsFeed } from './feeds/whale-claims';
 import { WhaleCopyFeed } from './feeds/whale-copy';
 import { KumbayaLpFeed } from './feeds/kumbaya-lp';
+import { DirtyFlowFeed } from './feeds/dirty-flow';
 import { PolymarketFeed } from './feeds/polymarket';
 import { CoinglassFeed } from './feeds/coinglass';
 import { VolatilityEngine } from './engine/volatility';
@@ -353,6 +354,12 @@ async function main() {
   // Liquidity-shift signal that affects DIRTY price stability.
   const kumbayaLp = new KumbayaLpFeed({ storage });
 
+  // DirtyFlowFeed — hourly DIRTY Transfer scan, bucketed by counterparty
+  // (mint/burn/DEX-sell/DEX-buy/router-sell/router-buy/peer). Drives the
+  // DIRTY HEALTH dashboard tile that tells the operator whether the
+  // network is currently in net buy or sell pressure.
+  const dirtyFlow = new DirtyFlowFeed({ storage });
+
   // WhaleCopyFeed — re-uses the LoadoutScanner's `topBySr` pool (top 5 by
   // 72h SR with min 50 ops + 75% SR), polls those whales' corps every 30s,
   // emits an event whenever any of their corps transitions idle → active.
@@ -382,7 +389,7 @@ async function main() {
     () => ethVelocity.getSnapshot(),
   );
 
-  const server = new ApiServer(storage, () => engine.getState(), onOpStatsChanged, walletTracker, scheduleEvidence);
+  const server = new ApiServer(storage, () => engine.getState(), onOpStatsChanged, walletTracker, scheduleEvidence, dirtyFlow);
 
   // --- Periodic tasks ---
 
@@ -545,6 +552,7 @@ async function main() {
   void whaleTrades.start();
   void whaleClaims.start();
   void kumbayaLp.start();
+  void dirtyFlow.start();
   void whaleCopy.start();
   if (!config.networkHealthDisabled) void networkHealth.start();
   if (!config.ethVelocityDisabled)   ethVelocity.start();
@@ -600,6 +608,7 @@ async function main() {
     whaleTrades.stop();
     whaleClaims.stop();
     kumbayaLp.stop();
+    dirtyFlow.stop();
     whaleCopy.stop();
     networkHealth.stop();
     ethVelocity.stop();
