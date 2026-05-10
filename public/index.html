@@ -1555,17 +1555,24 @@
       </div>
     </div>
 
-    <!-- by_op_type breakdown -->
+    <!-- by_op_type breakdown — adds NETWORK comparison columns when
+         /api/efficiency includes the network field (NetworkOpsFeed) -->
     <div style="overflow-x:auto;">
       <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
         <thead>
           <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
-            <th style="text-align:left;padding:4px 8px;">op_type / strategy</th>
+            <th style="text-align:left;padding:4px 8px;" rowspan="2">op_type / strategy</th>
+            <th colspan="3" style="text-align:center;padding:4px 8px;color:#ffe600;border-bottom:1px dashed rgba(255,230,0,0.3);">YOU</th>
+            <th colspan="3" style="text-align:center;padding:4px 8px;color:#00e0ff;border-bottom:1px dashed rgba(0,224,255,0.3);">NETWORK</th>
+            <th style="text-align:right;padding:4px 8px;color:var(--dim);" rowspan="2">Δ DIRTY/INF</th>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
             <th style="text-align:right;padding:4px 8px;">ops</th>
             <th style="text-align:right;padding:4px 8px;">SR</th>
             <th style="text-align:right;padding:4px 8px;">DIRTY/INF</th>
-            <th style="text-align:right;padding:4px 8px;">avg partial</th>
-            <th style="text-align:right;padding:4px 8px;color:#a855f7;">total DIRTY</th>
+            <th style="text-align:right;padding:4px 8px;">ops</th>
+            <th style="text-align:right;padding:4px 8px;">SR</th>
+            <th style="text-align:right;padding:4px 8px;">DIRTY/INF</th>
           </tr>
         </thead>
         <tbody id="infEfficiencyTbody"></tbody>
@@ -3666,25 +3673,58 @@ function renderInfEfficiency() {
                  style="background:${color};height:${heightPct}%;opacity:0.7;border-radius:1px 1px 0 0;"></div>`;
   }).join('');
 
-  // by_op_type + by_strategy table
-  const rows = [];
-  for (const r of byType) {
-    rows.push({ label: r.op_type.toUpperCase(), color: r.op_type === 'drug' ? '#a855f7' : r.op_type === 'arms' ? '#39ff14' : '#ff1744', ...r });
-  }
-  // by_strategy is sparse but meaningful when present
+  // by_op_type table with NETWORK comparison columns. Network DIRTY/INF
+  // is computed at render time using the live infCostPerOp from the API
+  // response — the feed only stores raw op counts + dirty_paid since
+  // INF cost floats with $DIRTY price.
+  const network = effData.network;
+  const infCostNet = effData.infCostPerOp ?? 9.0;
+  const networkByOpType = network && network.byOpType
+    ? Object.fromEntries(network.byOpType.map(r => [r.op_type, r]))
+    : {};
+  // Helper: derive network DIRTY/INF for an op type
+  const netDpi = (n) => n && n.ops > 0 ? n.dirty_paid / (n.ops * infCostNet) : null;
+
+  // Strategy rows don't have network counterparts, so omit network cols
+  const rows = byType.map(r => ({
+    label: r.op_type.toUpperCase(),
+    color: r.op_type === 'drug' ? '#a855f7' : r.op_type === 'arms' ? '#39ff14' : '#ff1744',
+    isOpType: true,
+    ...r,
+  }));
   for (const r of effData.by_strategy || []) {
-    rows.push({ label: r.strategy, color: '#00e0ff', ...r });
+    rows.push({ label: r.strategy, color: '#00e0ff', isOpType: false, ...r });
   }
   rows.sort((a, b) => b.dirty_per_inf - a.dirty_per_inf);
-  tbody.innerHTML = rows.map(r => `
+
+  tbody.innerHTML = rows.map(r => {
+    const net = r.isOpType ? networkByOpType[r.op_type] : null;
+    const netDpiVal = netDpi(net);
+    const youDpi = r.dirty_per_inf;
+    // Delta column: positive means you're beating the network, negative
+    // means lagging. null when network sample not yet ready.
+    let deltaCell = '<td style="padding:3px 8px;text-align:right;color:var(--dim);">—</td>';
+    if (netDpiVal != null && netDpiVal > 0) {
+      const delta = ((youDpi - netDpiVal) / netDpiVal) * 100;
+      const color = delta >= 5 ? '#39ff14' : delta <= -5 ? '#ff1744' : 'var(--text-mid)';
+      const sign = delta >= 0 ? '+' : '';
+      deltaCell = `<td style="padding:3px 8px;text-align:right;color:${color};font-weight:600;">${sign}${delta.toFixed(1)}%</td>`;
+    }
+    const netOps = net ? net.ops.toLocaleString() : '—';
+    const netSr  = net && net.ops > 0 ? `${(net.sr * 100).toFixed(1)}%` : '—';
+    const netDpiStr = netDpiVal != null ? netDpiVal.toFixed(2) : '—';
+    return `
     <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
       <td style="padding:3px 8px;color:${r.color};font-weight:600;">${r.label}</td>
       <td style="padding:3px 8px;text-align:right;color:var(--text-mid);">${r.ops}</td>
       <td style="padding:3px 8px;text-align:right;">${(r.sr * 100).toFixed(1)}%</td>
-      <td style="padding:3px 8px;text-align:right;color:var(--text-pure);font-weight:600;">${r.dirty_per_inf.toFixed(2)}</td>
-      <td style="padding:3px 8px;text-align:right;color:var(--text-mid);">${r.avg_partial_payout.toFixed(1)}</td>
-      <td style="padding:3px 8px;text-align:right;color:#a855f7;">${r.dirty_earned.toFixed(0)}</td>
-    </tr>`).join('');
+      <td style="padding:3px 8px;text-align:right;color:#ffe600;font-weight:600;">${r.dirty_per_inf.toFixed(2)}</td>
+      <td style="padding:3px 8px;text-align:right;color:var(--text-mid);">${netOps}</td>
+      <td style="padding:3px 8px;text-align:right;">${netSr}</td>
+      <td style="padding:3px 8px;text-align:right;color:#00e0ff;font-weight:600;">${netDpiStr}</td>
+      ${deltaCell}
+    </tr>`;
+  }).join('');
 
   if (effData.sampleNote) {
     noteEl.style.display = 'block';

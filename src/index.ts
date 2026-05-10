@@ -17,6 +17,7 @@ import { WhaleClaimsFeed } from './feeds/whale-claims';
 import { WhaleCopyFeed } from './feeds/whale-copy';
 import { KumbayaLpFeed } from './feeds/kumbaya-lp';
 import { DirtyFlowFeed } from './feeds/dirty-flow';
+import { NetworkOpsFeed } from './feeds/network-ops';
 import { PolymarketFeed } from './feeds/polymarket';
 import { CoinglassFeed } from './feeds/coinglass';
 import { VolatilityEngine } from './engine/volatility';
@@ -360,6 +361,12 @@ async function main() {
   // network is currently in net buy or sell pressure.
   const dirtyFlow = new DirtyFlowFeed({ storage });
 
+  // NetworkOpsFeed — network-wide ops by op_type, resolved via historical
+  // eth_call (cached). Drives the "your DIRTY/INF vs network" comparison
+  // columns on the INF EFFICIENCY tile. Backfills 7 days on first start
+  // (~3min, cached afterwards).
+  const networkOps = new NetworkOpsFeed({ storage });
+
   // WhaleCopyFeed — re-uses the LoadoutScanner's `topBySr` pool (top 5 by
   // 72h SR with min 50 ops + 75% SR), polls those whales' corps every 30s,
   // emits an event whenever any of their corps transitions idle → active.
@@ -399,6 +406,7 @@ async function main() {
     // Schedule auditor reads the live 24-element preset array. Closure
     // — picks up runtime edits via /bot schedule without a restart.
     () => corpBot.getSchedule(),
+    networkOps,
   );
 
   // --- Periodic tasks ---
@@ -617,6 +625,7 @@ async function main() {
   void whaleClaims.start();
   void kumbayaLp.start();
   void dirtyFlow.start();
+  void networkOps.start();
   void whaleCopy.start();
   if (!config.networkHealthDisabled) void networkHealth.start();
   if (!config.ethVelocityDisabled)   ethVelocity.start();
@@ -673,6 +682,7 @@ async function main() {
     whaleClaims.stop();
     kumbayaLp.stop();
     dirtyFlow.stop();
+    networkOps.stop();
     whaleCopy.stop();
     networkHealth.stop();
     ethVelocity.stop();

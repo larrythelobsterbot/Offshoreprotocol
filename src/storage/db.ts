@@ -115,6 +115,26 @@ export interface NetworkHourlyRow {
   scanned_at: number;           // ms when this row was last upserted
 }
 
+export interface NetworkOpsHourlyRow {
+  date_hkt: string;
+  hour_hkt: number;
+  op_type: 'extortion' | 'arms' | 'drug' | 'unknown';
+  completed_count: number;
+  liquidated_count: number;
+  dirty_paid: number;
+  scanned_at: number;
+}
+
+export interface NetworkOpEventModeRow {
+  tx_hash: string;
+  log_index: number;
+  op_type: 'extortion' | 'arms' | 'drug' | 'unknown';
+  mode: number | null;
+  duration_sec: number | null;
+  block_number: number;
+  ts: number;
+}
+
 export interface DirtyFlowHourlyRow {
   date_hkt: string;
   hour_hkt: number;
@@ -543,6 +563,45 @@ export class Storage {
       CREATE INDEX IF NOT EXISTS idx_wcl_ts     ON whale_copy_log(ts);
       CREATE INDEX IF NOT EXISTS idx_wcl_whale  ON whale_copy_log(source_whale, ts);
       CREATE INDEX IF NOT EXISTS idx_wcl_status ON whale_copy_log(status, ts);
+
+      -- Network-wide ops by op_type, hourly rollup. One row per
+      -- (HKT date, HKT hour, op_type). The NetworkOpsFeed scans every
+      -- TC + TL event network-wide, looks up the corp's tradeInfo() at
+      -- the block before the event via historical eth_call, and groups
+      -- by op_type. This gives us a TRUSTED per-op-type breakdown
+      -- network-wide (vs the unreliable TL-duration classification in
+      -- network_hourly_stats which only sees time-to-liquidation).
+      --
+      -- Powers the "your DIRTY/INF vs network" comparison columns on
+      -- the INF EFFICIENCY dashboard tile.
+      CREATE TABLE IF NOT EXISTS network_ops_hourly (
+        date_hkt TEXT NOT NULL,
+        hour_hkt INTEGER NOT NULL,
+        op_type TEXT NOT NULL CHECK(op_type IN ('extortion','arms','drug','unknown')),
+        completed_count INTEGER NOT NULL DEFAULT 0,    -- TC events of this op_type
+        liquidated_count INTEGER NOT NULL DEFAULT 0,   -- TL events of this op_type
+        dirty_paid REAL NOT NULL DEFAULT 0,            -- sum of TC reward + TL partial
+        scanned_at INTEGER NOT NULL,
+        PRIMARY KEY (date_hkt, hour_hkt, op_type)
+      );
+      CREATE INDEX IF NOT EXISTS idx_noh_date ON network_ops_hourly(date_hkt);
+
+      -- Cache for the historical eth_call lookup. One row per (tx_hash,
+      -- log_index) with the resolved op_type + raw mode + duration.
+      -- Lookups are stable once a block is finalized so we never need
+      -- to re-fetch — keeps backfill resumable AND idempotent across
+      -- re-scans.
+      CREATE TABLE IF NOT EXISTS network_op_event_mode (
+        tx_hash TEXT NOT NULL,
+        log_index INTEGER NOT NULL,
+        op_type TEXT NOT NULL CHECK(op_type IN ('extortion','arms','drug','unknown')),
+        mode INTEGER,                       -- raw mode 0/1/2 or NULL when read failed
+        duration_sec INTEGER,               -- full-window duration (TC) or time-to-liq (TL)
+        block_number INTEGER NOT NULL,
+        ts INTEGER NOT NULL,                -- ms, derived from block delta
+        PRIMARY KEY (tx_hash, log_index)
+      );
+      CREATE INDEX IF NOT EXISTS idx_noem_block ON network_op_event_mode(block_number);
 
       -- Hourly DIRTY flow rollup. One row per (HKT date, HKT hour). The
       -- DirtyFlowFeed scans DIRTY Transfer events and bucketizes by the
@@ -1004,6 +1063,73 @@ export class Storage {
     return this.db.prepare(
       `SELECT * FROM network_hourly_stats WHERE scanned_at >= ? ORDER BY date_hkt, hour_hkt`,
     ).all(sinceMs) as NetworkHourlyRow[];
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Network ops hourly + per-event mode cache (NetworkOpsFeed)
+  // ────────────────────────────────────────────────────────────
+
+  /**
+   * Look up the cached op_type for a TC/TL event. Returns null when
+   * never resolved. Used by the feed to skip historical eth_calls on
+   * re-scan.
+   */
+  getNetworkOpEventMode(txHash: string, logIndex: number): NetworkOpEventModeRow | null {
+    return (this.db.prepare(
+      `SELECT * FROM network_op_event_mode WHERE tx_hash = ? AND log_index = ?`,
+    ).get(txHash, logIndex) as NetworkOpEventModeRow | undefined) ?? null;
+  }
+
+  /** Persist a resolved event lookup for the cache. */
+  insertNetworkOpEventMode(rows: NetworkOpEventModeRow[]): void {
+    if (rows.length === 0) return;
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO network_op_event_mode
+        (tx_hash, log_index, op_type, mode, duration_sec, block_number, ts)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    const txn = this.db.transaction((items: NetworkOpEventModeRow[]) => {
+      for (const r of items) stmt.run(
+        r.tx_hash, r.log_index, r.op_type, r.mode, r.duration_sec, r.block_number, r.ts,
+      );
+    });
+    txn(rows);
+  }
+
+  /**
+   * Upsert a network ops hourly bucket. Caller pre-aggregates the
+   * (completed, liquidated, dirty_paid) for a (date, hour, op_type)
+   * tuple before calling — every upsert REPLACES the existing row's
+   * counts, so this is idempotent for re-scans of the same hour.
+   */
+  upsertNetworkOpsHourly(row: NetworkOpsHourlyRow): void {
+    this.db.prepare(`
+      INSERT INTO network_ops_hourly
+        (date_hkt, hour_hkt, op_type, completed_count, liquidated_count, dirty_paid, scanned_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(date_hkt, hour_hkt, op_type) DO UPDATE SET
+        completed_count  = excluded.completed_count,
+        liquidated_count = excluded.liquidated_count,
+        dirty_paid       = excluded.dirty_paid,
+        scanned_at       = excluded.scanned_at
+    `).run(
+      row.date_hkt, row.hour_hkt, row.op_type,
+      row.completed_count, row.liquidated_count, row.dirty_paid, row.scanned_at,
+    );
+  }
+
+  /** Pull all network ops rows since `sinceMs` (by scanned_at). */
+  getNetworkOpsSince(sinceMs: number): NetworkOpsHourlyRow[] {
+    return this.db.prepare(
+      `SELECT * FROM network_ops_hourly WHERE scanned_at >= ? ORDER BY date_hkt, hour_hkt`,
+    ).all(sinceMs) as NetworkOpsHourlyRow[];
+  }
+
+  /** Cache stats — used to surface backfill progress in API responses. */
+  getNetworkOpsCacheSize(): number {
+    return (this.db.prepare(
+      `SELECT COUNT(*) AS n FROM network_op_event_mode`,
+    ).get() as { n: number }).n;
   }
 
   // ────────────────────────────────────────────────────────────

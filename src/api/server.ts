@@ -14,6 +14,7 @@ import type { WalletTracker } from '../feeds/wallet-tracker';
 import { walletLogTag } from '../feeds/wallet-tracker';
 import type { ScheduleEvidenceFeed } from '../feeds/schedule-evidence';
 import type { DirtyFlowFeed } from '../feeds/dirty-flow';
+import type { NetworkOpsFeed } from '../feeds/network-ops';
 import { computeEfficiency, computeScheduleAudit } from '../engine/efficiency';
 
 // --- Public-safe state picker (FlowDirty.fun) ---
@@ -168,6 +169,7 @@ export class ApiServer {
   // reference) so the schedule auditor can read the live 24-element
   // array without coupling the API server to the trading bot.
   private getSchedule?: () => string[];
+  private networkOps?: NetworkOpsFeed;
 
   constructor(
     storage: Storage,
@@ -177,6 +179,7 @@ export class ApiServer {
     scheduleEvidence?: ScheduleEvidenceFeed,
     dirtyFlow?: DirtyFlowFeed,
     getSchedule?: () => string[],
+    networkOps?: NetworkOpsFeed,
   ) {
     this.storage = storage;
     this.getState = getState;
@@ -185,6 +188,7 @@ export class ApiServer {
     this.scheduleEvidence = scheduleEvidence;
     this.dirtyFlow = dirtyFlow;
     this.getSchedule = getSchedule;
+    this.networkOps = networkOps;
   }
 
   async start() {
@@ -577,7 +581,24 @@ export class ApiServer {
       publicGate(async (req: any) => {
         const hours = req.query?.hours ? Number(req.query.hours) : 24;
         const regime = (req.query?.regime ?? 'all') as 'all' | 'weekday' | 'weekend' | 'split';
-        return computeEfficiency(this.storage, { windowHours: hours, regime });
+        const operator = computeEfficiency(this.storage, { windowHours: hours, regime });
+        // Inject the network-wide snapshot so the dashboard can show
+        // "your DIRTY/INF vs network DIRTY/INF" per op_type/hour.
+        // Network DIRTY/INF computed at API time using the live INF
+        // cost from the latest op_params snapshot (so it stays current
+        // as the contract recalibrates leverage).
+        const network = this.networkOps?.getSnapshot(hours) ?? null;
+        // Read latest INF cost — it floats with $DIRTY price, so a
+        // cached value in NetworkOpsFeed would go stale fast.
+        const latestParams = this.storage.getLatestOpParams();
+        // op_params row ts is in ms; we want the most recent inf_cost across all 3 modes
+        const infCostPerOp = (() => {
+          const all = [latestParams[0], latestParams[1], latestParams[2]]
+            .filter(p => p?.inf_cost_per_op != null)
+            .sort((a, b) => (b!.ts ?? 0) - (a!.ts ?? 0));
+          return all[0]?.inf_cost_per_op ?? 5.0;
+        })();
+        return { ...operator, network, infCostPerOp };
       }),
     );
 

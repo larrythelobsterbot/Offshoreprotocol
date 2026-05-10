@@ -6,7 +6,11 @@ module.exports = {
     instances: 1,
     autorestart: true,
     watch: false,
-    max_memory_restart: '768M',
+    // Bumped 2026-05-10 from 768M for the NetworkOpsFeed 7d backfill
+    // (~133K events × resolution metadata briefly pushes RSS past 768M
+    // on first run). Steady-state usage is still ~400-500M; the larger
+    // cap is just headroom for backfill spikes.
+    max_memory_restart: '1200M',
     env: {
       NODE_ENV: 'production',
       PORT: 3456,
