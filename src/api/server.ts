@@ -572,6 +572,37 @@ export class ApiServer {
       }),
     );
 
+    // BURN-VS-CLAIM — operator-only economics tile. Pairs each whale_claims
+    // row (operator's USDm claims) with the INF burned in the 8h pre-claim
+    // window so we can see "are vault claims actually covering my INF
+    // spend?". Aggregate computes daily/weekly run rates from first to
+    // last claim. INF/USDm is 1:1 peg so window_inf_burned == cost_usdm.
+    this.app.get<{ Querystring: { days?: string } }>(
+      '/api/burn-vs-claim',
+      {
+        schema: {
+          querystring: {
+            type: 'object',
+            properties: {
+              days: { type: 'integer', minimum: 1, maximum: 90 },
+            },
+          },
+        },
+      },
+      publicGate(async (req: any) => {
+        const days = req.query?.days ? Number(req.query.days) : 14;
+        const result = this.storage.getOperatorBurnVsClaim({
+          operator: config.walletAddress,
+          days,
+        });
+        return jsonSafeInfinity({
+          windowDays: days,
+          generatedAt: Date.now(),
+          ...result,
+        });
+      }),
+    );
+
     // DIRTY HEALTH — token flow rollup (mints, burns, sells, buys) over
     // 24h + 7d windows with trend deltas. The dashboard tile uses this
     // to surface buy-or-sell-DIRTY decision context.

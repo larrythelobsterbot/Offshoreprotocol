@@ -945,6 +945,152 @@ export class Storage {
     });
   }
 
+  // ────────────────────────────────────────────────────────────
+  // Burn-vs-Claim — operator's per-cycle USDm income vs INF cost
+  // ────────────────────────────────────────────────────────────
+
+  /**
+   * Per-cycle accounting for the operator: each whale_claims row pairs
+   * with the INF burned during the 8-hour window ending at the claim ts.
+   * Lets us see if cycle USDm income is keeping up with INF spend
+   * (the "is the flywheel self-sustaining?" question).
+   *
+   * INF burned is in USDm-equivalent because the protocol pegs INF 1:1
+   * to USDm (verified empirically across 30 buy txs on chain).
+   *
+   * Caveats:
+   *   • The 8h pre-claim window is approximate — ops at cycle boundaries
+   *     can leak into adjacent cycles. For aggregate trends this is fine
+   *     (errors cancel); per-row noise is real.
+   *   • If the operator skipped claiming a cycle (no whale_claims row),
+   *     it's not represented here. Aggregate `windowDaily*` is computed
+   *     across the entire span from first claim to last, so it captures
+   *     all INF burn even when claims are sparse.
+   *   • inf_burned is post-fix (refund-on-success modeled). Pre-fix
+   *     rows have inf_burned=null until backfilled.
+   */
+  getOperatorBurnVsClaim(opts: { operator: string; days?: number }): {
+    cycles: Array<{
+      cycle_id: number;
+      claim_ts: number;
+      claim_usdm: number;
+      window_inf_burned: number;
+      window_inf_cost_usdm: number;   // inf_burned × 1.0 (peg)
+      window_ops: number;
+      window_wins: number;
+      window_dirty_earned: number;
+      net_usdm: number;               // claim - inf_cost
+      coverage_pct: number | null;    // claim / inf_cost × 100
+    }>;
+    aggregate: {
+      cycles_claimed: number;
+      span_days: number;
+      total_claim: number;
+      total_inf_burned: number;
+      total_dirty_earned: number;
+      claim_per_day: number;
+      inf_per_day: number;
+      net_per_day: number;
+      claim_per_week: number;
+      inf_per_week: number;
+      net_per_week: number;
+      coverage_pct: number | null;
+    };
+  } {
+    const operator = opts.operator.toLowerCase();
+    const sinceMs = opts.days ? Date.now() - opts.days * 86400_000 : 0;
+
+    const claims = this.db.prepare(`
+      SELECT cycle_id, ts as claim_ts, usdm_amount AS claim_usdm
+        FROM whale_claims
+       WHERE LOWER(claimer) = ? AND ts >= ?
+       ORDER BY ts ASC
+    `).all(operator, sinceMs) as Array<{ cycle_id: number; claim_ts: number; claim_usdm: number }>;
+
+    const cycles = claims.map(c => {
+      // 8h pre-claim window for ops attribution
+      const windowStart = c.claim_ts - 8 * 3600_000;
+      const ops = this.db.prepare(`
+        SELECT COUNT(*) AS n,
+               SUM(CASE WHEN succeeded = 1 THEN 1 ELSE 0 END) AS wins,
+               SUM(COALESCE(inf_burned, 0)) AS burned,
+               SUM(dirty_earned) AS dirty
+          FROM op_outcomes
+         WHERE ts >= ? AND ts <= ?
+      `).get(windowStart, c.claim_ts) as {
+        n: number; wins: number; burned: number; dirty: number;
+      };
+      const burnUsdm = ops.burned;  // 1:1 peg
+      const net = c.claim_usdm - burnUsdm;
+      const coverage = burnUsdm > 0 ? (c.claim_usdm / burnUsdm) * 100 : null;
+      return {
+        cycle_id: c.cycle_id,
+        claim_ts: c.claim_ts,
+        claim_usdm: c.claim_usdm,
+        window_inf_burned: ops.burned,
+        window_inf_cost_usdm: burnUsdm,
+        window_ops: ops.n,
+        window_wins: ops.wins,
+        window_dirty_earned: ops.dirty,
+        net_usdm: net,
+        coverage_pct: coverage,
+      };
+    });
+
+    // Aggregate from first claim to last claim, regardless of per-cycle
+    // window noise. This gives the most accurate "what's the daily run
+    // rate" answer because it covers ALL ops in the span, not just ones
+    // happening to fall within a per-cycle 8h window.
+    let aggregate;
+    if (claims.length < 2) {
+      aggregate = {
+        cycles_claimed: claims.length,
+        span_days: 0,
+        total_claim: claims[0]?.claim_usdm ?? 0,
+        total_inf_burned: 0,
+        total_dirty_earned: 0,
+        claim_per_day: 0,
+        inf_per_day: 0,
+        net_per_day: 0,
+        claim_per_week: 0,
+        inf_per_week: 0,
+        net_per_week: 0,
+        coverage_pct: null as number | null,
+      };
+    } else {
+      const first = claims[0].claim_ts;
+      const last = claims[claims.length - 1].claim_ts;
+      const spanDays = (last - first) / 86400_000;
+      const totalClaim = claims.reduce((s, c) => s + c.claim_usdm, 0);
+      const allOps = this.db.prepare(`
+        SELECT COUNT(*) AS n,
+               SUM(COALESCE(inf_burned, 0)) AS burned,
+               SUM(dirty_earned) AS dirty
+          FROM op_outcomes
+         WHERE ts >= ? AND ts <= ?
+      `).get(first, last) as { n: number; burned: number; dirty: number };
+      const claimPerDay = totalClaim / spanDays;
+      const burnPerDay = allOps.burned / spanDays;
+      const coverage = allOps.burned > 0 ? (totalClaim / allOps.burned) * 100 : null;
+      aggregate = {
+        cycles_claimed: claims.length,
+        span_days: spanDays,
+        total_claim: totalClaim,
+        total_inf_burned: allOps.burned,
+        total_dirty_earned: allOps.dirty,
+        claim_per_day: claimPerDay,
+        inf_per_day: burnPerDay,
+        net_per_day: claimPerDay - burnPerDay,
+        claim_per_week: claimPerDay * 7,
+        inf_per_week: burnPerDay * 7,
+        net_per_week: (claimPerDay - burnPerDay) * 7,
+        coverage_pct: coverage,
+      };
+    }
+
+    return { cycles, aggregate };
+  }
+
   // --- Queries ---
 
   getTicksSince(since: number): StoredTick[] {

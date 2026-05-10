@@ -1496,6 +1496,60 @@
   </div>
 </div>
 
+<!-- BURN VS CLAIM — operator's vault claims paired with INF burned in
+     each cycle's 8h pre-claim window. Headline question: "are claims
+     covering my INF spend?". 1:1 USDm/INF peg, so all numbers are USDm. -->
+<div style="padding: 0 24px 8px;" data-pane="ops">
+  <div class="card" id="burnVsClaimCard" style="display:block;padding:12px 16px;border-color:#ff9100;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#ff9100">BURN VS CLAIM</span>
+        <span class="info-pill" title="Per-cycle: USDm claimed vs INF burned in the 8h pre-claim window. INF/USDm is 1:1 peg, so 'cost' = inf_burned. Coverage = claim/cost — above 100% means the cycle paid for itself. Aggregate run rate spans first claim to last claim across ALL ops in window.">?</span>
+        <span style="margin-left:12px;display:inline-flex;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
+          <button class="bvc-win" data-days="7"
+                  onclick="setBvcWindow(7)"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">7D</button>
+          <button class="bvc-win active" data-days="14"
+                  onclick="setBvcWindow(14)"
+                  style="background:transparent;border:1px solid #ff9100;color:#ff9100;padding:2px 8px;border-radius:3px;cursor:pointer;">14D</button>
+          <button class="bvc-win" data-days="30"
+                  onclick="setBvcWindow(30)"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">30D</button>
+        </span>
+      </div>
+      <div id="burnVsClaimMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading…</div>
+    </div>
+
+    <!-- Aggregate hero tiles: claim/wk · burn/wk · net/wk · coverage -->
+    <div id="burnVsClaimTiles" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px;">
+      <!-- injected -->
+    </div>
+
+    <!-- Per-cycle table -->
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
+            <th style="text-align:left;padding:4px 8px;">cycle</th>
+            <th style="text-align:left;padding:4px 8px;">claimed</th>
+            <th style="text-align:right;padding:4px 8px;color:#00ff88;">USDm</th>
+            <th style="text-align:right;padding:4px 8px;color:#ff9100;">INF burned</th>
+            <th style="text-align:right;padding:4px 8px;">ops</th>
+            <th style="text-align:right;padding:4px 8px;">SR</th>
+            <th style="text-align:right;padding:4px 8px;color:#ffe600;">net</th>
+            <th style="text-align:right;padding:4px 8px;">coverage</th>
+          </tr>
+        </thead>
+        <tbody id="burnVsClaimTbody"></tbody>
+      </table>
+    </div>
+    <div style="margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);line-height:1.5;">
+      <b>net</b> = claim − inf_cost (USDm, 1:1 peg). <b>coverage</b> = claim/cost. Above 100% → cycle paid for itself.
+      Pool capture grows with Enterprise share, so coverage trending up = strategy working.
+    </div>
+  </div>
+</div>
+
 <!-- INF EFFICIENCY — DIRTY/INF rollup + schedule auditor on OPS tab. -->
 <div style="padding: 0 24px 8px;" data-pane="ops">
   <div class="card" id="infEfficiencyCard" style="display:block;padding:12px 16px;border-color:#ffe600;">
@@ -3396,6 +3450,108 @@ function renderStrategyAttribution(d) {
 setAttrWindow(attrWindowHours);
 fetchStrategyAttribution();
 setInterval(fetchStrategyAttribution, 60 * 1000); // refresh every 60s
+
+// ─── BURN VS CLAIM (operator's USDm claims paired with INF burned) ────
+let bvcWindowDays = parseInt(localStorage.getItem('bvc-window') || '14', 10);
+async function fetchBurnVsClaim() {
+  try {
+    const r = await fetch(`/api/burn-vs-claim?days=${bvcWindowDays}`);
+    if (!r.ok) return;
+    const d = restoreInfinity(await r.json());
+    if (d.error) return;
+    renderBurnVsClaim(d);
+  } catch { /* keep last render */ }
+}
+function setBvcWindow(days) {
+  bvcWindowDays = days;
+  localStorage.setItem('bvc-window', String(days));
+  document.querySelectorAll('.bvc-win').forEach(btn => {
+    const sel = parseInt(btn.dataset.days, 10) === days;
+    btn.style.borderColor = sel ? '#ff9100' : 'var(--border)';
+    btn.style.color       = sel ? '#ff9100' : 'var(--dim)';
+    btn.classList.toggle('active', sel);
+  });
+  fetchBurnVsClaim();
+}
+function renderBurnVsClaim(d) {
+  const meta  = document.getElementById('burnVsClaimMeta');
+  const tiles = document.getElementById('burnVsClaimTiles');
+  const tbody = document.getElementById('burnVsClaimTbody');
+  if (!d || !d.aggregate) return;
+
+  const a = d.aggregate;
+  const fmtUsd = (v) => {
+    if (v == null || !Number.isFinite(v)) return '—';
+    const sign = v < 0 ? '-' : '';
+    const abs = Math.abs(v);
+    if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(2)}k`;
+    return `${sign}$${abs.toFixed(2)}`;
+  };
+  const fmtCov = (p) => {
+    if (p == null) return '—';
+    if (!Number.isFinite(p)) return '∞';
+    return `${p.toFixed(0)}%`;
+  };
+  const colorNet = (n) => n == null ? 'var(--dim)' : (n >= 0 ? '#39ff14' : '#ff1744');
+  const colorCov = (p) => {
+    if (p == null) return 'var(--dim)';
+    if (!Number.isFinite(p) || p >= 100) return '#39ff14';
+    if (p >= 75) return '#ffe600';
+    if (p >= 50) return '#ff9100';
+    return '#ff1744';
+  };
+
+  meta.textContent = `${d.windowDays}d window · ${a.cycles_claimed} claim${a.cycles_claimed === 1 ? '' : 's'}`
+    + (a.span_days > 0 ? ` over ${a.span_days.toFixed(1)}d` : '');
+
+  // Hero tiles — weekly run rate is the headline metric (ROI cadence)
+  const tile = (label, value, color, sub) => `
+    <div style="background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:6px;padding:10px 12px;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:0.16em;color:var(--dim);margin-bottom:4px;">${label}</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:18px;font-weight:700;color:${color};">${value}</div>
+      ${sub ? `<div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);margin-top:2px;">${sub}</div>` : ''}
+    </div>`;
+  tiles.innerHTML = [
+    tile('CLAIM / WK',   fmtUsd(a.claim_per_week), '#00ff88', `${fmtUsd(a.claim_per_day)}/d`),
+    tile('BURN / WK',    fmtUsd(a.inf_per_week),   '#ff9100', `${fmtUsd(a.inf_per_day)}/d`),
+    tile('NET / WK',     fmtUsd(a.net_per_week),   colorNet(a.net_per_week), `${fmtUsd(a.net_per_day)}/d`),
+    tile('COVERAGE',     fmtCov(a.coverage_pct),   colorCov(a.coverage_pct), a.coverage_pct == null ? 'no burn' : 'claim ÷ cost'),
+  ].join('');
+
+  if (!d.cycles || d.cycles.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" style="padding:16px;text-align:center;color:var(--dim);">
+      No claims in this window. Vault claims appear here as they happen.
+    </td></tr>`;
+    return;
+  }
+
+  // Newest first in the table
+  const cycles = [...d.cycles].sort((x, y) => y.claim_ts - x.claim_ts);
+  const fmtTs = (t) => {
+    const dt = new Date(t);
+    return dt.toLocaleString('en-GB', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  };
+  tbody.innerHTML = cycles.map(c => {
+    const sr = c.window_ops > 0 ? c.window_wins / c.window_ops : null;
+    const srColor = sr == null ? 'var(--dim)'
+      : sr >= 0.65 ? '#39ff14'
+      : sr >= 0.45 ? '#ffe600'
+      : sr >= 0.30 ? '#ff9100' : '#ff1744';
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+      <td style="padding:3px 8px;font-weight:600;">#${c.cycle_id}</td>
+      <td style="padding:3px 8px;color:var(--dim);">${fmtTs(c.claim_ts)}</td>
+      <td style="padding:3px 8px;text-align:right;color:#00ff88;">${fmtUsd(c.claim_usdm)}</td>
+      <td style="padding:3px 8px;text-align:right;color:#ff9100;">${fmtUsd(c.window_inf_cost_usdm)}</td>
+      <td style="padding:3px 8px;text-align:right;color:var(--text-mid);">${c.window_ops}</td>
+      <td style="padding:3px 8px;text-align:right;color:${srColor};">${sr == null ? '—' : (sr * 100).toFixed(0) + '%'}</td>
+      <td style="padding:3px 8px;text-align:right;font-weight:600;color:${colorNet(c.net_usdm)};">${fmtUsd(c.net_usdm)}</td>
+      <td style="padding:3px 8px;text-align:right;color:${colorCov(c.coverage_pct)};">${fmtCov(c.coverage_pct)}</td>
+    </tr>`;
+  }).join('');
+}
+setBvcWindow(bvcWindowDays);
+fetchBurnVsClaim();
+setInterval(fetchBurnVsClaim, 60 * 1000); // refresh every 60s
 
 // ─── DIRTY HEALTH (mint/burn/sell/buy rollup) ─────────────────
 let dirtyHealthWindow = localStorage.getItem('dirty-health-window') || '24h';
