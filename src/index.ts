@@ -389,7 +389,17 @@ async function main() {
     () => ethVelocity.getSnapshot(),
   );
 
-  const server = new ApiServer(storage, () => engine.getState(), onOpStatsChanged, walletTracker, scheduleEvidence, dirtyFlow);
+  const server = new ApiServer(
+    storage,
+    () => engine.getState(),
+    onOpStatsChanged,
+    walletTracker,
+    scheduleEvidence,
+    dirtyFlow,
+    // Schedule auditor reads the live 24-element preset array. Closure
+    // — picks up runtime edits via /bot schedule without a restart.
+    () => corpBot.getSchedule(),
+  );
 
   // --- Periodic tasks ---
 
@@ -512,6 +522,10 @@ async function main() {
   // and tracks last-fired-day so we never double-fire and never miss a
   // day across pm2 restarts.
   let lastDigestDate: string | null = null;
+  // Schedule audit alert dedup: per-slot key → { date sent, last delta_pct }
+  // so we don't ping the operator about the same slot two days in a row
+  // unless it got materially worse.
+  const lastAuditAlerts = new Map<string, { date: string; deltaPct: number }>();
   setInterval(async () => {
     const now = new Date();
     const hour = now.getUTCHours();
@@ -533,6 +547,56 @@ async function main() {
         logger.info({ date: todayKey }, '[Broadcaster] daily digest sent');
       } catch (err: any) {
         logger.warn({ err: err.message }, '[Broadcaster] daily digest failed');
+      }
+
+      // Schedule audit DM — runs alongside the digest. Pulls the last 48h
+      // of slot performance and DMs the operator about any slot
+      // underperforming Drug by >15% with sample ≥10 ops. Per-slot dedup
+      // prevents two-days-in-a-row pings unless the slot got worse.
+      try {
+        if (config.operatorChatId) {
+          const { computeScheduleAudit } = await import('./engine/efficiency');
+          const audit = computeScheduleAudit(storage, corpBot.getSchedule(), {
+            windowHours: 48,
+            minOpsForFlag: 10,
+            underperfThreshold: 15,
+          });
+          const flagged = audit.audit.filter(r =>
+            r.flag === 'underperforming' &&
+            r.delta_pct != null &&
+            r.delta_pct < -15 &&
+            r.actual_ops >= 10,
+          );
+          for (const r of flagged) {
+            const key = `${r.hkt_hour}|${r.regime}|${r.scheduled_preset}`;
+            const prev = lastAuditAlerts.get(key);
+            // Only re-alert if either: (a) we never sent for this slot,
+            // (b) >2 days passed since last alert, OR (c) delta worsened
+            // by >5pp since last alert.
+            const daysSince = prev
+              ? (Date.parse(todayKey) - Date.parse(prev.date)) / 86400_000
+              : Infinity;
+            const worsened = prev && r.delta_pct < prev.deltaPct - 5;
+            if (!prev || daysSince > 2 || worsened) {
+              const txt =
+                `⚠️ *Schedule slot underperforming*\n\n` +
+                `HKT ${String(r.hkt_hour).padStart(2,'0')}:00 ${r.regime} *${r.scheduled_preset}*\n` +
+                `→ actual: *${r.actual_dirty_per_inf.toFixed(2)} DIRTY/INF* (n=${r.actual_ops})\n` +
+                `→ all-Drug baseline at this hour: *${r.baseline_drug_dirty_per_inf!.toFixed(2)}*\n` +
+                `→ delta: *${r.delta_pct!.toFixed(1)}%* below baseline\n\n` +
+                `Consider: \`/bot schedule ${r.hkt_hour} all-drug\``;
+              try {
+                await bot.sendDm(config.operatorChatId, txt, { parseMode: 'Markdown' });
+                lastAuditAlerts.set(key, { date: todayKey, deltaPct: r.delta_pct });
+                logger.info({ slot: key, delta: r.delta_pct }, '[ScheduleAudit] alert sent');
+              } catch (err: any) {
+                logger.warn({ err: err.message, slot: key }, '[ScheduleAudit] DM failed');
+              }
+            }
+          }
+        }
+      } catch (err: any) {
+        logger.warn({ err: err.message }, '[ScheduleAudit] daily check failed');
       }
     }
   }, 60_000).unref();

@@ -1496,6 +1496,87 @@
   </div>
 </div>
 
+<!-- INF EFFICIENCY — DIRTY/INF rollup + schedule auditor on OPS tab. -->
+<div style="padding: 0 24px 8px;" data-pane="ops">
+  <div class="card" id="infEfficiencyCard" style="display:block;padding:12px 16px;border-color:#ffe600;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#ffe600">INF EFFICIENCY</span>
+        <span class="info-pill" title="DIRTY earned per INF spent — captures BOTH wins and partial payouts on liquidations. Drug ops have progressive payouts, so a 50%-SR Arms hour can earn more DIRTY/INF than a 75%-SR Drug hour. Schedule audit compares each slot against the all-Drug baseline for the same hour+regime.">?</span>
+        <!-- Window selector -->
+        <span style="margin-left:12px;display:inline-flex;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
+          <button class="eff-win" data-hours="24"
+                  onclick="setEffWindow(24)"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">24H</button>
+          <button class="eff-win active" data-hours="168"
+                  onclick="setEffWindow(168)"
+                  style="background:transparent;border:1px solid #ffe600;color:#ffe600;padding:2px 8px;border-radius:3px;cursor:pointer;">7D</button>
+          <button class="eff-win" data-hours="720"
+                  onclick="setEffWindow(720)"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">30D</button>
+        </span>
+        <!-- Regime selector -->
+        <span style="margin-left:6px;display:inline-flex;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
+          <button class="eff-reg active" data-regime="all"
+                  onclick="setEffRegime('all')"
+                  style="background:transparent;border:1px solid #ffe600;color:#ffe600;padding:2px 8px;border-radius:3px;cursor:pointer;">ALL</button>
+          <button class="eff-reg" data-regime="weekday"
+                  onclick="setEffRegime('weekday')"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">WEEKDAY</button>
+          <button class="eff-reg" data-regime="weekend"
+                  onclick="setEffRegime('weekend')"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">WEEKEND</button>
+        </span>
+      </div>
+      <div id="infEfficiencyMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading…</div>
+    </div>
+
+    <!-- Hero tiles: dpi, sr, partial-payout, drug-vs-arms -->
+    <div id="infEfficiencyTiles" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px;">
+      <!-- injected -->
+    </div>
+
+    <!-- Schedule audit warning strip -->
+    <div id="scheduleAuditWarnings" style="margin-bottom:12px;display:none;"></div>
+
+    <!-- Hourly DIRTY/INF heatmap -->
+    <div style="margin-bottom:12px;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.16em;color:var(--dim);margin-bottom:6px;">
+        ↳ DIRTY/INF BY HKT HOUR
+      </div>
+      <div id="infEfficiencyHourly" style="display:grid;grid-template-columns:repeat(24,1fr);gap:2px;height:80px;align-items:end;">
+        <!-- 24 bars injected -->
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(24,1fr);gap:2px;font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--dim);text-align:center;margin-top:4px;">
+        <span>00</span><span>01</span><span>02</span><span>03</span><span>04</span><span>05</span>
+        <span>06</span><span>07</span><span>08</span><span>09</span><span>10</span><span>11</span>
+        <span>12</span><span>13</span><span>14</span><span>15</span><span>16</span><span>17</span>
+        <span>18</span><span>19</span><span>20</span><span>21</span><span>22</span><span>23</span>
+      </div>
+    </div>
+
+    <!-- by_op_type breakdown -->
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
+            <th style="text-align:left;padding:4px 8px;">op_type / strategy</th>
+            <th style="text-align:right;padding:4px 8px;">ops</th>
+            <th style="text-align:right;padding:4px 8px;">SR</th>
+            <th style="text-align:right;padding:4px 8px;">DIRTY/INF</th>
+            <th style="text-align:right;padding:4px 8px;">avg partial</th>
+            <th style="text-align:right;padding:4px 8px;color:#a855f7;">total DIRTY</th>
+          </tr>
+        </thead>
+        <tbody id="infEfficiencyTbody"></tbody>
+      </table>
+    </div>
+
+    <div id="infEfficiencyNote" style="margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);line-height:1.5;display:none;">
+    </div>
+  </div>
+</div>
+
 <!-- DIRTY HEALTH — token flow rollup. Buy/sell decision context. -->
 <div style="padding: 0 24px 8px;" data-pane="network">
   <div class="card" id="dirtyHealthCard" style="display:block;padding:12px 16px;border-color:#a855f7;">
@@ -3413,6 +3494,210 @@ function renderDirtyHealth(d) {
 setDirtyHealthWindow(dirtyHealthWindow);
 fetchDirtyHealth();
 setInterval(fetchDirtyHealth, 5 * 60 * 1000); // refresh every 5min (feed re-scans every 10min)
+
+// ─── INF EFFICIENCY (DIRTY/INF + schedule auditor) ───────────────────
+let effWindow = parseInt(localStorage.getItem('eff-window') || '168', 10);
+let effRegime = localStorage.getItem('eff-regime') || 'all';
+let effData24h = null;   // stored separately so trend = 24h vs 7d-avg works
+let effData = null;      // currently selected window
+let auditData = null;
+
+async function fetchInfEfficiency() {
+  try {
+    const [r1, r2, r3] = await Promise.all([
+      fetch(`/api/efficiency?hours=${effWindow}&regime=${effRegime}`),
+      effWindow !== 24 ? fetch('/api/efficiency?hours=24&regime=all') : null,
+      fetch('/api/schedule-audit?days=7'),
+    ].filter(Boolean));
+    if (!r1.ok) return;
+    const d = await r1.json();
+    if (d.error) return;
+    effData = d;
+    if (r2 && r2.ok) {
+      const d24 = await r2.json();
+      if (!d24.error) effData24h = d24;
+    } else if (effWindow === 24) {
+      effData24h = d;
+    }
+    if (r3 && r3.ok) {
+      const a = await r3.json();
+      if (!a.error) auditData = a;
+    }
+    renderInfEfficiency();
+  } catch { /* keep last render */ }
+}
+
+function setEffWindow(h) {
+  effWindow = h;
+  localStorage.setItem('eff-window', String(h));
+  document.querySelectorAll('.eff-win').forEach(btn => {
+    const sel = parseInt(btn.dataset.hours, 10) === h;
+    btn.style.borderColor = sel ? '#ffe600' : 'var(--border)';
+    btn.style.color       = sel ? '#ffe600' : 'var(--dim)';
+    btn.classList.toggle('active', sel);
+  });
+  fetchInfEfficiency();
+}
+
+function setEffRegime(r) {
+  effRegime = r;
+  localStorage.setItem('eff-regime', r);
+  document.querySelectorAll('.eff-reg').forEach(btn => {
+    const sel = btn.dataset.regime === r;
+    btn.style.borderColor = sel ? '#ffe600' : 'var(--border)';
+    btn.style.color       = sel ? '#ffe600' : 'var(--dim)';
+    btn.classList.toggle('active', sel);
+  });
+  fetchInfEfficiency();
+}
+
+function renderInfEfficiency() {
+  if (!effData) return;
+  const meta   = document.getElementById('infEfficiencyMeta');
+  const tilesEl= document.getElementById('infEfficiencyTiles');
+  const hourlyEl = document.getElementById('infEfficiencyHourly');
+  const tbody  = document.getElementById('infEfficiencyTbody');
+  const noteEl = document.getElementById('infEfficiencyNote');
+  const warnEl = document.getElementById('scheduleAuditWarnings');
+
+  const o = effData.overall;
+  const winLabel = effData.windowHours < 48 ? `${effData.windowHours}h` : `${Math.round(effData.windowHours / 24)}d`;
+  const regimeLabel = effData.regime === 'all' ? '' : ` · ${effData.regime.toUpperCase()}`;
+  meta.textContent = `${winLabel} window${regimeLabel} · ${o.ops} ops · ${(o.inf_spent).toFixed(0)} INF spent · ${(o.dirty_earned).toFixed(0)} DIRTY earned`;
+
+  // Compare current dpi to 24h-avg-equivalent for trend arrow.
+  // (When effData IS 24h, this is a no-op delta.)
+  const dpiNow = o.dirty_per_inf;
+  const dpi24h = effData24h?.overall?.dirty_per_inf ?? dpiNow;
+  const delta = dpi24h > 0 ? ((dpiNow - dpi24h) / dpi24h) * 100 : 0;
+  const trendArrow = Math.abs(delta) < 1 ? '·' : delta > 0 ? '▲' : '▼';
+  const trendColor = Math.abs(delta) < 1 ? 'var(--dim)' : delta > 0 ? '#39ff14' : '#ff1744';
+
+  // Drug vs Arms efficiency comparison (only meaningful with both present)
+  const byType = effData.by_op_type || [];
+  const drug = byType.find(t => t.op_type === 'drug');
+  const arms = byType.find(t => t.op_type === 'arms');
+  const dvaDelta = (drug && arms && arms.dirty_per_inf > 0)
+    ? ((drug.dirty_per_inf - arms.dirty_per_inf) / arms.dirty_per_inf) * 100
+    : null;
+  const dvaWinner = dvaDelta == null ? 'n/a' : dvaDelta > 0 ? 'DRUG' : 'ARMS';
+  const dvaColor = dvaDelta == null ? 'var(--dim)' : dvaDelta > 0 ? '#a855f7' : '#39ff14';
+  const dvaSub = (drug && arms)
+    ? `Drug ${drug.dirty_per_inf.toFixed(2)} · Arms ${arms.dirty_per_inf.toFixed(2)}`
+    : 'awaiting both samples';
+
+  const tile = (label, value, sub, color, trend = '') => `
+    <div style="background:rgba(0,0,0,0.4);border:1px solid var(--border);padding:10px;">
+      <div style="font-size:10px;letter-spacing:0.16em;color:${color};font-weight:600;margin-bottom:6px;">${label}</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:22px;color:var(--text-pure);font-weight:600;line-height:1;">
+        ${value}
+      </div>
+      <div style="font-size:11px;color:var(--text-mid);margin-top:4px;">${sub}${trend}</div>
+    </div>`;
+
+  tilesEl.innerHTML = [
+    tile(
+      'DIRTY / INF',
+      o.dirty_per_inf.toFixed(2),
+      `${o.ops} ops`,
+      '#ffe600',
+      effWindow !== 24 ? ` <span style="color:${trendColor};font-size:10px;margin-left:6px;">${trendArrow} ${(delta >= 0 ? '+' : '') + delta.toFixed(1)}% vs 24h</span>` : '',
+    ),
+    tile(
+      'SUCCESS RATE',
+      (o.sr * 100).toFixed(1) + '%',
+      `${o.wins}/${o.ops}`,
+      o.sr >= 0.65 ? '#39ff14' : o.sr >= 0.45 ? '#ffe600' : '#ff9100',
+    ),
+    tile(
+      'AVG PARTIAL',
+      o.avg_partial_payout.toFixed(1),
+      'DIRTY on failed ops',
+      '#a855f7',
+    ),
+    tile(
+      'DRUG vs ARMS',
+      dvaWinner,
+      dvaSub + (dvaDelta != null ? ` · ${(dvaDelta > 0 ? '+' : '') + dvaDelta.toFixed(1)}%` : ''),
+      dvaColor,
+    ),
+  ].join('');
+
+  // Schedule audit warnings — yellow strip with each underperforming slot
+  if (auditData && auditData.audit) {
+    const flagged = auditData.audit.filter(r => r.flag === 'underperforming');
+    if (flagged.length > 0) {
+      warnEl.style.display = 'block';
+      warnEl.innerHTML = flagged.map(r => `
+        <div style="background:rgba(255,230,0,0.08);border-left:3px solid #ffe600;padding:8px 12px;margin-bottom:6px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-pure);">
+          <span style="color:#ffe600;font-weight:600;">⚠ HKT ${String(r.hkt_hour).padStart(2,'0')}:00 ${r.regime}</span>
+          (${r.scheduled_preset}): <b>${r.actual_dirty_per_inf.toFixed(2)} DIRTY/INF</b>
+          vs Drug baseline <b>${r.baseline_drug_dirty_per_inf.toFixed(2)}</b>
+          (<span style="color:#ff1744;">${r.delta_pct.toFixed(1)}%</span>, n=${r.actual_ops}).
+          <span style="color:var(--dim);">${r.recommendation}</span>
+        </div>`).join('');
+    } else {
+      warnEl.style.display = 'none';
+    }
+  }
+
+  // Hourly heatmap — 24 bars, height proportional to DIRTY/INF, color by performance
+  const hourly = effData.by_hour || [];
+  // For each hour, sum across regimes if regime=all
+  const byHour = new Array(24).fill(0).map(() => ({ ops: 0, dpi: 0, total_dpi_weighted: 0 }));
+  for (const h of hourly) {
+    const slot = byHour[h.hkt_hour];
+    slot.ops += h.ops;
+    slot.total_dpi_weighted += h.dirty_per_inf * h.ops;
+  }
+  for (const slot of byHour) {
+    slot.dpi = slot.ops > 0 ? slot.total_dpi_weighted / slot.ops : 0;
+  }
+  const maxDpi = Math.max(...byHour.map(s => s.dpi), 1);
+  const avgDpi = o.dirty_per_inf;
+  hourlyEl.innerHTML = byHour.map((s, i) => {
+    if (s.ops === 0) {
+      return `<div title="HKT ${i}: no data" style="background:rgba(255,255,255,0.04);height:6px;align-self:end;"></div>`;
+    }
+    const heightPct = Math.max(8, (s.dpi / maxDpi) * 100);
+    const above = s.dpi >= avgDpi;
+    const color = above ? '#39ff14' : '#ff9100';
+    return `<div title="HKT ${i}: ${s.dpi.toFixed(2)} DIRTY/INF (${s.ops} ops)"
+                 style="background:${color};height:${heightPct}%;opacity:0.7;border-radius:1px 1px 0 0;"></div>`;
+  }).join('');
+
+  // by_op_type + by_strategy table
+  const rows = [];
+  for (const r of byType) {
+    rows.push({ label: r.op_type.toUpperCase(), color: r.op_type === 'drug' ? '#a855f7' : r.op_type === 'arms' ? '#39ff14' : '#ff1744', ...r });
+  }
+  // by_strategy is sparse but meaningful when present
+  for (const r of effData.by_strategy || []) {
+    rows.push({ label: r.strategy, color: '#00e0ff', ...r });
+  }
+  rows.sort((a, b) => b.dirty_per_inf - a.dirty_per_inf);
+  tbody.innerHTML = rows.map(r => `
+    <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+      <td style="padding:3px 8px;color:${r.color};font-weight:600;">${r.label}</td>
+      <td style="padding:3px 8px;text-align:right;color:var(--text-mid);">${r.ops}</td>
+      <td style="padding:3px 8px;text-align:right;">${(r.sr * 100).toFixed(1)}%</td>
+      <td style="padding:3px 8px;text-align:right;color:var(--text-pure);font-weight:600;">${r.dirty_per_inf.toFixed(2)}</td>
+      <td style="padding:3px 8px;text-align:right;color:var(--text-mid);">${r.avg_partial_payout.toFixed(1)}</td>
+      <td style="padding:3px 8px;text-align:right;color:#a855f7;">${r.dirty_earned.toFixed(0)}</td>
+    </tr>`).join('');
+
+  if (effData.sampleNote) {
+    noteEl.style.display = 'block';
+    noteEl.innerHTML = `<b>Note:</b> ${effData.sampleNote}`;
+  } else {
+    noteEl.style.display = 'none';
+  }
+}
+
+setEffWindow(effWindow);
+setEffRegime(effRegime);
+fetchInfEfficiency();
+setInterval(fetchInfEfficiency, 60 * 1000); // refresh every 60s
 
 function renderTokenomics(t) {
   const card = document.getElementById('tokenomicsCard');

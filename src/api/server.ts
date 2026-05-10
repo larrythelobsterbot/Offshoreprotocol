@@ -14,6 +14,7 @@ import type { WalletTracker } from '../feeds/wallet-tracker';
 import { walletLogTag } from '../feeds/wallet-tracker';
 import type { ScheduleEvidenceFeed } from '../feeds/schedule-evidence';
 import type { DirtyFlowFeed } from '../feeds/dirty-flow';
+import { computeEfficiency, computeScheduleAudit } from '../engine/efficiency';
 
 // --- Public-safe state picker (FlowDirty.fun) ---
 // Strips operator-private fields from DashboardState before broadcasting on
@@ -163,6 +164,10 @@ export class ApiServer {
   private walletTracker?: WalletTracker;
   private scheduleEvidence?: ScheduleEvidenceFeed;
   private dirtyFlow?: DirtyFlowFeed;
+  // Schedule accessor — passed in as a function (rather than a CorpBot
+  // reference) so the schedule auditor can read the live 24-element
+  // array without coupling the API server to the trading bot.
+  private getSchedule?: () => string[];
 
   constructor(
     storage: Storage,
@@ -171,6 +176,7 @@ export class ApiServer {
     walletTracker?: WalletTracker,
     scheduleEvidence?: ScheduleEvidenceFeed,
     dirtyFlow?: DirtyFlowFeed,
+    getSchedule?: () => string[],
   ) {
     this.storage = storage;
     this.getState = getState;
@@ -178,6 +184,7 @@ export class ApiServer {
     this.walletTracker = walletTracker;
     this.scheduleEvidence = scheduleEvidence;
     this.dirtyFlow = dirtyFlow;
+    this.getSchedule = getSchedule;
   }
 
   async start() {
@@ -546,6 +553,56 @@ export class ApiServer {
       publicGate(async () => {
         if (!this.dirtyFlow) return { error: 'Not configured' };
         return this.dirtyFlow.getHealthSnapshot();
+      }),
+    );
+
+    // INF EFFICIENCY — DIRTY-per-INF rollups over a window, broken down
+    // by hour, op_type, and (sparsely) strategy. The headline metric is
+    // dirty_per_inf, which captures both successes AND partial payouts
+    // from failed ops — the SR-only view misses progressive payouts on
+    // Drug/Arms liquidations and overstates Drug's apparent dominance.
+    this.app.get<{ Querystring: { hours?: string; regime?: 'all' | 'weekday' | 'weekend' | 'split' } }>(
+      '/api/efficiency',
+      {
+        schema: {
+          querystring: {
+            type: 'object',
+            properties: {
+              hours: { type: 'integer', minimum: 1, maximum: 720 },
+              regime: { type: 'string', enum: ['all', 'weekday', 'weekend', 'split'] },
+            },
+          },
+        },
+      },
+      publicGate(async (req: any) => {
+        const hours = req.query?.hours ? Number(req.query.hours) : 24;
+        const regime = (req.query?.regime ?? 'all') as 'all' | 'weekday' | 'weekend' | 'split';
+        return computeEfficiency(this.storage, { windowHours: hours, regime });
+      }),
+    );
+
+    // SCHEDULE AUDIT — for each (HKT hour, regime) slot in the current
+    // schedule, compares actual DIRTY/INF against the all-Drug baseline
+    // for the same hour+regime. Flags slots underperforming Drug by
+    // >10% with sample size ≥ 5 ops. Default 7-day window.
+    this.app.get<{ Querystring: { days?: string } }>(
+      '/api/schedule-audit',
+      {
+        schema: {
+          querystring: {
+            type: 'object',
+            properties: {
+              days: { type: 'integer', minimum: 1, maximum: 30 },
+            },
+          },
+        },
+      },
+      publicGate(async (req: any) => {
+        if (!this.getSchedule) return { error: 'schedule accessor not configured' };
+        const days = req.query?.days ? Number(req.query.days) : 7;
+        return computeScheduleAudit(this.storage, this.getSchedule(), {
+          windowHours: days * 24,
+        });
       }),
     );
 
