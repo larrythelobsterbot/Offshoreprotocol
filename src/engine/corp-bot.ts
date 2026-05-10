@@ -385,29 +385,35 @@ export class CorpBot {
 
     // Default 24-hour HKT schedule.
     //
-    // ── v1 (May 7 2026) ── derived from a 72h network-wide analysis of
-    // 76,250 ops, INF-constrained per-op DIRTY yield lens. Original schedule:
-    //   00-08h  → all-drug    14h    → all-arms   21-22h → paused
-    //   09h     → all-arms    15-20h → all-drug   23h    → all-drug
-    //   10-13h  → all-drug
+    // ── v1 (May 7 2026) ── liq-share + naive yield-per-op lens.
+    // ── v2 (May 8 2026) ── flipped 03h/17h/18h to all-arms based on
+    //                       liq-density evidence at those hours.
+    // ── v3 (May 10 2026) ── reverted ALL all-arms slots back to all-drug
+    //                        after the refund-on-success fix (CLAUDE.md
+    //                        lesson #27) revealed v1/v2 were comparing
+    //                        the wrong metric.
     //
-    // ── v2 (May 8 2026) ── three slot edits informed by the
-    // `schedule-evidence` feed's first 7-day rolling sample (31,849 ops):
-    //   03h: all-drug → all-arms
-    //     · Drug failed at 87.8 liqs/day at this hour (33% of all liqs)
-    //     · Arms only 9.5 liqs/day → ~9× safer for the same window
-    //   17h: all-drug → all-arms
-    //     · Drug 29 liqs/day vs Arms 8.5 liqs/day
-    //   18h: all-drug → all-arms
-    //     · Drug 46.7 liqs/day vs Arms 15.7 liqs/day
+    // Why v3 is right and v2 was wrong:
+    //   The refund-aware DIRTY/INF metric (real-cost denominator =
+    //   only failed ops, not all ops) shows Drug is 2× more efficient
+    //   than Arms BOTH in operator's data (31.5 vs 14.0) AND network-
+    //   wide (21.2 vs 10.1, n=67K). The "Arms wins in calm hours"
+    //   thesis was an artifact of the broken cost model that ignored
+    //   the success refund. With refunds modeled, Drug wins every
+    //   hour at every regime.
     //
-    // Watch the schedule-evidence panel — if these changes don't bear out
-    // over the next 5–7 days, revert by flipping back to all-drug.
-    // Reanalyze quarterly; meta drifts as network composition changes.
+    // Why we keep 21-22h paused:
+    //   Network SR collapses to ~30% in those hours (confirmed across
+    //   multiple weeks of schedule-evidence data). Even Drug loses
+    //   money there: 11.82 INF burned per failure × 70% fail rate
+    //   = 8 USDm cost vs 30 DIRTY ≈ $2.50 expected revenue. Net -EV.
+    //
+    // Re-evaluate quarterly via the INF EFFICIENCY tile's schedule
+    // auditor.
     this.schedule = [
-      'all-drug','all-drug','all-drug','all-arms','all-drug','all-drug','all-drug','all-drug', //  0- 7
-      'all-drug','all-arms','all-drug','all-drug','all-drug','all-drug','all-arms','all-drug', //  8-15
-      'all-drug','all-arms','all-arms','all-drug','all-drug','paused',  'paused',  'all-drug', // 16-23
+      'all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug', //  0- 7
+      'all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug', //  8-15
+      'all-drug','all-drug','all-drug','all-drug','all-drug','paused',  'paused',  'all-drug', // 16-23
     ];
 
     // Load any persisted operator state — manualPresetName, locked corps,
