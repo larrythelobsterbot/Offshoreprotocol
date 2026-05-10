@@ -593,6 +593,12 @@ export class VolatilityEngine extends EventEmitter {
     const activeSources = Object.values(this.connections).filter(Boolean).length;
     const utcHour = new Date().getUTCHours();
     const empiricalFractions = this.getEmpiricalFractions?.() ?? {};
+    // Thread the LIVE INF cost from OpParamsFeed so the economics
+    // calc reflects the current contract recalibration (~9-12 INF as
+    // of 2026-05-09; floats with $DIRTY price). Falls back to the
+    // historical 5.0 if the snapshot isn't available yet.
+    const opParamsSnap = this.getOpParamsSnap?.();
+    const liveInfCost = opParamsSnap?.infCostPerOp ?? null;
     const economics = buildEconomics(
       {
         extortion: vol.probExtortion,
@@ -600,6 +606,7 @@ export class VolatilityEngine extends EventEmitter {
         drug: vol.probDrug,
       },
       empiricalFractions,
+      liveInfCost,
     );
     // In public mode, also strip the historical op-stats and activity rollups
     // (they would otherwise leak the operator's win/loss history and earnings).

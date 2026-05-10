@@ -175,8 +175,18 @@ export interface OpOutcome {
   strategy?: string | null;
   /** Corp address that ran this op. NULL on legacy rows. */
   corp?: string | null;
-  /** INF cost at the time of bootstrap (sourced from op_params_history). NULL when unknown. */
+  /**
+   * INF "stake at risk" — the amount burned at startTrade(). NOT the net cost.
+   * Sourced from op_params_history. NULL when unknown.
+   */
   infCost?: number | null;
+  /**
+   * INF actually burned (net cost). Computed as `succeeded ? 0 : infCost`
+   * because the contract refunds INF on success via mint-from-0x0
+   * (see CLAUDE.md lesson #27). All DIRTY/INF aggregations should use
+   * THIS field, not infCost.
+   */
+  infBurned?: number | null;
 }
 
 export interface BootstrapLogRow {
@@ -196,8 +206,18 @@ export interface StrategyAggregate {
   losses: number;
   successRate: number;          // wins / ops
   dirtyEarned: number;
-  infBurned: number;            // sum of inf_cost across ops
-  dirtyPerInf: number | null;   // dirtyEarned / infBurned (null when no inf data)
+  /** Net INF burned (refund-aware). Sum of inf_burned: 0 on successes, full on failures. */
+  infBurned: number;
+  /** Total INF at risk (gross stake committed across all ops, win or lose). */
+  infAtRisk: number;
+  /**
+   * DIRTY earned per INF actually consumed (dirtyEarned / infBurned).
+   * `null` when no INF data is available (inf_samples == 0).
+   * `Infinity` when ops resolved but zero failures — operator never lost
+   * any INF, so per-INF earnings is unbounded. Renderers must check
+   * `Number.isFinite(...)` and display "∞ / no losses" in that case.
+   */
+  dirtyPerInf: number | null;
 }
 
 export class Storage {
@@ -347,10 +367,20 @@ export class Storage {
         -- Corp address that ran this op. Lets us join multiple op_outcomes
         -- to a single bootstrap_log row by (corp, ts within window).
         corp TEXT,
-        -- INF cost for this op at the time it was bootstrapped. Sourced
-        -- from op_params_history. Lets us compute DIRTY/INF per strategy
-        -- without re-querying threshold history at aggregation time.
-        inf_cost REAL
+        -- INF cost for this op at the time it was bootstrapped (the
+        -- "stake at risk" — what was burned at startTrade(), NOT the net
+        -- cost). Sourced from op_params_history. Useful for treasury
+        -- planning and worst-case INF runway calcs.
+        inf_cost REAL,
+        -- INF actually burned (net cost) — see CLAUDE.md lesson #27.
+        -- The contract burns inf_cost at startTrade(), then mints it back
+        -- to the player ~3 blocks after a successful TC. So:
+        --   succeeded=1 → inf_burned = 0  (full refund via mint-from-0x0)
+        --   succeeded=0 → inf_burned = inf_cost  (forfeit, no refund)
+        -- Storing this directly lets all DIRTY/INF aggregations sum a
+        -- single column without per-row branching, while preserving the
+        -- "at risk" cost in inf_cost for context.
+        inf_burned REAL
       );
       CREATE INDEX IF NOT EXISTS idx_op_ts ON op_outcomes(ts);
       CREATE INDEX IF NOT EXISTS idx_op_type ON op_outcomes(op_type);
@@ -670,6 +700,24 @@ export class Storage {
           this.db.exec(`ALTER TABLE op_outcomes ADD COLUMN inf_cost REAL`);
           logger.info('[Storage] migrated op_outcomes: added inf_cost column');
         }
+        if (!have.has('inf_burned')) {
+          // Add the column AND backfill from existing inf_cost + succeeded.
+          // succeeded=1 → 0 (refund via mint-from-0x0); succeeded=0 → inf_cost.
+          // The historical pre-attribution rows have inf_cost from the
+          // op_params nearest-timestamp backfill (see /tmp/backfill-inf-cost-v2.js)
+          // so this migration produces correct values for all existing rows.
+          this.db.exec(`ALTER TABLE op_outcomes ADD COLUMN inf_burned REAL`);
+          const upd = this.db.prepare(`
+            UPDATE op_outcomes
+               SET inf_burned = CASE WHEN succeeded = 1 THEN 0 ELSE inf_cost END
+             WHERE inf_burned IS NULL
+          `);
+          const r = upd.run();
+          logger.info(
+            { changedRows: r.changes },
+            '[Storage] migrated op_outcomes: added inf_burned column (refund-on-success modeled)',
+          );
+        }
       }
       // Indexes are idempotent (IF NOT EXISTS) and safe to re-run on
       // every boot. Run them AFTER the column-add migration completes.
@@ -702,8 +750,8 @@ export class Storage {
     );
     this._insertOp = this.db.prepare(
       `INSERT INTO op_outcomes (ts, op_type, succeeded, dirty_earned, base_reward, note,
-                                strategy, corp, inf_cost)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                                strategy, corp, inf_cost, inf_burned)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     this._deleteOp = this.db.prepare(
       'DELETE FROM op_outcomes WHERE id = ?'
@@ -744,6 +792,14 @@ export class Storage {
   // --- Op outcome log ---
 
   insertOpOutcome(o: OpOutcome): number {
+    // Derive inf_burned at insert time. Caller doesn't have to think about
+    // the refund mechanic — they just provide the stake-at-risk (infCost)
+    // and we compute the net cost based on succeeded.
+    // Explicit override path: if caller provides infBurned, trust it
+    // (e.g. backfill scripts or test fixtures).
+    const infBurned = o.infBurned !== undefined && o.infBurned !== null
+      ? o.infBurned
+      : (o.infCost == null ? null : (o.succeeded ? 0 : o.infCost));
     const info = this._insertOp.run(
       o.ts,
       o.opType,
@@ -754,6 +810,7 @@ export class Storage {
       o.strategy ?? null,
       o.corp ? o.corp.toLowerCase() : null,
       o.infCost ?? null,
+      infBurned,
     );
     return Number(info.lastInsertRowid);
   }
@@ -772,7 +829,7 @@ export class Storage {
     return this.db.prepare(
       `SELECT id, ts, op_type as opType, succeeded, dirty_earned as dirtyEarned,
               base_reward as baseReward, note,
-              strategy, corp, inf_cost as infCost
+              strategy, corp, inf_cost as infCost, inf_burned as infBurned
          FROM op_outcomes WHERE ts >= ? ORDER BY ts DESC`,
     ).all(sinceTs) as OpOutcome[];
   }
@@ -786,7 +843,7 @@ export class Storage {
     const limit = Math.max(1, Math.min(opts.limit ?? 500, 5000));
     const cols = `id, ts, op_type as opType, succeeded,
                   dirty_earned as dirtyEarned, base_reward as baseReward, note,
-                  strategy, corp, inf_cost as infCost`;
+                  strategy, corp, inf_cost as infCost, inf_burned as infBurned`;
     let sql: string;
     let params: any[];
     if (opts.opType) {
@@ -839,38 +896,53 @@ export class Storage {
    * occasional contract auto-restart we couldn't tag).
    */
   getStrategyAttribution(sinceMs: number): StrategyAggregate[] {
+    // Sums inf_burned (the NET cost — 0 on success, full on failure)
+    // not inf_cost (the at-risk stake). DIRTY/INF here means
+    // "DIRTY earned per INF actually consumed", which respects the
+    // refund-on-success mechanic (CLAUDE.md lesson #27).
     const rows = this.db.prepare(`
       SELECT
         strategy,
-        COUNT(*)                                              AS ops,
-        SUM(CASE WHEN succeeded = 1 THEN 1 ELSE 0 END)        AS wins,
-        SUM(CASE WHEN succeeded = 0 THEN 1 ELSE 0 END)        AS losses,
-        SUM(dirty_earned)                                     AS dirty_earned,
-        SUM(COALESCE(inf_cost, 0))                            AS inf_burned,
-        SUM(CASE WHEN inf_cost IS NOT NULL THEN 1 ELSE 0 END) AS inf_samples
+        COUNT(*)                                                AS ops,
+        SUM(CASE WHEN succeeded = 1 THEN 1 ELSE 0 END)          AS wins,
+        SUM(CASE WHEN succeeded = 0 THEN 1 ELSE 0 END)          AS losses,
+        SUM(dirty_earned)                                       AS dirty_earned,
+        SUM(COALESCE(inf_burned, 0))                            AS inf_burned,
+        SUM(COALESCE(inf_cost, 0))                              AS inf_at_risk,
+        SUM(CASE WHEN inf_burned IS NOT NULL THEN 1 ELSE 0 END) AS inf_samples
       FROM op_outcomes
       WHERE strategy IS NOT NULL AND ts >= ?
       GROUP BY strategy
       ORDER BY ops DESC
     `).all(sinceMs) as Array<{
       strategy: string; ops: number; wins: number; losses: number;
-      dirty_earned: number; inf_burned: number; inf_samples: number;
+      dirty_earned: number; inf_burned: number; inf_at_risk: number; inf_samples: number;
     }>;
-    return rows.map(r => ({
-      strategy: r.strategy,
-      ops: r.ops,
-      wins: r.wins,
-      losses: r.losses,
-      successRate: r.ops > 0 ? r.wins / r.ops : 0,
-      dirtyEarned: r.dirty_earned,
-      infBurned: r.inf_burned,
-      // Only meaningful when at least some ops have inf_cost recorded.
-      // A strategy with all-NULL inf_cost falls back to null DIRTY/INF
-      // rather than a misleading division by 0.
-      dirtyPerInf: r.inf_samples > 0 && r.inf_burned > 0
-        ? r.dirty_earned / r.inf_burned
-        : null,
-    }));
+    return rows.map(r => {
+      // Three cases:
+      //   inf_samples == 0           → no INF data at all → null
+      //   inf_burned  == 0 && wins>0 → all ops succeeded → Infinity (∞ / no losses)
+      //   else                       → standard division
+      let dpi: number | null;
+      if (r.inf_samples === 0) {
+        dpi = null;
+      } else if (r.inf_burned === 0) {
+        dpi = r.wins > 0 ? Infinity : null;
+      } else {
+        dpi = r.dirty_earned / r.inf_burned;
+      }
+      return {
+        strategy: r.strategy,
+        ops: r.ops,
+        wins: r.wins,
+        losses: r.losses,
+        successRate: r.ops > 0 ? r.wins / r.ops : 0,
+        dirtyEarned: r.dirty_earned,
+        infBurned: r.inf_burned,
+        infAtRisk: r.inf_at_risk,
+        dirtyPerInf: dpi,
+      };
+    });
   }
 
   // --- Queries ---

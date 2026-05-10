@@ -38,8 +38,15 @@ export type Regime = 'all' | 'weekday' | 'weekend' | 'split';
 export interface EfficiencyBucket {
   ops: number;
   wins: number;
+  /** Net INF burned (refund-on-success modeled). Successes contribute 0. */
   inf_spent: number;
   dirty_earned: number;
+  /**
+   * dirty_earned / inf_spent. Can be `Infinity` when wins>0 and inf_spent==0
+   * (every op succeeded — operator never lost any INF). Renderers must
+   * check `Number.isFinite()` and display "∞ / no losses" appropriately.
+   * Comparators that rank dirty_per_inf should treat Infinity as max.
+   */
   dirty_per_inf: number;
   sr: number;
   avg_partial_payout: number;  // avg DIRTY on FAILED ops (ops where succeeded=0)
@@ -81,21 +88,36 @@ interface OpOutcomeRow {
   opType: 'extortion' | 'arms' | 'drug';
   succeeded: 0 | 1;
   dirtyEarned: number;
+  /** Stake at risk — burned at startTrade(). Refunded on success. */
   infCost: number | null;
+  /** Net INF actually consumed: 0 on success (refunded), inf_cost on failure. */
+  infBurned: number | null;
   strategy: string | null;
 }
 
-/** Fold a row into a mutable bucket. Doesn't compute averages — call finalize(). */
+/**
+ * Fold a row into a mutable bucket. Doesn't compute averages — call finalize().
+ *
+ * inf_spent semantics changed 2026-05-10 (CLAUDE.md lesson #27):
+ * we now track NET INF burned (refund-on-success modeled), not stake-
+ * at-risk. Successful ops contribute 0 to inf_spent, failures contribute
+ * the full inf_cost. DIRTY/INF then represents "DIRTY earned per INF
+ * actually consumed" — the right decision metric. The previous model
+ * understated DIRTY/INF by ~3x for high-SR strategies.
+ */
 function accumulate(b: EfficiencyBucket, r: OpOutcomeRow) {
   b.ops += 1;
   b.wins += r.succeeded;
-  // infCost is post-backfill; should never be null in practice but
-  // defensively fall back to historical 5.0.
-  b.inf_spent += r.infCost ?? 5.0;
+  // Prefer inf_burned (post-migration). Fall back to deriving from
+  // inf_cost + succeeded for any rare row that predates the column.
+  const burned = r.infBurned != null
+    ? r.infBurned
+    : r.infCost != null
+      ? (r.succeeded ? 0 : r.infCost)
+      : 0;
+  b.inf_spent += burned;
   b.dirty_earned += r.dirtyEarned;
   if (!r.succeeded) {
-    // avg_partial_payout uses the SUM of failed-op DIRTY here; finalize()
-    // divides by failure count.
     b.avg_partial_payout += r.dirtyEarned;
   }
 }
@@ -109,7 +131,20 @@ function emptyBucket(): EfficiencyBucket {
 
 /** Compute derived ratios after accumulation. Mutates in place. */
 function finalize(b: EfficiencyBucket): void {
-  b.dirty_per_inf      = b.inf_spent > 0 ? b.dirty_earned / b.inf_spent : 0;
+  // dirty_per_inf cases:
+  //   ops=0                   → 0      (no data)
+  //   inf_spent>0             → divide (normal case)
+  //   inf_spent==0 && wins>0  → ∞      (every op succeeded, no INF lost — "no losses")
+  //   inf_spent==0 && wins==0 → 0      (degenerate; shouldn't happen with real ops)
+  if (b.ops === 0) {
+    b.dirty_per_inf = 0;
+  } else if (b.inf_spent > 0) {
+    b.dirty_per_inf = b.dirty_earned / b.inf_spent;
+  } else if (b.wins > 0) {
+    b.dirty_per_inf = Infinity;
+  } else {
+    b.dirty_per_inf = 0;
+  }
   b.sr                 = b.ops > 0 ? b.wins / b.ops : 0;
   const losses         = b.ops - b.wins;
   // avg_partial_payout currently holds the SUM of failed DIRTY → divide
@@ -316,9 +351,23 @@ export function computeScheduleAudit(
 
       // delta_pct = how much actual dpi differs from drug baseline
       // (positive = beating Drug; negative = lagging).
+      // Special cases (post refund-on-success fix):
+      //   actualDpi = ∞, drugDpi = ∞       → both perfect, delta = 0
+      //   actualDpi = ∞, drugDpi finite    → actual is "no losses" → strictly better, delta = +∞ (clamped to large for sort)
+      //   actualDpi finite, drugDpi = ∞    → drug had no losses, actual lagging by definition → -100% (sentinel)
+      //   both finite & drugDpi > 0        → standard pct delta
+      //   drugDpi = 0 (drug ops all yielded zero) → delta null
       let deltaPct: number | null = null;
-      if (drugDpi != null && drugDpi > 0) {
-        deltaPct = ((actualDpi - drugDpi) / drugDpi) * 100;
+      if (drugDpi != null) {
+        if (!Number.isFinite(actualDpi) && !Number.isFinite(drugDpi)) {
+          deltaPct = 0;
+        } else if (!Number.isFinite(actualDpi)) {
+          deltaPct = Infinity;
+        } else if (!Number.isFinite(drugDpi)) {
+          deltaPct = -100;
+        } else if (drugDpi > 0) {
+          deltaPct = ((actualDpi - drugDpi) / drugDpi) * 100;
+        }
       }
 
       let flag: ScheduleAuditRow['flag'] = 'ok';
@@ -328,10 +377,22 @@ export function computeScheduleAudit(
       if (actualOps < minOps) {
         flag = 'insufficient_data';
         recommendation = `insufficient data (n=${actualOps}, need ≥${minOps})`;
-      } else if (preset !== 'all-drug' && drugDpi != null && deltaPct != null && deltaPct < -underperfThreshold) {
+      } else if (
+        preset !== 'all-drug' &&
+        drugDpi != null &&
+        deltaPct != null &&
+        Number.isFinite(deltaPct) &&
+        deltaPct < -underperfThreshold
+      ) {
         flag = 'underperforming';
         recommendation = `switch to all-drug (${deltaPct.toFixed(1)}% below Drug baseline)`;
-      } else if (preset === 'all-drug' && deltaPct != null && deltaPct < -underperfThreshold && drugOps < actualOps * 0.7) {
+      } else if (
+        preset === 'all-drug' &&
+        deltaPct != null &&
+        Number.isFinite(deltaPct) &&
+        deltaPct < -underperfThreshold &&
+        drugOps < actualOps * 0.7
+      ) {
         // Slot is 'all-drug' but most ops weren't drug — bot probably mid-mode-switch.
         flag = 'ok';
         recommendation = `mostly-drug already (n_drug=${drugOps}/${actualOps})`;

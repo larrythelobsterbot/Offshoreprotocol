@@ -586,12 +586,19 @@ async function main() {
               : Infinity;
             const worsened = prev && r.delta_pct < prev.deltaPct - 5;
             if (!prev || daysSince > 2 || worsened) {
+              // dpi values can be Infinity (no losses in window).
+              const fmt = (v: number | null) => v == null
+                ? '—'
+                : !Number.isFinite(v) ? '∞' : v.toFixed(2);
+              const fmtDelta = (v: number | null) => v == null
+                ? '—'
+                : !Number.isFinite(v) ? (v < 0 ? '-∞' : '+∞') : v.toFixed(1) + '%';
               const txt =
                 `⚠️ *Schedule slot underperforming*\n\n` +
                 `HKT ${String(r.hkt_hour).padStart(2,'0')}:00 ${r.regime} *${r.scheduled_preset}*\n` +
-                `→ actual: *${r.actual_dirty_per_inf.toFixed(2)} DIRTY/INF* (n=${r.actual_ops})\n` +
-                `→ all-Drug baseline at this hour: *${r.baseline_drug_dirty_per_inf!.toFixed(2)}*\n` +
-                `→ delta: *${r.delta_pct!.toFixed(1)}%* below baseline\n\n` +
+                `→ actual: *${fmt(r.actual_dirty_per_inf)} DIRTY/INF* (n=${r.actual_ops})\n` +
+                `→ all-Drug baseline at this hour: *${fmt(r.baseline_drug_dirty_per_inf!)}*\n` +
+                `→ delta: *${fmtDelta(r.delta_pct!)}* below baseline\n\n` +
                 `Consider: \`/bot schedule ${r.hkt_hour} all-drug\``;
               try {
                 await bot.sendDm(config.operatorChatId, txt, { parseMode: 'Markdown' });

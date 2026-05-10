@@ -3296,7 +3296,9 @@ function renderStrategyAttribution(d) {
   const winLabel = d.windowHours < 48
     ? `${d.windowHours}h`
     : `${Math.round(d.windowHours / 24)}d`;
-  meta.textContent = `${winLabel} window · ${d.baseline.ops} tagged ops · base SR ${(baseSR * 100).toFixed(1)}%${baseDPI != null ? ' · base DIRTY/INF ' + baseDPI.toFixed(2) : ''}`;
+  // base DPI can be Infinity when zero failures in window.
+  const baseDpiStr = baseDPI == null ? null : (Number.isFinite(baseDPI) ? baseDPI.toFixed(2) : '∞');
+  meta.textContent = `${winLabel} window · ${d.baseline.ops} tagged ops · base SR ${(baseSR * 100).toFixed(1)}%${baseDpiStr != null ? ' · base DIRTY/INF ' + baseDpiStr : ''}`;
 
   if (d.rows.length === 0) {
     tbody.innerHTML = `<tr><td colspan="7" style="padding:16px;text-align:center;color:var(--dim);">
@@ -3323,7 +3325,11 @@ function renderStrategyAttribution(d) {
     return '#ff1744';
   };
   const fmtSR = (sr) => (sr * 100).toFixed(1) + '%';
-  const fmtDPI = (dpi) => dpi == null ? '—' : dpi.toFixed(2);
+  const fmtDPI = (dpi) => {
+    if (dpi == null) return '—';
+    if (!Number.isFinite(dpi)) return '∞';
+    return dpi.toFixed(2);
+  };
 
   // Sort by ops descending so the most-fired strategies are at the top.
   const rows = [...d.rows].sort((a, b) => b.ops - a.ops);
@@ -3580,17 +3586,37 @@ function renderInfEfficiency() {
   const trendArrow = Math.abs(delta) < 1 ? '·' : delta > 0 ? '▲' : '▼';
   const trendColor = Math.abs(delta) < 1 ? 'var(--dim)' : delta > 0 ? '#39ff14' : '#ff1744';
 
-  // Drug vs Arms efficiency comparison (only meaningful with both present)
+  // Local helper: render a DPI value, treating Infinity as "∞".
+  // Refund-on-success means a high-SR window can yield Infinity legitimately.
+  const fmtDpi = (v) => {
+    if (v == null) return '—';
+    if (!Number.isFinite(v)) return '∞';
+    return v.toFixed(2);
+  };
+
+  // Drug vs Arms efficiency comparison (only meaningful with both present).
+  // Treat Infinity as strictly better than any finite value.
   const byType = effData.by_op_type || [];
   const drug = byType.find(t => t.op_type === 'drug');
   const arms = byType.find(t => t.op_type === 'arms');
-  const dvaDelta = (drug && arms && arms.dirty_per_inf > 0)
-    ? ((drug.dirty_per_inf - arms.dirty_per_inf) / arms.dirty_per_inf) * 100
-    : null;
-  const dvaWinner = dvaDelta == null ? 'n/a' : dvaDelta > 0 ? 'DRUG' : 'ARMS';
-  const dvaColor = dvaDelta == null ? 'var(--dim)' : dvaDelta > 0 ? '#a855f7' : '#39ff14';
+  let dvaWinner = 'n/a';
+  let dvaColor = 'var(--dim)';
+  let dvaDelta = null;
+  if (drug && arms) {
+    const dInf = !Number.isFinite(drug.dirty_per_inf);
+    const aInf = !Number.isFinite(arms.dirty_per_inf);
+    if (dInf && aInf)        { dvaWinner = 'TIE (∞)'; dvaColor = '#ffe600'; }
+    else if (dInf)           { dvaWinner = 'DRUG';    dvaColor = '#a855f7'; dvaDelta = Infinity; }
+    else if (aInf)           { dvaWinner = 'ARMS';    dvaColor = '#39ff14'; dvaDelta = -Infinity; }
+    else if (arms.dirty_per_inf > 0) {
+      dvaDelta = ((drug.dirty_per_inf - arms.dirty_per_inf) / arms.dirty_per_inf) * 100;
+      dvaWinner = dvaDelta > 0 ? 'DRUG' : 'ARMS';
+      dvaColor  = dvaDelta > 0 ? '#a855f7' : '#39ff14';
+    }
+  }
   const dvaSub = (drug && arms)
-    ? `Drug ${drug.dirty_per_inf.toFixed(2)} · Arms ${arms.dirty_per_inf.toFixed(2)}`
+    ? `Drug ${fmtDpi(drug.dirty_per_inf)} · Arms ${fmtDpi(arms.dirty_per_inf)}` +
+      (dvaDelta != null && Number.isFinite(dvaDelta) ? ` · ${(dvaDelta > 0 ? '+' : '') + dvaDelta.toFixed(1)}%` : '')
     : 'awaiting both samples';
 
   const tile = (label, value, sub, color, trend = '') => `
@@ -3602,13 +3628,18 @@ function renderInfEfficiency() {
       <div style="font-size:11px;color:var(--text-mid);margin-top:4px;">${sub}${trend}</div>
     </div>`;
 
+  // DIRTY/INF can be ∞ when window has no losses (every op succeeded
+  // → every INF refunded). Note that as a side effect the trend
+  // calculation against 24h-avg goes invalid; suppress the trend tag
+  // when either side is ∞.
+  const dpiTrendOk = Number.isFinite(dpiNow) && Number.isFinite(dpi24h) && dpi24h > 0;
   tilesEl.innerHTML = [
     tile(
       'DIRTY / INF',
-      o.dirty_per_inf.toFixed(2),
-      `${o.ops} ops`,
+      fmtDpi(o.dirty_per_inf),
+      Number.isFinite(o.dirty_per_inf) ? `${o.ops} ops` : `${o.ops} ops · no losses`,
       '#ffe600',
-      effWindow !== 24 ? ` <span style="color:${trendColor};font-size:10px;margin-left:6px;">${trendArrow} ${(delta >= 0 ? '+' : '') + delta.toFixed(1)}% vs 24h</span>` : '',
+      effWindow !== 24 && dpiTrendOk ? ` <span style="color:${trendColor};font-size:10px;margin-left:6px;">${trendArrow} ${(delta >= 0 ? '+' : '') + delta.toFixed(1)}% vs 24h</span>` : '',
     ),
     tile(
       'SUCCESS RATE',
@@ -3635,38 +3666,64 @@ function renderInfEfficiency() {
     const flagged = auditData.audit.filter(r => r.flag === 'underperforming');
     if (flagged.length > 0) {
       warnEl.style.display = 'block';
-      warnEl.innerHTML = flagged.map(r => `
+      warnEl.innerHTML = flagged.map(r => {
+        const fmt = (v) => v == null ? '—' : (Number.isFinite(v) ? v.toFixed(2) : '∞');
+        const deltaStr = r.delta_pct == null ? '—'
+                       : Number.isFinite(r.delta_pct) ? r.delta_pct.toFixed(1) + '%'
+                       : (r.delta_pct < 0 ? '-∞' : '+∞');
+        return `
         <div style="background:rgba(255,230,0,0.08);border-left:3px solid #ffe600;padding:8px 12px;margin-bottom:6px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-pure);">
           <span style="color:#ffe600;font-weight:600;">⚠ HKT ${String(r.hkt_hour).padStart(2,'0')}:00 ${r.regime}</span>
-          (${r.scheduled_preset}): <b>${r.actual_dirty_per_inf.toFixed(2)} DIRTY/INF</b>
-          vs Drug baseline <b>${r.baseline_drug_dirty_per_inf.toFixed(2)}</b>
-          (<span style="color:#ff1744;">${r.delta_pct.toFixed(1)}%</span>, n=${r.actual_ops}).
+          (${r.scheduled_preset}): <b>${fmt(r.actual_dirty_per_inf)} DIRTY/INF</b>
+          vs Drug baseline <b>${fmt(r.baseline_drug_dirty_per_inf)}</b>
+          (<span style="color:#ff1744;">${deltaStr}</span>, n=${r.actual_ops}).
           <span style="color:var(--dim);">${r.recommendation}</span>
-        </div>`).join('');
+        </div>`;
+      }).join('');
     } else {
       warnEl.style.display = 'none';
     }
   }
 
-  // Hourly heatmap — 24 bars, height proportional to DIRTY/INF, color by performance
+  // Hourly heatmap — 24 bars, height proportional to DIRTY/INF, color by performance.
+  // Refund-on-success modeled: dpi can be Infinity for hours with no
+  // failures. Render those bars at full height in cyan with an "∞"
+  // tooltip so they don't break the scale via NaN.
   const hourly = effData.by_hour || [];
-  // For each hour, sum across regimes if regime=all
-  const byHour = new Array(24).fill(0).map(() => ({ ops: 0, dpi: 0, total_dpi_weighted: 0 }));
+  // For each hour, sum across regimes if regime=all. We track Infinity
+  // hours separately so they don't poison the weighted average.
+  const byHour = new Array(24).fill(0).map(() => ({
+    ops: 0, dpi: 0, finite_dpi_sum: 0, finite_ops: 0, has_infinity: false,
+  }));
   for (const h of hourly) {
     const slot = byHour[h.hkt_hour];
     slot.ops += h.ops;
-    slot.total_dpi_weighted += h.dirty_per_inf * h.ops;
+    if (Number.isFinite(h.dirty_per_inf)) {
+      slot.finite_dpi_sum += h.dirty_per_inf * h.ops;
+      slot.finite_ops += h.ops;
+    } else {
+      slot.has_infinity = true;
+    }
   }
   for (const slot of byHour) {
-    slot.dpi = slot.ops > 0 ? slot.total_dpi_weighted / slot.ops : 0;
+    if (slot.has_infinity && slot.finite_ops === 0) {
+      slot.dpi = Infinity;
+    } else {
+      slot.dpi = slot.finite_ops > 0 ? slot.finite_dpi_sum / slot.finite_ops : 0;
+    }
   }
-  const maxDpi = Math.max(...byHour.map(s => s.dpi), 1);
-  const avgDpi = o.dirty_per_inf;
+  // For visualization scaling, only consider finite values for max.
+  const finiteMax = Math.max(...byHour.map(s => Number.isFinite(s.dpi) ? s.dpi : 0), 1);
+  const avgDpi = Number.isFinite(o.dirty_per_inf) ? o.dirty_per_inf : finiteMax;
   hourlyEl.innerHTML = byHour.map((s, i) => {
     if (s.ops === 0) {
       return `<div title="HKT ${i}: no data" style="background:rgba(255,255,255,0.04);height:6px;align-self:end;"></div>`;
     }
-    const heightPct = Math.max(8, (s.dpi / maxDpi) * 100);
+    if (!Number.isFinite(s.dpi)) {
+      return `<div title="HKT ${i}: ∞ DIRTY/INF (${s.ops} ops, no losses)"
+                   style="background:#00e0ff;height:100%;opacity:0.85;border-radius:1px 1px 0 0;"></div>`;
+    }
+    const heightPct = Math.max(8, (s.dpi / finiteMax) * 100);
     const above = s.dpi >= avgDpi;
     const color = above ? '#39ff14' : '#ff9100';
     return `<div title="HKT ${i}: ${s.dpi.toFixed(2)} DIRTY/INF (${s.ops} ops)"
@@ -3675,15 +3732,22 @@ function renderInfEfficiency() {
 
   // by_op_type table with NETWORK comparison columns. Network DIRTY/INF
   // is computed at render time using the live infCostPerOp from the API
-  // response — the feed only stores raw op counts + dirty_paid since
-  // INF cost floats with $DIRTY price.
+  // response. Refund-on-success modeled (CLAUDE.md lesson #27): only
+  // FAILED ops actually consume INF, so network DPI uses
+  //   dirty_paid / (losses × infCost)
+  // not (ops × infCost). When losses=0 we return Infinity ("∞ / no
+  // losses") just like the operator-side calc.
   const network = effData.network;
   const infCostNet = effData.infCostPerOp ?? 9.0;
   const networkByOpType = network && network.byOpType
     ? Object.fromEntries(network.byOpType.map(r => [r.op_type, r]))
     : {};
-  // Helper: derive network DIRTY/INF for an op type
-  const netDpi = (n) => n && n.ops > 0 ? n.dirty_paid / (n.ops * infCostNet) : null;
+  // network row shape: { op_type, ops, wins, losses, sr, dirty_paid }
+  const netDpi = (n) => {
+    if (!n || n.ops === 0) return null;
+    if (n.losses === 0) return Infinity;
+    return n.dirty_paid / (n.losses * infCostNet);
+  };
 
   // Strategy rows don't have network counterparts, so omit network cols
   const rows = byType.map(r => ({
@@ -3695,30 +3759,60 @@ function renderInfEfficiency() {
   for (const r of effData.by_strategy || []) {
     rows.push({ label: r.strategy, color: '#00e0ff', isOpType: false, ...r });
   }
-  rows.sort((a, b) => b.dirty_per_inf - a.dirty_per_inf);
+  // Sort treating Infinity as max. Infinity values (no losses) rank
+  // strictly above any finite value, breaking ties by ops count so
+  // small-sample perfect rows don't dominate.
+  rows.sort((a, b) => {
+    const ai = !Number.isFinite(a.dirty_per_inf);
+    const bi = !Number.isFinite(b.dirty_per_inf);
+    if (ai && bi) return b.ops - a.ops;
+    if (ai) return -1;
+    if (bi) return 1;
+    return b.dirty_per_inf - a.dirty_per_inf;
+  });
+
+  // Helper: render a DPI value, treating Infinity as "∞ / no losses".
+  // Used in both the YOU and NETWORK columns so the symbol is consistent.
+  const fmtDpi = (v) => {
+    if (v == null) return '—';
+    if (!Number.isFinite(v)) return '∞';
+    return v.toFixed(2);
+  };
 
   tbody.innerHTML = rows.map(r => {
     const net = r.isOpType ? networkByOpType[r.op_type] : null;
     const netDpiVal = netDpi(net);
     const youDpi = r.dirty_per_inf;
     // Delta column: positive means you're beating the network, negative
-    // means lagging. null when network sample not yet ready.
+    // means lagging.
+    //   both ∞                 → 0% (both perfect)
+    //   you ∞, net finite     → +∞ (strictly better)
+    //   you finite, net ∞     → −100% sentinel (strictly worse)
+    //   both finite (net > 0) → standard
     let deltaCell = '<td style="padding:3px 8px;text-align:right;color:var(--dim);">—</td>';
-    if (netDpiVal != null && netDpiVal > 0) {
-      const delta = ((youDpi - netDpiVal) / netDpiVal) * 100;
+    if (netDpiVal != null && (netDpiVal > 0 || !Number.isFinite(netDpiVal))) {
+      const youInf = !Number.isFinite(youDpi);
+      const netInf = !Number.isFinite(netDpiVal);
+      let delta;
+      let display;
+      if (youInf && netInf) { delta = 0;        display = '0.0%'; }
+      else if (youInf)      { delta = Infinity; display = '+∞'; }
+      else if (netInf)      { delta = -100;     display = '-100% (you finite, net ∞)'; }
+      else                  { delta = ((youDpi - netDpiVal) / netDpiVal) * 100;
+                              const sign = delta >= 0 ? '+' : '';
+                              display = sign + delta.toFixed(1) + '%'; }
       const color = delta >= 5 ? '#39ff14' : delta <= -5 ? '#ff1744' : 'var(--text-mid)';
-      const sign = delta >= 0 ? '+' : '';
-      deltaCell = `<td style="padding:3px 8px;text-align:right;color:${color};font-weight:600;">${sign}${delta.toFixed(1)}%</td>`;
+      deltaCell = `<td style="padding:3px 8px;text-align:right;color:${color};font-weight:600;">${display}</td>`;
     }
     const netOps = net ? net.ops.toLocaleString() : '—';
     const netSr  = net && net.ops > 0 ? `${(net.sr * 100).toFixed(1)}%` : '—';
-    const netDpiStr = netDpiVal != null ? netDpiVal.toFixed(2) : '—';
+    const netDpiStr = fmtDpi(netDpiVal);
     return `
     <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
       <td style="padding:3px 8px;color:${r.color};font-weight:600;">${r.label}</td>
       <td style="padding:3px 8px;text-align:right;color:var(--text-mid);">${r.ops}</td>
       <td style="padding:3px 8px;text-align:right;">${(r.sr * 100).toFixed(1)}%</td>
-      <td style="padding:3px 8px;text-align:right;color:#ffe600;font-weight:600;">${r.dirty_per_inf.toFixed(2)}</td>
+      <td style="padding:3px 8px;text-align:right;color:#ffe600;font-weight:600;" title="${Number.isFinite(r.dirty_per_inf) ? '' : 'no losses in window — INF refunded on every successful op'}">${fmtDpi(r.dirty_per_inf)}</td>
       <td style="padding:3px 8px;text-align:right;color:var(--text-mid);">${netOps}</td>
       <td style="padding:3px 8px;text-align:right;">${netSr}</td>
       <td style="padding:3px 8px;text-align:right;color:#00e0ff;font-weight:600;">${netDpiStr}</td>
@@ -4214,8 +4308,11 @@ function render(s) {
     renderOp('Drug', 'opDrug',      s.scores.drug,      econ.drug,      econ.bestEvPerInfOp === 'drug');
 
     const opLabel = { extortion: 'EXTORTION', arms: 'ARMS', drug: 'DRUG' }[econ.bestEvPerInfOp] || '--';
-    document.getElementById('badgeBestEv').textContent =
-      `BEST EV/INF: ${opLabel} → $${econ.bestEvPerInfValue.toFixed(1)} per INF`;
+    // bestEvPerInfValue can be Infinity when P(fail)=0 — represent as ∞.
+    const bestStr = Number.isFinite(econ.bestEvPerInfValue)
+      ? `$${econ.bestEvPerInfValue.toFixed(1)} per INF`
+      : '∞ per INF (no expected losses)';
+    document.getElementById('badgeBestEv').textContent = `BEST EV/INF: ${opLabel} → ${bestStr}`;
   } else {
     // Fallback for old state shape
     renderOp('Ext',  'opExtortion', s.scores.extortion, null, false, s.scores.probExtortion);
@@ -4370,7 +4467,16 @@ function renderOp(prefix, cardId, score, econ, isBestEv, fallbackProb) {
   const dpiEl  = document.getElementById('dpi' + prefix);
   const p = econ ? econ.probFail : fallbackProb;
   if (probEl && p != null) probEl.textContent = `P(fail): ${(p * 100).toFixed(1)}%`;
-  if (dpiEl && econ)       dpiEl.textContent  = `$/INF: ${econ.dirtyPerInf.toFixed(2)}`;
+  // Refund-on-success modeled: dpi can be ∞ when P(fail)=0 (model says
+  // op never fails). Show "∞ / no losses" so the user understands.
+  if (dpiEl && econ) {
+    const v = econ.dirtyPerInf;
+    if (!Number.isFinite(v)) {
+      dpiEl.textContent = '$/INF: ∞ (no expected losses)';
+    } else {
+      dpiEl.textContent = `$/INF: ${v.toFixed(2)}`;
+    }
+  }
 }
 
 function fmtImbalance(v) {

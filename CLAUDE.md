@@ -623,6 +623,33 @@ If `WebFetch llms.txt` disagrees with this file, **trust llms.txt and update CLA
     burn 320+ packs in a single 10-min session → upgrade Status. Defensive
     move against pool-share dilution. Visible in `whale_trades` as
     sequential 4000-DIRTY upgrade events + a single large `buy`.
+27. **INF refund-on-success is via mint-from-0x0, NOT a transfer in the TC tx.**
+    Verified on chain 2026-05-10. The contract:
+      • Burns the live INF cost (~9-12 INF, floats with $DIRTY price) at
+        `startTrade()`.
+      • Emits `TradeCompleted` on success (DIRTY accrues as `pendingReward`,
+        no INF transfer in the same tx).
+      • **~3 blocks after TC, mints the full INF stake back to the player**
+        from the zero address. Player's net cost on a winning op = 0 INF.
+      • On failure (`TradeLiquidated`), no refund — the burned INF stays
+        burned. Player's net cost = full live INF cost.
+    Consequences for the bot:
+      • The right efficiency metric is `DIRTY earned / INF actually burned`,
+        where INF burned = 0 on successes and `inf_cost` on failures.
+        `op_outcomes` now stores both `inf_cost` (stake at risk, useful
+        for treasury planning) AND `inf_burned` (net cost, the right
+        denominator for DIRTY/INF).
+      • Pre-fix (before 2026-05-10), every DIRTY/INF reading was understated
+        by ~3× for high-SR strategies. Drug at 71.7% SR looked like 12.52
+        DIRTY/INF; true value is ~33.1 (refund-aware).
+      • As `P(fail) → 0` the formula yields `Infinity`. Renderers must
+        check `Number.isFinite()` and display `∞ / no losses` instead of
+        `Infinity.toFixed(2)`. Comparators rank Infinity at top.
+      • The bot's TRADING DECISIONS were never tainted — corp-bot doesn't
+        consume `economics.dirtyPerInf`. Only display + audit metrics
+        were skewed.
+    See `src/engine/economics.ts` and `src/engine/efficiency.ts` for the
+    fix; `src/storage/db.ts` schema notes the `inf_burned` column.
 
 ---
 

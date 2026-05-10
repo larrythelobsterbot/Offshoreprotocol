@@ -343,7 +343,15 @@ export class OpScraperFeed extends EventEmitter {
         if (isLiquidation) {
           // data layout: [ethPriceAtLiq, partialReward, durationOrTicks]
           rewardRaw = BigInt('0x' + data.substring(64, 128)); // word 2
-          influenceRaw = 5n * 10n ** 18n; // doc says liquidation forfeits all 5 INF; not in event payload
+          // Liquidation forfeits the full live INF stake (~9-12 INF
+          // currently, NOT 5). The TL event payload doesn't include
+          // the stake, so we'd need a tradeInfo() lookup to get the
+          // real number. Index.ts overrides this anyway by reading
+          // the live infCostPerOp from OpParamsFeed before persisting
+          // to op_outcomes.inf_cost — so this field is unused
+          // downstream. Kept as 0 to avoid masking that fact and
+          // accidentally re-introducing the hardcoded-5 bug.
+          influenceRaw = 0n;
         } else {
           rewardRaw = BigInt('0x' + data.substring(0, 64));
           influenceRaw = BigInt('0x' + data.substring(64, 128));
