@@ -269,7 +269,7 @@ Live: ${this.dashboardLink()}`);
 `🟢 *Drug Deal optimal window*
 
 Calibrated P(fail) dropped to ${(drugP * 100).toFixed(1)}% (baseline ~40%).
-EV per op: $${econ.drug.evDirty.toFixed(0)} $DIRTY · $/INF: ${econ.drug.dirtyPerInf.toFixed(2)}
+EV per op: $${econ.drug.evDirty.toFixed(0)} $DIRTY · $/INF: ${Number.isFinite(econ.drug.dirtyPerInf) ? econ.drug.dirtyPerInf.toFixed(2) : '∞ (no expected losses)'}
 
 Live: ${this.dashboardLink()}`);
     }

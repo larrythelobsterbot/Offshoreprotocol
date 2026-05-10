@@ -2096,6 +2096,26 @@ let ws = null;
 let reconnectTimer = null;
 let currentState = null;
 
+// ─── Infinity sentinel restoration ────────────────────────────────────
+// Server-side `jsonSafeInfinity` converts JS Infinity → 'Infinity' (string)
+// before JSON.stringify, since native JSON would silently coerce Infinity
+// to null. Reverse the transform on every response so downstream code
+// can use plain `Number.isFinite()` checks. Symmetric with the server
+// helper at `src/utils/json-safe.ts`.
+function restoreInfinity(value) {
+  if (typeof value === 'string') {
+    if (value === 'Infinity')  return Infinity;
+    if (value === '-Infinity') return -Infinity;
+    if (value === 'NaN')       return NaN;
+    return value;
+  }
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(restoreInfinity);
+  const out = {};
+  for (const k of Object.keys(value)) out[k] = restoreInfinity(value[k]);
+  return out;
+}
+
 // Deep merge: apply a partial delta onto a full state object
 function deepMerge(target, delta) {
   if (delta === null || delta === undefined) return target;
@@ -2147,6 +2167,11 @@ function connect() {
           // Delta update — merge into current state
           currentState = deepMerge(currentState, msg.data);
         }
+        // Restore Infinity sentinels (server-side jsonSafeInfinity converted
+        // numeric Infinity to the string 'Infinity' so JSON.stringify wouldn't
+        // silently coerce it to null). After restoration, downstream code can
+        // use plain `Number.isFinite()` on numeric fields.
+        if (currentState) currentState = restoreInfinity(currentState);
         if (currentState) render(currentState);
       }
       // (msg.type === 'alert' branch removed 2026-05-09 — alerts now go through
@@ -3269,7 +3294,7 @@ async function fetchStrategyAttribution() {
   try {
     const r = await fetch(`/api/strategy-attribution?hours=${attrWindowHours}`);
     if (!r.ok) return;
-    const d = await r.json();
+    const d = restoreInfinity(await r.json());
     if (d.error) return;
     renderStrategyAttribution(d);
   } catch { /* keep last render */ }
@@ -3315,9 +3340,15 @@ function renderStrategyAttribution(d) {
     if (sr >= 0.30) return '#ff9100';
     return '#ff1744';
   };
-  // Color-code DIRTY/INF vs baseline (positive delta = green)
+  // Color-code DIRTY/INF vs baseline (positive delta = green).
+  // Infinity needs explicit handling: ∞−∞ = NaN, ∞−finite = ∞, finite−∞ = -∞.
   const colorDPI = (dpi) => {
     if (baseDPI == null || dpi == null) return 'var(--text-mid)';
+    const baseInf = !Number.isFinite(baseDPI);
+    const dpiInf  = !Number.isFinite(dpi);
+    if (dpiInf && baseInf) return 'var(--text-mid)';   // both ∞ → tied
+    if (dpiInf)            return '#39ff14';            // strictly above
+    if (baseInf)           return '#ff1744';            // strictly below
     const delta = dpi - baseDPI;
     if (delta > 0.5)  return '#39ff14';
     if (delta > 0)    return '#ffe600';
@@ -3523,17 +3554,17 @@ async function fetchInfEfficiency() {
       fetch('/api/schedule-audit?days=7'),
     ].filter(Boolean));
     if (!r1.ok) return;
-    const d = await r1.json();
+    const d = restoreInfinity(await r1.json());
     if (d.error) return;
     effData = d;
     if (r2 && r2.ok) {
-      const d24 = await r2.json();
+      const d24 = restoreInfinity(await r2.json());
       if (!d24.error) effData24h = d24;
     } else if (effWindow === 24) {
       effData24h = d;
     }
     if (r3 && r3.ok) {
-      const a = await r3.json();
+      const a = restoreInfinity(await r3.json());
       if (!a.error) auditData = a;
     }
     renderInfEfficiency();
@@ -3656,7 +3687,11 @@ function renderInfEfficiency() {
     tile(
       'DRUG vs ARMS',
       dvaWinner,
-      dvaSub + (dvaDelta != null ? ` · ${(dvaDelta > 0 ? '+' : '') + dvaDelta.toFixed(1)}%` : ''),
+      // dvaSub already includes the delta when finite (computed earlier
+      // with a Number.isFinite guard). This second-pass append is now
+      // redundant — kept as a no-op to preserve the data flow but
+      // dropping the unsafe `.toFixed(1)` on Infinity.
+      dvaSub,
       dvaColor,
     ),
   ].join('');

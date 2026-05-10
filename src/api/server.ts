@@ -16,6 +16,7 @@ import type { ScheduleEvidenceFeed } from '../feeds/schedule-evidence';
 import type { DirtyFlowFeed } from '../feeds/dirty-flow';
 import type { NetworkOpsFeed } from '../feeds/network-ops';
 import { computeEfficiency, computeScheduleAudit } from '../engine/efficiency';
+import { jsonSafeInfinity } from '../utils/json-safe';
 
 // --- Public-safe state picker (FlowDirty.fun) ---
 // Strips operator-private fields from DashboardState before broadcasting on
@@ -440,6 +441,18 @@ export class ApiServer {
             message: `dirtyEarned (${dirtyEarned}) exceeds 2x base reward (${base}). Likely a typo.`,
           });
         }
+        // Manual op-result inserts MUST carry an inf_cost so DIRTY/INF
+        // aggregations stay correct. Default to the latest op-params
+        // snapshot (~9-12 INF live) so pasted outcomes don't get NULL
+        // cost and silently overstate efficiency. If the feed hasn't
+        // sampled yet, fall back to historical 5.0.
+        const latestParams = this.storage.getLatestOpParams();
+        const fallbackInfCost = (() => {
+          const all = [latestParams[0], latestParams[1], latestParams[2]]
+            .filter(p => p?.inf_cost_per_op != null)
+            .sort((a, b) => (b!.ts ?? 0) - (a!.ts ?? 0));
+          return all[0]?.inf_cost_per_op ?? 5.0;
+        })();
         const id = this.storage.insertOpOutcome({
           ts: ts ?? Date.now(),
           opType,
@@ -447,6 +460,9 @@ export class ApiServer {
           dirtyEarned,
           baseReward: base,
           note,
+          // infCost auto-derives infBurned in insertOpOutcome
+          // (succeeded → 0, failed → infCost).
+          infCost: fallbackInfCost,
         });
         this.onOpStatsChanged?.();
         return { success: true, id };
@@ -534,7 +550,14 @@ export class ApiServer {
           }),
           { ops: 0, wins: 0, dirtyEarned: 0, infBurned: 0 },
         );
-        return {
+        // Baseline DPI is Infinity when all strategies had zero failures
+        // (every op succeeded → INF refunded → no INF spent).
+        const baselineDpi = totals.infBurned > 0
+          ? totals.dirtyEarned / totals.infBurned
+          : (totals.wins > 0 ? Infinity : null);
+        // jsonSafeInfinity preserves Infinity as the sentinel string
+        // 'Infinity' so the dashboard can render ∞ instead of seeing null.
+        return jsonSafeInfinity({
           windowHours: hours,
           generatedAt: Date.now(),
           rows,
@@ -543,9 +566,9 @@ export class ApiServer {
             successRate: totals.ops > 0 ? totals.wins / totals.ops : 0,
             dirtyEarned: totals.dirtyEarned,
             infBurned:   totals.infBurned,
-            dirtyPerInf: totals.infBurned > 0 ? totals.dirtyEarned / totals.infBurned : null,
+            dirtyPerInf: baselineDpi,
           },
-        };
+        });
       }),
     );
 
@@ -598,7 +621,11 @@ export class ApiServer {
             .sort((a, b) => (b!.ts ?? 0) - (a!.ts ?? 0));
           return all[0]?.inf_cost_per_op ?? 5.0;
         })();
-        return { ...operator, network, infCostPerOp };
+        // Refund-on-success means dirty_per_inf can be Infinity. JSON
+        // serialization would convert it to null silently — wrap the
+        // response so Infinity becomes the sentinel string 'Infinity'
+        // and the dashboard renders ∞ correctly.
+        return jsonSafeInfinity({ ...operator, network, infCostPerOp });
       }),
     );
 
@@ -621,9 +648,13 @@ export class ApiServer {
       publicGate(async (req: any) => {
         if (!this.getSchedule) return { error: 'schedule accessor not configured' };
         const days = req.query?.days ? Number(req.query.days) : 7;
-        return computeScheduleAudit(this.storage, this.getSchedule(), {
-          windowHours: days * 24,
-        });
+        // Wrap to preserve Infinity values across JSON.stringify (see
+        // jsonSafeInfinity for the sentinel-string strategy).
+        return jsonSafeInfinity(
+          computeScheduleAudit(this.storage, this.getSchedule(), {
+            windowHours: days * 24,
+          }),
+        );
       }),
     );
 
@@ -804,20 +835,25 @@ export class ApiServer {
   // Broadcast state to all WS clients (delta-based) — both private /ws and
   // public /ws/network. The public stream gets a stripped state.
   broadcast(state: DashboardState) {
+    // Refund-on-success means economics.dirtyPerInf can be Infinity.
+    // Sanitize ONCE per tick so all downstream client.send + structuredClone
+    // operations work on a JSON-safe copy. The dashboard's restoreInfinity()
+    // helper reverses the transform on receipt.
+    const safeState = jsonSafeInfinity(state);
     // Private operator stream
     for (const client of this.clients) {
       try {
         if (client.readyState !== 1) continue;
         const prev = this.clientPrevState.get(client);
         if (!prev) {
-          client.send(JSON.stringify({ type: 'state', full: true, data: state }));
+          client.send(JSON.stringify({ type: 'state', full: true, data: safeState }));
         } else {
-          const diff = deepDiff(prev, state);
+          const diff = deepDiff(prev, safeState);
           if (diff !== null) {
             client.send(JSON.stringify({ type: 'state', full: false, data: diff }));
           }
         }
-        this.clientPrevState.set(client, structuredClone(state));
+        this.clientPrevState.set(client, structuredClone(safeState));
       } catch {
         this.clients.delete(client);
         this.clientPrevState.delete(client);
@@ -827,7 +863,8 @@ export class ApiServer {
     // Public stream — pick the safe slice once per broadcast, then delta-diff
     // against each public client's previous public-slice snapshot.
     if (this.publicClients.size > 0) {
-      const publicState = pickPublicState(state);
+      // Use the already-Infinity-sanitized state for the public slice too.
+      const publicState = jsonSafeInfinity(pickPublicState(state));
       for (const client of this.publicClients) {
         try {
           if (client.readyState !== 1) continue;

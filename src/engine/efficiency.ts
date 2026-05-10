@@ -129,6 +129,25 @@ function emptyBucket(): EfficiencyBucket {
   };
 }
 
+/**
+ * Sort comparator (descending) for any object with `dirty_per_inf` and `ops`.
+ * Plain `b.dpi - a.dpi` is broken for Infinity (Infinity - Infinity = NaN,
+ * so ties become unstable). This explicit comparator:
+ *   - ranks Infinity above all finite values
+ *   - breaks ∞ ↔ ∞ ties by ops count (more samples wins)
+ */
+function compareDpiDesc(
+  a: { dirty_per_inf: number; ops: number },
+  b: { dirty_per_inf: number; ops: number },
+): number {
+  const aFin = Number.isFinite(a.dirty_per_inf);
+  const bFin = Number.isFinite(b.dirty_per_inf);
+  if (!aFin && !bFin) return b.ops - a.ops;
+  if (!aFin) return -1;
+  if (!bFin) return 1;
+  return b.dirty_per_inf - a.dirty_per_inf;
+}
+
 /** Compute derived ratios after accumulation. Mutates in place. */
 function finalize(b: EfficiencyBucket): void {
   // dirty_per_inf cases:
@@ -224,7 +243,7 @@ export function computeEfficiency(
   }
   const byOpType = [...opTypeMap.values()];
   for (const row of byOpType) finalize(row);
-  byOpType.sort((a, b) => b.dirty_per_inf - a.dirty_per_inf);
+  byOpType.sort(compareDpiDesc);
 
   // By strategy (sparse)
   const stratMap = new Map<string, StrategyEfficiencyRow>();
@@ -239,7 +258,7 @@ export function computeEfficiency(
   }
   const byStrategy = [...stratMap.values()];
   for (const row of byStrategy) finalize(row);
-  byStrategy.sort((a, b) => b.dirty_per_inf - a.dirty_per_inf);
+  byStrategy.sort(compareDpiDesc);
 
   // Sample-note: warn the operator about known gotchas.
   let sampleNote: string | null = null;
