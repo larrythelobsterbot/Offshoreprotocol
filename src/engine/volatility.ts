@@ -245,6 +245,125 @@ export class VolatilityEngine extends EventEmitter {
     };
   }
 
+  /**
+   * Shadow recomputation of the price-sensitive danger inputs as if the
+   * most recent tick were `shadowPrice` instead of `this.ethPrice`. Used
+   * by the dashboard's Oracle Divergence panel to surface
+   * "what would danger be RIGHT NOW if we trusted RedStone instead of
+   * Hyperliquid?".
+   *
+   * Implementation: take the existing returns1m series and substitute
+   * the last entry with a return that lands at `shadowPrice` instead of
+   * the current `this.ethPrice`. Recompute vol/pFail/velocity from that
+   * shadow series. Everything else (CVD, OB, NetworkHealth, etc.) is
+   * price-independent at this tick, so we reuse the live values.
+   *
+   * Returns null when there isn't enough data to compute a meaningful
+   * shadow (no live price, no candles, no thresholds).
+   */
+  computeShadowDangerAtPrice(shadowPrice: number): {
+    dangerScore: number;
+    pFailExtortion: number;
+    pFailArms: number;
+    pFailDrug: number;
+    // Components for debugging / panel breakdown.
+    components: {
+      volComponent: number;
+      ethVelocityComponent: number;
+      otherComponents: number;     // sum of inputs that don't depend on price
+    };
+  } | null {
+    if (this.ethPrice == null || this.ethPrice <= 0) return null;
+    if (this.returns1m.length === 0) return null;
+    if (!Number.isFinite(shadowPrice) || shadowPrice <= 0) return null;
+
+    // Build a shadow returns series by REPLACING the last return with
+    // one that ends at shadowPrice. The prior close = currentClose ÷ e^lastRet.
+    // We don't mutate this.returns1m.
+    const last = this.returns1m[this.returns1m.length - 1];
+    const priorClose = this.ethPrice / Math.exp(last.r);
+    const shadowLast = { t: last.t, r: Math.log(shadowPrice / priorClose) };
+    const shadowReturns = this.returns1m.slice(0, -1);
+    shadowReturns.push(shadowLast);
+
+    const volAt = (windowMinutes: number): number | null => {
+      const slice = shadowReturns.slice(-windowMinutes);
+      if (slice.length < Math.min(3, windowMinutes)) return null;
+      const mean = slice.reduce((s, x) => s + x.r, 0) / slice.length;
+      const variance = slice.reduce((s, x) => s + (x.r - mean) ** 2, 0) / (slice.length - 1);
+      return Math.sqrt(variance) * Math.sqrt(525600) * 100; // annualised %
+    };
+    const v5  = volAt(5);
+    const v30 = volAt(30);
+    const v90 = volAt(90);
+
+    // Live thresholds (same as primary path).
+    const liveTh = this.liveThresholds();
+    const utcHour = new Date().getUTCHours();
+    const pFailRaw = (vol: number | null, win: number, th: number): number => {
+      if (vol === null) return 0.5;
+      return dropProbStudentT(vol, win, th, this.studentTDf);
+    };
+    const probExtortion = calibrateProb(pFailRaw(v5,  5,  liveTh.extortion), 'extortion', utcHour);
+    const probArms      = calibrateProb(pFailRaw(v30, 30, liveTh.arms),      'arms',      utcHour);
+    const probDrug      = calibrateProb(pFailRaw(v90, 90, liveTh.drug),      'drug',      utcHour);
+
+    // Recompute the two price-sensitive danger components.
+    const refVol = v30 ?? v5 ?? 0;
+    let volComponent = 2;
+    if (refVol > 120) volComponent = 25;
+    else if (refVol > 80) volComponent = 18;
+    else if (refVol > 60) volComponent = 13;
+    else if (refVol > 40) volComponent = 7;
+
+    // ETH velocity using shadow returns. Mirrors getEthVelocity() but on
+    // the shadow series. The danger contribution mirrors the EthVelocity
+    // signal's risk levels: critical = 15, elevated = 7, none = 0. We
+    // approximate the live signal's classifier here (its real one is in
+    // src/engine/eth-velocity-signal.ts) by using a conservative bps1m
+    // threshold for "shadow" purposes only: <-50 bps = critical, <-20 bps
+    // = elevated. Same defaults the signal ships with.
+    let ethVelocityComponent = 0;
+    if (shadowReturns.length >= 1) {
+      const bps1m = shadowReturns[shadowReturns.length - 1].r * 10_000;
+      if (bps1m <= -50) ethVelocityComponent = 15;
+      else if (bps1m <= -20) ethVelocityComponent = 7;
+    }
+
+    // Reconstruct the rest of the danger score from the live calc path
+    // by reading whichever side-channel inputs are price-independent
+    // RIGHT NOW. We can't easily re-call calcScores() because it would
+    // also touch the price components — so we approximate the
+    // "other components" as (currentDanger − currentVolComponent −
+    // currentEthVelocityComponent). This keeps the shadow danger
+    // self-consistent with the live one when shadowPrice == ethPrice.
+    const live = this.calcScores();
+    const liveRefVol = (this.getVolatility().vol30m ?? this.getVolatility().vol5m ?? 0);
+    let liveVolComponent = 2;
+    if (liveRefVol > 120) liveVolComponent = 25;
+    else if (liveRefVol > 80) liveVolComponent = 18;
+    else if (liveRefVol > 60) liveVolComponent = 13;
+    else if (liveRefVol > 40) liveVolComponent = 7;
+    const liveEv = this.getEthVelocitySnap ? this.getEthVelocitySnap() : null;
+    let liveEthVelocityComponent = 0;
+    if (liveEv && liveEv.bps1m != null) {
+      if (liveEv.risk === 'critical') liveEthVelocityComponent = 15;
+      else if (liveEv.risk === 'elevated') liveEthVelocityComponent = 7;
+    }
+    const otherComponents = Math.max(0, live.dangerScore - liveVolComponent - liveEthVelocityComponent);
+
+    const shadowDanger = Math.round(
+      Math.min(100, Math.max(0, volComponent + ethVelocityComponent + otherComponents)),
+    );
+    return {
+      dangerScore: shadowDanger,
+      pFailExtortion: probExtortion,
+      pFailArms: probArms,
+      pFailDrug: probDrug,
+      components: { volComponent, ethVelocityComponent, otherComponents },
+    };
+  }
+
   // --- Feed handlers ---
 
   onTick(price: number) {

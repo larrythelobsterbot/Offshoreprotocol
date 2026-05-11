@@ -2223,6 +2223,18 @@
     <div class="price-change" id="ethChange">--</div>
   </div>
 
+  <!-- Oracle Divergence (RedStone vs HL) -->
+  <div class="card" id="oracleCard" style="border-color: #fbbf24; grid-column: span 2;">
+    <div class="card-title">
+      ORACLE FEEDS
+      <span class="info-pill" title="RedStone is the on-chain ETH/USD price feed the Offshore Protocol corp contracts actually use to set entryPrice and trigger liquidations. The bot's danger scorer uses Hyperliquid for ticks. When the two prices drift apart, the game can liquidate before the bot's risk model catches up. This panel shows the live spread and a shadow recomputation of the danger score using RedStone's price.">?</span>
+      <span id="oracleHealth" style="float:right;font-size:10px;color:var(--dim);"></span>
+    </div>
+    <div id="oracleBody" style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">
+      <div style="color:var(--dim);font-size:11px;">RedStone feed initialising…</div>
+    </div>
+  </div>
+
   <!-- Danger Score -->
   <div class="card">
     <div class="card-title">COMPOSITE DANGER<span class="info-pill" title="0–100 score combining realized volatility, orderbook imbalance, liquidation cascade risk, funding skew, and IV/RV spread. >75 = avoid all ops.">?</span></div>
@@ -3241,6 +3253,236 @@ document.addEventListener('DOMContentLoaded', () => {
   maybeAutoLoadOptimizer();
   // Hook tab switches — observe data-active-tab attribute changes
   const obs = new MutationObserver(maybeAutoLoadOptimizer);
+  obs.observe(document.body, { attributes: true, attributeFilter: ['data-active-tab'] });
+});
+
+// ============================================================
+// ORACLE DIVERGENCE PANEL (MARKET tab)
+// RedStone (game's enforcement oracle) vs Hyperliquid (bot ticks).
+// Header reads from WS-pushed state.redstone; chart pulls history
+// from /api/oracle-divergence on first MARKET visit + periodic
+// refresh.
+// ============================================================
+const __ORACLE = {
+  history: [],          // [{ ts, diff_bps, redstone_price, hl_price, danger_score, drug_threshold, kind }]
+  lastFetchMs: 0,
+  inFlight: false,
+};
+
+async function refreshOracleHistory(force = false) {
+  const now = Date.now();
+  if (__ORACLE.inFlight) return;
+  // Refresh at most every 60s (snapshot cadence). force=true bypasses.
+  if (!force && now - __ORACLE.lastFetchMs < 60_000) return;
+  __ORACLE.inFlight = true;
+  try {
+    const r = await fetch('/api/oracle-divergence?hours=2');
+    if (!r.ok) return;
+    const d = await r.json();
+    __ORACLE.history = d.history || [];
+    __ORACLE.lastFetchMs = now;
+    drawOracleChart();
+  } catch {}
+  finally { __ORACLE.inFlight = false; }
+}
+
+function fmtBps(b) {
+  if (b == null || !Number.isFinite(b)) return '–';
+  const s = b >= 0 ? '+' : '';
+  return `${s}${b.toFixed(1)} bps`;
+}
+
+function renderOracleDivergence(s) {
+  const card = document.getElementById('oracleCard');
+  if (!card) return;
+  const rs = s.redstone;
+  const body = document.getElementById('oracleBody');
+  const health = document.getElementById('oracleHealth');
+  if (!rs) {
+    body.innerHTML = '<div style="color:var(--dim);font-size:11px;">RedStone feed initialising… (no price yet)</div>';
+    if (health) health.textContent = '';
+    return;
+  }
+  const ageS = rs.fetchedAt ? Math.max(0, Math.floor((Date.now() - rs.fetchedAt) / 1000)) : null;
+  const updatedAgo = rs.updatedAt
+    ? Math.max(0, Math.floor(Date.now() / 1000 - rs.updatedAt))
+    : null;
+  if (health) {
+    health.textContent = rs.stale
+      ? '⚠ STALE'
+      : (ageS != null ? `fetched ${ageS}s ago` : '');
+    health.style.color = rs.stale ? 'var(--red)' : 'var(--dim)';
+  }
+  const hl = s.ethPrice;
+  const div = rs.divergence;
+  const diffBps = div ? div.currentBps : null;
+  const leads = div ? div.redstoneLeads : null;
+  const diffColor = diffBps == null ? 'var(--dim)'
+    : Math.abs(diffBps) < 5 ? 'var(--text)'
+    : leads ? 'var(--red)' : 'var(--yellow)';
+  const directionLabel = diffBps == null ? ''
+    : leads ? '■ RS leads (more bearish)'
+    : '■ HL leads (more bearish)';
+
+  // Shadow danger comparison (operator-only — null on public mode)
+  const shadow = rs.shadow;
+  const dangerHL = s.scores ? s.scores.dangerScore : null;
+  let shadowHtml = '';
+  if (shadow && dangerHL != null) {
+    const dDanger = shadow.dangerScore - dangerHL;
+    const dDangerColor = Math.abs(dDanger) < 1 ? 'var(--dim)' : dDanger > 0 ? 'var(--red)' : 'var(--green)';
+    const pfHL = (s.volatility && s.volatility.probDrug != null) ? s.volatility.probDrug : null;
+    const pfRS = shadow.pFailDrug;
+    const dPf  = (pfHL != null && pfRS != null) ? (pfRS - pfHL) * 100 : null;
+    const pfRow = (pfHL != null)
+      ? `<div class="vol-row"><span class="vol-label">pFail Drug</span>
+           <span class="vol-val">${(pfHL*100).toFixed(0)}% (HL) → <b style="color:${dPf > 1 ? 'var(--red)' : 'var(--text)'}">${(pfRS*100).toFixed(0)}% (RS)</b>${dPf != null ? `  (${dPf >= 0 ? '+' : ''}${dPf.toFixed(0)}pp)` : ''}</span></div>`
+      : '';
+    const warn = (dDanger > 3 && pfHL != null && (pfRS - pfHL) > 0.02)
+      ? `<div style="margin-top:6px;padding:6px 8px;background:rgba(255,23,68,0.08);border-left:2px solid var(--red);color:var(--red);font-size:11px;">⚠ RedStone is more bearish — game sees more risk than the bot's danger score suggests.</div>`
+      : '';
+    shadowHtml = `
+      <div style="margin-top:10px;padding-top:10px;border-top:1px dashed rgba(255,255,255,0.08);">
+        <div style="color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">SHADOW DANGER COMPARISON</div>
+        <div class="vol-row"><span class="vol-label">Composite Danger</span>
+          <span class="vol-val">${dangerHL} (HL) → <b style="color:${dDangerColor}">${shadow.dangerScore}</b> (RS)${Math.abs(dDanger) >= 1 ? `  (${dDanger >= 0 ? '+' : ''}${dDanger})` : ''}</span>
+        </div>
+        ${pfRow}
+        ${warn}
+      </div>
+    `;
+  }
+
+  const statsRow = div ? `
+    <div style="margin-top:8px;display:flex;gap:18px;flex-wrap:wrap;font-size:10px;color:var(--dim);">
+      <span>5m avg: <b style="color:var(--text)">${fmtBps(div.avg5mBps)}</b></span>
+      <span>1h avg: <b style="color:var(--text)">${fmtBps(div.avg1hBps)}</b></span>
+      <span>1h max |Δ|: <b style="color:var(--text)">${fmtBps(div.max1hBps)}</b></span>
+      <span>RS-leads: <b style="color:var(--text)">${div.pctTimeRedstoneLeads.toFixed(0)}%</b> of 1h</span>
+      <span>samples: <b style="color:var(--text)">${div.samples}</b></span>
+    </div>
+  ` : '';
+
+  body.innerHTML = `
+    <div style="display:grid;grid-template-columns:120px 1fr auto;row-gap:4px;align-items:baseline;">
+      <span style="color:var(--dim);font-size:11px;">REDSTONE</span>
+      <span style="font-size:18px;color:#fbbf24;font-weight:700;">$${rs.price.toFixed(2)}</span>
+      <span style="font-size:10px;color:var(--dim);">${updatedAgo != null ? `oracle ${updatedAgo}s ago` : ''}</span>
+      <span style="color:var(--dim);font-size:11px;">HYPERLIQUID</span>
+      <span style="font-size:18px;color:var(--cyan);font-weight:700;">${hl ? '$'+hl.toFixed(2) : '—'}</span>
+      <span style="font-size:10px;color:var(--dim);">live ticks</span>
+      <span style="color:var(--dim);font-size:11px;">DIVERGENCE</span>
+      <span style="font-size:14px;color:${diffColor};font-weight:700;">${fmtBps(diffBps)}</span>
+      <span style="font-size:10px;color:${diffColor};">${directionLabel}</span>
+    </div>
+    ${statsRow}
+    <div style="margin-top:10px;height:100px;background:rgba(0,0,0,0.15);border-radius:3px;position:relative;">
+      <canvas id="oracleDivChart" style="width:100%;height:100%;display:block;"></canvas>
+    </div>
+    ${shadowHtml}
+  `;
+  // Reuse the cached history (refreshed on a separate timer) for the chart.
+  drawOracleChart();
+}
+
+function drawOracleChart() {
+  const canvas = document.getElementById('oracleDivChart');
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.offsetWidth;
+  const cssH = canvas.offsetHeight;
+  if (cssW < 10 || cssH < 10) return;  // tab hidden, dimensions zero
+  canvas.width = cssW * dpr;
+  canvas.height = cssH * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  const data = __ORACLE.history;
+  if (!data || data.length < 2) {
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.font = '11px JetBrains Mono, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Collecting divergence samples…', cssW/2, cssH/2);
+    return;
+  }
+  // X = time, Y = diff_bps. Range Y so the alert thresholds (±15 bps
+  // typical) are always visible even if real data is tighter.
+  const alertBps = 15;
+  let yMin = Math.min(...data.map(d => d.diff_bps), -alertBps - 5);
+  let yMax = Math.max(...data.map(d => d.diff_bps),  alertBps + 5);
+  const yPad = (yMax - yMin) * 0.05;
+  yMin -= yPad; yMax += yPad;
+  const xMin = data[0].ts;
+  const xMax = data[data.length - 1].ts;
+  const padL = 36, padR = 8, padT = 6, padB = 14;
+  const plotW = cssW - padL - padR;
+  const plotH = cssH - padT - padB;
+  const xFor = t => padL + ((t - xMin) / Math.max(1, xMax - xMin)) * plotW;
+  const yFor = v => padT + (1 - (v - yMin) / Math.max(1e-9, yMax - yMin)) * plotH;
+
+  // Zero line
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  const y0 = yFor(0);
+  ctx.moveTo(padL, y0); ctx.lineTo(padL + plotW, y0); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.font = '9px JetBrains Mono, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('0', padL - 3, y0);
+
+  // Alert threshold lines (dashed red)
+  ctx.strokeStyle = 'rgba(255,23,68,0.35)';
+  ctx.setLineDash([4, 3]);
+  for (const v of [alertBps, -alertBps]) {
+    const y = yFor(v);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,23,68,0.6)';
+    ctx.fillText(v.toFixed(0), padL - 3, y);
+  }
+  ctx.setLineDash([]);
+
+  // Line series — colour by sign (positive bps = RS above HL = green; negative = RS below = red)
+  ctx.lineWidth = 1.5;
+  for (let i = 1; i < data.length; i++) {
+    const a = data[i-1], b = data[i];
+    ctx.strokeStyle = b.diff_bps < 0 ? '#ff4466' : '#22d3ee';
+    ctx.beginPath();
+    ctx.moveTo(xFor(a.ts), yFor(a.diff_bps));
+    ctx.lineTo(xFor(b.ts), yFor(b.diff_bps));
+    ctx.stroke();
+  }
+  // Spike markers
+  ctx.fillStyle = 'rgba(255,23,68,0.85)';
+  for (const d of data) {
+    if (d.kind === 'spike') {
+      ctx.beginPath();
+      ctx.arc(xFor(d.ts), yFor(d.diff_bps), 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+// First fetch on page load, then a refresh every 60s. The MARKET-tab
+// state push happens on every WS broadcast (~1Hz) — that updates the
+// header instantly; the chart history fetch is a separate timer.
+document.addEventListener('DOMContentLoaded', () => {
+  refreshOracleHistory(true);
+  setInterval(() => refreshOracleHistory(false), 60_000);
+});
+// Redraw the chart when the operator first switches to the MARKET tab
+// (canvas dimensions are 0 while hidden, so the initial draw shows
+// nothing — we need a redraw with the correct size after reveal).
+document.addEventListener('DOMContentLoaded', () => {
+  const obs = new MutationObserver(() => {
+    if (document.body.getAttribute('data-active-tab') === 'market') {
+      // Defer one frame so layout has computed the visible width.
+      requestAnimationFrame(drawOracleChart);
+    }
+  });
   obs.observe(document.body, { attributes: true, attributeFilter: ['data-active-tab'] });
 });
 
@@ -5246,6 +5488,7 @@ function render(s) {
   if (s.tokenomics) renderTokenomics(s.tokenomics);
   if (s.dirtyPrice) renderDirtyPrice(s.dirtyPrice);
   if (s.loadouts)   renderLoadouts(s.loadouts);
+  renderOracleDivergence(s);
 
   // Danger-v2 leading-indicator panel (operator-only)
   renderDefenseV2(s);

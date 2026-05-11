@@ -96,6 +96,12 @@ function pickPublicState(state: DashboardState): any {
     meta: (state as any).meta,
     calibration: (state as any).calibration,
     opCostInf,                     // current INF stake per op (FlowDirty topbar)
+    // RedStone price + divergence vs HL is chain-derived and bot-agnostic
+    // → public-safe. Shadow danger is operator-derived (uses internal
+    // signals), so we strip it before publishing.
+    redstone: (state as any).redstone
+      ? { ...(state as any).redstone, shadow: null }
+      : null,
     // Live liquidation thresholds + weekend mode flag — public-safe (chain-derived)
     opParams: (state as any).opParams ?? null,
     // EXPLICITLY OMITTED — never reach the public stream:
@@ -880,6 +886,62 @@ export class ApiServer {
         };
       });
     }
+
+    // ── ORACLE DIVERGENCE ────────────────────────────────────────────
+    // Time-series of RedStone (game's enforcement oracle) vs Hyperliquid
+    // (bot's tick source) for the MARKET-tab Oracle Divergence panel.
+    // Operator-only — divergence patterns reveal bot internals.
+    this.app.get<{ Querystring: { hours?: string; limit?: string } }>(
+      '/api/oracle-divergence',
+      {
+        schema: {
+          querystring: {
+            type: 'object',
+            properties: {
+              hours: { type: 'integer', minimum: 1, maximum: 720 },
+              limit: { type: 'integer', minimum: 1, maximum: 5000 },
+            },
+          },
+        },
+      },
+      publicGate(async (req: any) => {
+        const hours = req.query?.hours ? Number(req.query.hours) : 2;
+        const limit = req.query?.limit ? Number(req.query.limit) : 500;
+        const sinceMs = Date.now() - hours * 3600_000;
+        const history = this.storage.getOracleDivergence({ sinceMs, limit });
+        const stats   = this.storage.getOracleDivergenceStats(sinceMs);
+        // Current snapshot pulled from getState() so the panel header
+        // stays in lock-step with what the dashboard's WS push shows.
+        const state = this.getState() as any;
+        const rs = state?.redstone ?? null;
+        return {
+          windowHours: hours,
+          generatedAt: Date.now(),
+          current: rs ? {
+            redstone: rs.price,
+            redstoneUpdatedAt: rs.updatedAt,
+            redstoneStale: rs.stale,
+            hl: state.ethPrice ?? null,
+            diffBps: rs.divergence?.currentBps ?? null,
+            redstoneLeads: rs.divergence?.redstoneLeads ?? null,
+          } : null,
+          stats: {
+            samples: stats.samples,
+            avgBps: stats.avgBps,
+            maxAbsBps: stats.maxAbsBps,
+            pctTimeRedstoneLeads: stats.pctRedstoneLeads,
+            // Rolling 5m/1h come from the in-memory ring (more granular
+            // than the DB snapshot cadence). Falls back to DB stats when
+            // ring is empty.
+            ringAvg5mBps: rs?.divergence?.avg5mBps ?? null,
+            ringAvg1hBps: rs?.divergence?.avg1hBps ?? null,
+            ringMax1hBps: rs?.divergence?.max1hBps ?? null,
+          },
+          shadow: rs?.shadow ?? null,
+          history,
+        };
+      }),
+    );
 
     // ── LOADOUT OPTIMIZER ─────────────────────────────────────────────
     // Three endpoints serving the ENTERPRISE-tab optimizer panel:

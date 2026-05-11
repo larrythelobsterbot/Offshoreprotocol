@@ -12,6 +12,7 @@ import { LoadoutScannerFeed } from './feeds/loadout-scanner';
 import { ScheduleEvidenceFeed } from './feeds/schedule-evidence';
 import { NetworkHealthFeed } from './feeds/network-health';
 import { OpParamsFeed } from './feeds/op-params';
+import { RedStonePriceFeed, type RedStonePrice, type RedStoneDivergence } from './feeds/redstone-price';
 import { WhaleTradesFeed } from './feeds/whale-trades';
 import { WhaleClaimsFeed } from './feeds/whale-claims';
 import { WhaleCopyFeed } from './feeds/whale-copy';
@@ -404,6 +405,40 @@ async function main() {
     () => {
       const s = engine.getState() as any;
       s.thresholdCliffGate = corpBot.getThresholdCliffState();
+      // Attach the RedStone block. Stats are computed from the in-memory
+      // ring every tick — small ring (200 samples), so this is cheap.
+      if (latestRedstone) {
+        const stats = redstone.getDivergenceStats();
+        const shadow = latestRedstone.price > 0
+          ? engine.computeShadowDangerAtPrice(latestRedstone.price)
+          : null;
+        s.redstone = {
+          price: latestRedstone.price,
+          updatedAt: latestRedstone.updatedAt,
+          fetchedAt: latestRedstone.fetchedAt,
+          stale: latestRedstone.stale,
+          oracle: config.redstoneOracleAddress,
+          divergence: latestDivergence ? {
+            currentBps: latestDivergence.diffBps,
+            redstoneLeads: latestDivergence.redstoneLeads,
+            ts: latestDivergence.ts,
+            avg5mBps: stats.avg5mBps,
+            avg1hBps: stats.avg1hBps,
+            max1hBps: stats.max1hBps,
+            pctTimeRedstoneLeads: stats.pctTimeRedstoneLeads,
+            samples: stats.samples,
+          } : null,
+          shadow: shadow ? {
+            dangerScore: shadow.dangerScore,
+            pFailExtortion: shadow.pFailExtortion,
+            pFailArms: shadow.pFailArms,
+            pFailDrug: shadow.pFailDrug,
+            components: shadow.components,
+          } : null,
+        };
+      } else {
+        s.redstone = null;
+      }
       return s;
     },
     onOpStatsChanged,
@@ -496,6 +531,99 @@ async function main() {
     // Send with inline-keyboard buttons (⏸ Pause / ✕ Dismiss) so the
     // operator can act directly from the alert without typing.
     void bot.sendThresholdCliffAlert(config.operatorChatId, msg);
+  });
+
+  // ── RedStone ETH/USD oracle feed ──
+  // Polls the on-chain feed the corp contracts actually consult for
+  // liquidations. Runs in parallel with Hyperliquid; HL is still the
+  // primary tick source for the danger scorer. This feed publishes
+  // divergence data to the dashboard + DB so we can validate whether
+  // the bot's view of "current price" matches what the game enforces.
+  const redstone = new RedStonePriceFeed({
+    oracleAddress: config.redstoneOracleAddress,
+    pollMs: config.redstonePollMs,
+    staleThresholdS: config.redstoneStaleThresholdS,
+  });
+  // Mutable holders for the latest price + divergence so getState()
+  // doesn't have to re-walk the ring on every WS broadcast.
+  let latestRedstone: RedStonePrice | null = null;
+  let latestDivergence: RedStoneDivergence | null = null;
+  // Track the last DB-snapshot write (every 60s) and the last TG-alert
+  // fire (cooldown). Independent timers.
+  let lastDivergenceSnapshotMs = 0;
+  let lastDivergenceAlertMs = 0;
+  redstone.on('price', (snap: RedStonePrice) => {
+    latestRedstone = snap;
+    const hl = engine.getEthPrice();
+    if (hl == null || hl <= 0) return;
+    const div = redstone.recordDivergence(hl);
+    if (!div) return;
+    latestDivergence = div;
+
+    const nowMs = Date.now();
+    const isSpike = Math.abs(div.diffBps) > config.redstoneDivergenceAlertBps;
+    const dueSnapshot = nowMs - lastDivergenceSnapshotMs > 60_000;
+    if (isSpike || dueSnapshot) {
+      // Persist for post-hoc analysis. We capture the live danger score,
+      // active-op count, and Drug threshold so post-hoc joins can
+      // correlate divergence spikes with bot state.
+      const state = engine.getState() as any;
+      const corps = state?.corpState?.corps as Array<any> | undefined;
+      const activeOps = Array.isArray(corps)
+        ? corps.filter((c) => c?.tradeInfo?.active).length
+        : null;
+      const drugThreshold = opParams.getSnapshot()?.thresholds?.[2] ?? null;
+      try {
+        storage.insertOracleDivergence({
+          ts: nowMs,
+          redstone_price: snap.price,
+          redstone_updated_at: snap.updatedAt,
+          hl_price: hl,
+          diff_bps: div.diffBps,
+          redstone_leads: div.redstoneLeads ? 1 : 0,
+          danger_score: state?.scores?.dangerScore ?? null,
+          active_ops: activeOps,
+          drug_threshold: drugThreshold,
+          kind: isSpike ? 'spike' : 'snapshot',
+        });
+      } catch (err: any) {
+        logger.warn({ err: err.message }, '[RedStone] insertOracleDivergence failed');
+      }
+      if (!isSpike) lastDivergenceSnapshotMs = nowMs;
+    }
+
+    // TG alert — only when RedStone is BELOW HL (game more bearish)
+    // AND |diff| exceeds threshold AND a Drug op is live AND we're
+    // outside the cooldown window. See brief for rationale.
+    if (
+      config.operatorChatId
+      && isSpike
+      && div.redstoneLeads
+      && nowMs - lastDivergenceAlertMs >= config.redstoneDivergenceAlertCooldownMin * 60_000
+    ) {
+      const state = engine.getState() as any;
+      const corps = (state?.corpState?.corps ?? []) as Array<any>;
+      const activeDrug = corps.filter((c) => c?.tradeInfo?.active && c?.tradeInfo?.mode === 2);
+      if (activeDrug.length > 0) {
+        lastDivergenceAlertMs = nowMs;
+        // Compute shadow danger for the alert body so the operator can
+        // see the magnitude of the disagreement.
+        const shadow = engine.computeShadowDangerAtPrice(snap.price);
+        const pfHL = state?.volatility?.probDrug ?? null;
+        const pfRS = shadow?.pFailDrug ?? null;
+        const msg =
+          `⚠️ *Oracle divergence — game sees more risk*\n\n` +
+          `RedStone: \`$${snap.price.toFixed(2)}\`  vs  HL: \`$${hl.toFixed(2)}\`\n` +
+          `Spread: \`${div.diffBps.toFixed(1)} bps\`  (RS more bearish)\n\n` +
+          `Active Drug ops: *${activeDrug.length}*\n` +
+          (pfHL != null && pfRS != null
+            ? `pFail(HL): ${(pfHL * 100).toFixed(0)}% → pFail(RS): ${(pfRS * 100).toFixed(0)}%\n\n`
+            : '\n') +
+          `If RedStone is leading downward, the game oracle may liquidate before your danger score reacts.\n` +
+          `Consider /bot pause until the spread closes.`;
+        void bot.sendDm(config.operatorChatId, msg, { parseMode: 'Markdown' });
+      }
+    }
   });
 
   // --- Corp Bot (Drug ↔ Arms auto-switcher + auto-claim) ---
@@ -681,6 +809,7 @@ async function main() {
   void loadoutScanner.start();
   void scheduleEvidence.start();
   void opParams.start();
+  if (!config.redstoneDisabled) void redstone.start();
   void whaleTrades.start();
   void whaleClaims.start();
   void kumbayaLp.start();
@@ -738,6 +867,7 @@ async function main() {
     loadoutScanner.stop();
     scheduleEvidence.stop();
     opParams.stop();
+    redstone.stop();
     whaleTrades.stop();
     whaleClaims.stop();
     kumbayaLp.stop();

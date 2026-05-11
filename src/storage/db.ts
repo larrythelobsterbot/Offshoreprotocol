@@ -439,6 +439,27 @@ export class Storage {
       -- sample tradeInfo() across active corps every 10 min and persist
       -- here whenever the value CHANGES, so we have a complete change
       -- history to debug "why did SR drop yesterday".
+      -- Oracle divergence log — RedStone (game's enforcement oracle)
+      -- vs Hyperliquid (bot's tick source). Written every 60s as a
+      -- snapshot AND every time |diff_bps| crosses the alert threshold.
+      -- Used to validate whether the bot's danger score is mis-aligned
+      -- with the price the game actually liquidates on.
+      CREATE TABLE IF NOT EXISTS oracle_divergence (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,                -- ms epoch (match other tables)
+        redstone_price REAL NOT NULL,
+        redstone_updated_at INTEGER NOT NULL,
+        hl_price REAL NOT NULL,
+        diff_bps REAL NOT NULL,             -- signed: positive = RS above HL
+        redstone_leads INTEGER NOT NULL,    -- 1 when RS < HL (game more bearish)
+        -- Context for post-hoc correlation analysis:
+        danger_score REAL,                  -- composite danger at write time
+        active_ops INTEGER,                 -- corps with isTradeActive=true
+        drug_threshold REAL,                -- current Drug threshold (fraction)
+        kind TEXT NOT NULL                  -- 'snapshot' | 'spike'
+      );
+      CREATE INDEX IF NOT EXISTS idx_oracle_divergence_ts ON oracle_divergence(ts);
+
       CREATE TABLE IF NOT EXISTS op_params_history (
         ts INTEGER NOT NULL,
         mode INTEGER NOT NULL CHECK(mode IN (0,1,2)),
@@ -1363,6 +1384,9 @@ export class Storage {
       for (const table of tables) {
         this.db.prepare(`DELETE FROM ${table} WHERE timestamp < ?`).run(cutoff);
       }
+      // oracle_divergence uses `ts` (ms epoch), not `timestamp`. Same
+      // retention window applies.
+      this.db.prepare('DELETE FROM oracle_divergence WHERE ts < ?').run(cutoff);
     });
     txn();
     this.db.pragma('optimize');
@@ -1909,6 +1933,78 @@ export class Storage {
     return this.db.prepare(
       `SELECT ts, threshold_pct, sample_count, is_weekend FROM op_params_history WHERE mode = ? ORDER BY ts DESC LIMIT ?`,
     ).all(mode, limit) as any;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Oracle divergence (RedStone vs Hyperliquid)
+  // ────────────────────────────────────────────────────────────
+
+  insertOracleDivergence(row: {
+    ts: number;
+    redstone_price: number;
+    redstone_updated_at: number;
+    hl_price: number;
+    diff_bps: number;
+    redstone_leads: 0 | 1;
+    danger_score: number | null;
+    active_ops: number | null;
+    drug_threshold: number | null;
+    kind: 'snapshot' | 'spike';
+  }): void {
+    this.db.prepare(`
+      INSERT INTO oracle_divergence
+        (ts, redstone_price, redstone_updated_at, hl_price, diff_bps,
+         redstone_leads, danger_score, active_ops, drug_threshold, kind)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      row.ts, row.redstone_price, row.redstone_updated_at, row.hl_price,
+      row.diff_bps, row.redstone_leads,
+      row.danger_score, row.active_ops, row.drug_threshold, row.kind,
+    );
+  }
+
+  /**
+   * Pull divergence rows for the dashboard chart. Defaults to the most
+   * recent 2 hours, ordered oldest→newest so the chart can append
+   * cleanly.
+   */
+  getOracleDivergence(opts: { sinceMs?: number; limit?: number } = {}): {
+    ts: number; redstone_price: number; hl_price: number; diff_bps: number;
+    redstone_leads: number; danger_score: number | null;
+    drug_threshold: number | null; kind: string;
+  }[] {
+    const since = opts.sinceMs ?? (Date.now() - 2 * 3600_000);
+    const limit = opts.limit ?? 500;
+    return this.db.prepare(`
+      SELECT ts, redstone_price, hl_price, diff_bps, redstone_leads,
+             danger_score, drug_threshold, kind
+      FROM oracle_divergence
+      WHERE ts >= ?
+      ORDER BY ts ASC
+      LIMIT ?
+    `).all(since, limit) as any;
+  }
+
+  /** Aggregate stats for the dashboard header strip. */
+  getOracleDivergenceStats(sinceMs: number): {
+    samples: number; avgBps: number; maxAbsBps: number;
+    pctRedstoneLeads: number;
+  } {
+    const row = this.db.prepare(`
+      SELECT
+        COUNT(*)                                    AS samples,
+        COALESCE(AVG(diff_bps), 0)                  AS avgBps,
+        COALESCE(MAX(ABS(diff_bps)), 0)             AS maxAbsBps,
+        COALESCE(AVG(redstone_leads) * 100, 0)      AS pctRedstoneLeads
+      FROM oracle_divergence
+      WHERE ts >= ?
+    `).get(sinceMs) as any;
+    return {
+      samples: Number(row?.samples ?? 0),
+      avgBps: Number(row?.avgBps ?? 0),
+      maxAbsBps: Number(row?.maxAbsBps ?? 0),
+      pctRedstoneLeads: Number(row?.pctRedstoneLeads ?? 0),
+    };
   }
 
   // ────────────────────────────────────────────────────────────

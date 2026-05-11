@@ -1,0 +1,283 @@
+// ============================================================
+// RedStonePriceFeed — polls the on-chain RedStone ETH/USD oracle
+// at `oracleAddress` (default `0xc555c100db24df36d406243642c169cc5a937f09`
+// on MegaETH mainnet). This is the price the Offshore Protocol corp
+// contracts actually consult when setting `entryPrice` at trade start
+// and when the keeper calls `liquidate()` — so it's the *ground truth*
+// for what the game sees, regardless of what Hyperliquid is showing.
+//
+// Phase 1 scope: feed + divergence-vs-HL computation. The feed runs in
+// parallel with Hyperliquid; Hyperliquid is still the primary tick
+// source for the danger scorer. The data this feed produces is logged
+// to the `oracle_divergence` table and surfaced on the MARKET tab.
+//
+// Once the divergence sample is large enough to be conclusive, a
+// separate migration will move cliff defense + hedge sizing onto this
+// feed — but that is out of scope for Phase 1.
+// ============================================================
+
+import { ethers } from 'ethers';
+import { EventEmitter } from 'events';
+import { logger } from '../logger';
+
+const DEFAULT_RPC = 'https://mainnet.megaeth.com/rpc';
+
+// Chainlink-compatible AggregatorV3 interface — RedStone exposes the
+// same shape. We only need latestRoundData + decimals.
+const AGGREGATOR_ABI = [
+  'function latestRoundData() external view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)',
+  'function decimals() external view returns (uint8)',
+  'function description() external view returns (string)',
+];
+
+export interface RedStonePrice {
+  /** Human-readable USD price, e.g. 2332.89. */
+  price: number;
+  /** Raw int256 from the contract — preserved for audit / re-derivation. */
+  rawAnswer: bigint;
+  /** Reported by decimals(); typically 8 for ETH/USD. */
+  decimals: number;
+  /** Chainlink-style round id. */
+  roundId: bigint;
+  /**
+   * Oracle's own "updated at" stamp. We normalise to UNIX SECONDS here
+   * — RedStone Classic on some chains reports microseconds, on others
+   * seconds. The constructor normaliser handles both at runtime.
+   */
+  updatedAt: number;
+  /** Local wall-clock (ms) at the moment we got the response. */
+  fetchedAt: number;
+  /** True if updatedAt is older than `staleThresholdS` seconds vs `now`. */
+  stale: boolean;
+}
+
+export interface RedStoneDivergence {
+  redstone: number;
+  hyperliquid: number;
+  /** Signed: positive = RedStone above HL. */
+  diffBps: number;
+  /** True when RedStone < HL (= game sees more downside). */
+  redstoneLeads: boolean;
+  ts: number;
+}
+
+export interface RedStonePriceFeedConfig {
+  /** Required — the RedStone ETH/USD aggregator address on MegaETH. */
+  oracleAddress: string;
+  rpcUrl?: string;
+  pollMs?: number;
+  /** Treat the on-chain price as stale if updatedAt is older than this. */
+  staleThresholdS?: number;
+  /** Ring buffer capacity for in-memory divergence history. */
+  divergenceRingSize?: number;
+}
+
+const DEFAULT_POLL_MS = 3_000;
+const DEFAULT_STALE_S = 120;
+const DEFAULT_RING = 200;
+const MAX_BACKOFF_MS = 30_000;
+const INIT_BACKOFF_MS = 1_000;
+
+export class RedStonePriceFeed extends EventEmitter {
+  private readonly provider: ethers.JsonRpcProvider;
+  private readonly contract: ethers.Contract;
+  private readonly cfg: Required<Omit<RedStonePriceFeedConfig, 'rpcUrl'>> & { rpcUrl: string };
+
+  /** Resolved on first start(); RedStone ETH/USD on MegaETH = 8. */
+  private decimalsValue = 8;
+  private readonly divergenceLog: RedStoneDivergence[] = [];
+  private current: RedStonePrice | null = null;
+  private pollTimer: NodeJS.Timeout | null = null;
+  private backoffMs = 0;
+  private consecutiveFailures = 0;
+  private stopped = false;
+
+  constructor(cfg: RedStonePriceFeedConfig) {
+    super();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(cfg.oracleAddress)) {
+      throw new Error(`[RedStone] invalid oracleAddress: ${cfg.oracleAddress}`);
+    }
+    this.cfg = {
+      oracleAddress: cfg.oracleAddress,
+      rpcUrl: cfg.rpcUrl ?? DEFAULT_RPC,
+      pollMs: cfg.pollMs ?? DEFAULT_POLL_MS,
+      staleThresholdS: cfg.staleThresholdS ?? DEFAULT_STALE_S,
+      divergenceRingSize: cfg.divergenceRingSize ?? DEFAULT_RING,
+    };
+    this.provider = new ethers.JsonRpcProvider(this.cfg.rpcUrl);
+    this.contract = new ethers.Contract(this.cfg.oracleAddress, AGGREGATOR_ABI, this.provider);
+  }
+
+  /** Latest snapshot or null if first poll hasn't completed (or all failed). */
+  getPrice(): RedStonePrice | null { return this.current; }
+
+  /** Read-only view of the in-memory divergence ring. */
+  getDivergenceLog(): RedStoneDivergence[] { return this.divergenceLog.slice(); }
+
+  /** True only when the most recent poll succeeded AND wasn't stale. */
+  isHealthy(): boolean {
+    return !!this.current && !this.current.stale && this.consecutiveFailures === 0;
+  }
+
+  async start(): Promise<void> {
+    this.stopped = false;
+    // Fetch decimals once on init — RedStone publishes ETH/USD with 8
+    // decimals on MegaETH (confirmed 2026-05-11), but we read at startup
+    // anyway in case the deployment changes.
+    try {
+      const d = await this.contract.decimals();
+      this.decimalsValue = Number(d);
+      logger.info({ decimals: this.decimalsValue, oracle: this.cfg.oracleAddress }, '[RedStone] decimals fetched');
+    } catch (err: any) {
+      logger.warn({ err: err.message }, '[RedStone] decimals() failed; defaulting to 8');
+    }
+    // Try an initial poll so consumers don't wait pollMs for the first value.
+    try { await this.poll(); }
+    catch (err: any) { logger.warn({ err: err.message }, '[RedStone] initial poll failed'); }
+    this.scheduleNext();
+    logger.info(
+      { pollMs: this.cfg.pollMs, staleS: this.cfg.staleThresholdS },
+      '[RedStone] feed started',
+    );
+  }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    this.pollTimer = null;
+  }
+
+  /**
+   * Compute and record divergence given an externally-sourced
+   * Hyperliquid mark/oracle price (or whichever comparison anchor the
+   * caller chooses). Pushes to the in-memory ring and emits a
+   * `'divergence'` event so the dashboard wiring + DB logger can react.
+   * Safe to call with HL price = 0 or null (no-op).
+   */
+  recordDivergence(hyperliquidPrice: number | null): RedStoneDivergence | null {
+    if (!this.current || !hyperliquidPrice || hyperliquidPrice <= 0) return null;
+    const rs = this.current.price;
+    const diffBps = ((rs - hyperliquidPrice) / hyperliquidPrice) * 10_000;
+    const div: RedStoneDivergence = {
+      redstone: rs,
+      hyperliquid: hyperliquidPrice,
+      diffBps,
+      redstoneLeads: rs < hyperliquidPrice,   // game more bearish than HL
+      ts: Date.now(),
+    };
+    this.divergenceLog.push(div);
+    if (this.divergenceLog.length > this.cfg.divergenceRingSize) {
+      this.divergenceLog.splice(0, this.divergenceLog.length - this.cfg.divergenceRingSize);
+    }
+    this.emit('divergence', div);
+    return div;
+  }
+
+  /**
+   * Rolling-window aggregates from the in-memory ring. Used by the
+   * dashboard state attachment so we don't recompute on every WS push.
+   */
+  getDivergenceStats(): {
+    avg5mBps: number;
+    avg1hBps: number;
+    max1hBps: number;
+    pctTimeRedstoneLeads: number;
+    samples: number;
+  } {
+    const now = Date.now();
+    const win5m = this.divergenceLog.filter(d => now - d.ts <= 5 * 60_000);
+    const win1h = this.divergenceLog.filter(d => now - d.ts <= 60 * 60_000);
+    const mean = (xs: number[]) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+    const maxAbs = (xs: number[]) => xs.length ? xs.reduce((m, v) => Math.max(m, Math.abs(v)), 0) : 0;
+    const pctLeads = win1h.length
+      ? win1h.filter(d => d.redstoneLeads).length / win1h.length * 100
+      : 0;
+    return {
+      avg5mBps: mean(win5m.map(d => d.diffBps)),
+      avg1hBps: mean(win1h.map(d => d.diffBps)),
+      max1hBps: maxAbs(win1h.map(d => d.diffBps)),
+      pctTimeRedstoneLeads: pctLeads,
+      samples: this.divergenceLog.length,
+    };
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+
+  private scheduleNext() {
+    if (this.stopped) return;
+    const delay = this.backoffMs > 0 ? this.backoffMs : this.cfg.pollMs;
+    this.pollTimer = setTimeout(() => { void this.runOnce(); }, delay);
+    // Don't keep the process alive solely for this timer.
+    if (typeof (this.pollTimer as any).unref === 'function') (this.pollTimer as any).unref();
+  }
+
+  private async runOnce(): Promise<void> {
+    try {
+      await this.poll();
+      // Success — reset backoff.
+      if (this.consecutiveFailures > 0) {
+        logger.info({ failures: this.consecutiveFailures }, '[RedStone] feed recovered');
+      }
+      this.consecutiveFailures = 0;
+      this.backoffMs = 0;
+    } catch (err: any) {
+      this.consecutiveFailures++;
+      this.backoffMs = this.backoffMs === 0
+        ? INIT_BACKOFF_MS
+        : Math.min(this.backoffMs * 2, MAX_BACKOFF_MS);
+      logger.warn(
+        { err: err.message, failures: this.consecutiveFailures, nextRetryMs: this.backoffMs },
+        '[RedStone] poll failed',
+      );
+      // After 5 minutes of continuous failure, mark current price stale so
+      // downstream consumers can degrade gracefully.
+      if (this.current && this.consecutiveFailures * this.backoffMs > 5 * 60_000) {
+        this.current = { ...this.current, stale: true };
+      }
+    }
+    this.scheduleNext();
+  }
+
+  private async poll(): Promise<void> {
+    const res = await this.contract.latestRoundData();
+    // ethers v6 returns a typed Result tuple; destructure positionally.
+    const [roundId, answer, , updatedAtRaw] = res as unknown as [bigint, bigint, bigint, bigint, bigint];
+    if (typeof answer !== 'bigint') {
+      throw new Error('[RedStone] latestRoundData returned non-bigint answer');
+    }
+    if (answer <= 0n) {
+      throw new Error(`[RedStone] non-positive answer: ${answer}`);
+    }
+    // Normalise updatedAt — RedStone variants report timestamps in
+    // different units depending on chain config. Magnitude check
+    // anchored at "year 2026 in seconds = ~1.78e9":
+    //   ≥ 1e17 → nanoseconds  (÷ 1e9)
+    //   ≥ 1e14 → microseconds (÷ 1e6)   <- MegaETH RedStone uses this
+    //   ≥ 1e11 → milliseconds (÷ 1e3)
+    //   else  → already seconds
+    let updatedAtSec = Number(updatedAtRaw);
+    if      (updatedAtSec >= 1e17) updatedAtSec = Math.floor(updatedAtSec / 1e9);
+    else if (updatedAtSec >= 1e14) updatedAtSec = Math.floor(updatedAtSec / 1e6);
+    else if (updatedAtSec >= 1e11) updatedAtSec = Math.floor(updatedAtSec / 1e3);
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const stale = (nowSec - updatedAtSec) > this.cfg.staleThresholdS;
+    const price = Number(answer) / 10 ** this.decimalsValue;
+    // Sanity range — anything outside [50, 50000] for ETH is decode noise
+    // or a misconfigured oracle pointer.
+    if (!Number.isFinite(price) || price < 50 || price > 50000) {
+      throw new Error(`[RedStone] price out of sanity range: ${price}`);
+    }
+    const snap: RedStonePrice = {
+      price,
+      rawAnswer: answer,
+      decimals: this.decimalsValue,
+      roundId,
+      updatedAt: updatedAtSec,
+      fetchedAt: Date.now(),
+      stale,
+    };
+    this.current = snap;
+    this.emit('price', snap);
+  }
+}

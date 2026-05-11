@@ -146,4 +146,29 @@ export const config = {
   // Only fire alert when absolute new threshold is dangerous (below this
   // value). Prevents alerts on harmless tightening from 1.0% → 0.7%.
   thresholdDropAbsCeilingPct: parseFloat(process.env.THRESHOLD_DROP_ABS_CEILING_PCT ?? '0.0030'),
+
+  // ── RedStone ETH/USD oracle feed ──
+  // The on-chain price feed that Offshore Protocol corp contracts
+  // actually consult for liquidations on MegaETH. Lives at
+  // 0xc555c100db24df36d406243642c169cc5a937f09 (confirmed 2026-05-11
+  // via on-chain trace; description() returns "RedStone Price Feed
+  // for ETH"). The bot still uses Hyperliquid as the primary tick
+  // source — this feed runs in parallel for divergence analysis.
+  redstoneOracleAddress: (process.env.REDSTONE_ORACLE_ADDRESS
+    || '0xc555c100db24df36d406243642c169cc5a937f09').trim(),
+  redstonePollMs: parseInt(process.env.REDSTONE_POLL_MS ?? '3000'),
+  redstoneStaleThresholdS: parseInt(process.env.REDSTONE_STALE_THRESHOLD_S ?? '120'),
+  // Divergence alert threshold — fires a TG DM when |RS − HL| crosses
+  // this many bps AND RedStone is below HL (game more bearish) AND
+  // at least one Drug op is live. 15 bps = 0.15%, roughly one Drug
+  // threshold-width on a calm day. Set to a higher value (e.g. 30) to
+  // mute during low-stakes periods.
+  redstoneDivergenceAlertBps: parseFloat(process.env.REDSTONE_DIVERGENCE_ALERT_BPS ?? '15'),
+  // Cooldown between divergence alerts. Spike events tend to cluster
+  // (oracle relayer hiccup → multiple consecutive samples breach),
+  // so a 10-min cooldown prevents alert spam.
+  redstoneDivergenceAlertCooldownMin:
+    parseInt(process.env.REDSTONE_DIVERGENCE_ALERT_COOLDOWN_MIN ?? '10'),
+  // Hard kill switch.
+  redstoneDisabled: process.env.REDSTONE_DISABLED === '1',
 };
