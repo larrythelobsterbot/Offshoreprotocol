@@ -320,12 +320,20 @@ export interface LoadoutBlock {
 
 export interface TopBySrEntry {
   address: string;
-  rank: number;          // 1-based rank by SR
+  rank: number;          // 1-based rank by SR (over the FULL ~28h window)
   wins: number;
   losses: number;
   opsCount: number;      // wins + losses
   successRate: number;   // 0..1
   dirtyEarned: number;
+  // True 24h sub-window of the same scan. Same player set as the
+  // 28h ranking; some wallets will show 0 ops here if their activity
+  // sits entirely in the older 4h tail of the lookback window.
+  wins24h: number;
+  losses24h: number;
+  opsCount24h: number;
+  successRate24h: number;
+  dirtyEarned24h: number;
   // Helpful cross-references when shown in the panel
   claimUsdm: number;     // 0 if not in the recent claim window
 }
@@ -782,20 +790,40 @@ export class LoadoutScannerFeed extends EventEmitter {
    */
   private async rankPlayersFromChain(): Promise<{
     address: string;
-    opsCount: number;       // total = wins + losses
-    wins: number;           // TC count
-    losses: number;         // TL count
-    successRate: number;    // wins / total, or 0 when total==0
+    opsCount: number;       // total = wins + losses (full lookback window, ~28h)
+    wins: number;           // TC count (full window)
+    losses: number;         // TL count (full window)
+    successRate: number;    // wins / total, or 0 when total==0 (full window)
     dirtyEarned: number;
+    // Tighter 24h-window slice of the same data. Computed in the same
+    // scan via a block-number cutoff (MegaETH ≈ 1s blocks → 86400 blocks
+    // ago is approximately 24h ago). Useful for "who's hot RIGHT NOW"
+    // when the 28h window includes a session boundary or vol regime
+    // change. Same player set as the 28h ranking (anyone trading in
+    // the last 24h is by definition trading in the last 28h).
+    wins24h: number;
+    losses24h: number;
+    opsCount24h: number;
+    successRate24h: number;
+    dirtyEarned24h: number;
   }[]> {
     const lookback = this.cfg.rankingLookbackBlocks ?? 100_000;
     const latest = await this.provider.getBlockNumber();
     const start  = latest - lookback;
+    // 24h cutoff in block-number space. MegaETH averages ~1s/block,
+    // so 86400 blocks back ≈ 24h ago. If the chain's block cadence
+    // changes we'll need to recalibrate this constant.
+    const BLOCKS_PER_24H = 86_400;
+    const cutoff24h = latest - BLOCKS_PER_24H;
 
-    // Pull events in 5k-block chunks (RPC max range)
-    const playerWins:   Record<string, number> = {};
-    const playerLosses: Record<string, number> = {};
-    const playerDirty:  Record<string, number> = {};
+    // Per-player counts. Index by lowercased address. Full-window
+    // counters are unsuffixed; 24h-subset counters get a "24h" suffix.
+    const playerWins:        Record<string, number> = {};
+    const playerLosses:      Record<string, number> = {};
+    const playerDirty:       Record<string, number> = {};
+    const playerWins24h:     Record<string, number> = {};
+    const playerLosses24h:   Record<string, number> = {};
+    const playerDirty24h:    Record<string, number> = {};
     const CHUNK = 5000;
     let scanned = 0;
     for (let from = start; from < latest; from += CHUNK) {
@@ -809,12 +837,18 @@ export class LoadoutScannerFeed extends EventEmitter {
           if (!log.topics[1]) continue;
           const player = '0x' + log.topics[1].slice(-40);
           playerWins[player] = (playerWins[player] ?? 0) + 1;
-          // data[0] = reward (uint256). 32 bytes after 0x = 64 hex.
+          let reward = 0;
           if (log.data && log.data.length >= 66) {
             try {
-              const reward = Number(BigInt('0x' + log.data.slice(2, 66))) / 1e18;
+              reward = Number(BigInt('0x' + log.data.slice(2, 66))) / 1e18;
               playerDirty[player] = (playerDirty[player] ?? 0) + reward;
             } catch { /* skip */ }
+          }
+          // Mirror into the 24h bucket when the event is fresher than
+          // the cutoff. log.blockNumber is monotonic with chain time.
+          if (log.blockNumber >= cutoff24h) {
+            playerWins24h[player] = (playerWins24h[player] ?? 0) + 1;
+            if (reward > 0) playerDirty24h[player] = (playerDirty24h[player] ?? 0) + reward;
           }
         }
       } catch (err: any) {
@@ -831,12 +865,16 @@ export class LoadoutScannerFeed extends EventEmitter {
           if (log.topics.length < 4) continue;
           const player = '0x' + log.topics[2].slice(-40);
           playerLosses[player] = (playerLosses[player] ?? 0) + 1;
-          // data[1] = partialReward
+          let partial = 0;
           if (log.data && log.data.length >= 130) {
             try {
-              const reward = Number(BigInt('0x' + log.data.slice(66, 130))) / 1e18;
-              playerDirty[player] = (playerDirty[player] ?? 0) + reward;
+              partial = Number(BigInt('0x' + log.data.slice(66, 130))) / 1e18;
+              playerDirty[player] = (playerDirty[player] ?? 0) + partial;
             } catch { /* skip */ }
+          }
+          if (log.blockNumber >= cutoff24h) {
+            playerLosses24h[player] = (playerLosses24h[player] ?? 0) + 1;
+            if (partial > 0) playerDirty24h[player] = (playerDirty24h[player] ?? 0) + partial;
           }
         }
       } catch { /* skip chunk */ }
@@ -848,17 +886,24 @@ export class LoadoutScannerFeed extends EventEmitter {
       const wins = playerWins[addr] ?? 0;
       const losses = playerLosses[addr] ?? 0;
       const total = wins + losses;
+      const w24 = playerWins24h[addr] ?? 0;
+      const l24 = playerLosses24h[addr] ?? 0;
+      const t24 = w24 + l24;
       return {
         address: addr,
         opsCount: total,
-        wins,
-        losses,
+        wins, losses,
         successRate: total > 0 ? wins / total : 0,
         dirtyEarned: playerDirty[addr] ?? 0,
+        wins24h: w24,
+        losses24h: l24,
+        opsCount24h: t24,
+        successRate24h: t24 > 0 ? w24 / t24 : 0,
+        dirtyEarned24h: playerDirty24h[addr] ?? 0,
       };
     }).sort((a, b) => b.opsCount - a.opsCount);
 
-    logger.info({ players: ranked.length, scanned: lookback }, '[LoadoutScanner] ranking built');
+    logger.info({ players: ranked.length, scanned: lookback, cutoff24h }, '[LoadoutScanner] ranking built');
     return ranked;
   }
 
@@ -1207,6 +1252,12 @@ export class LoadoutScannerFeed extends EventEmitter {
         opsCount: r.opsCount,
         successRate: r.successRate,
         dirtyEarned: r.dirtyEarned,
+        // 24h sub-window — same wallet, fresher slice
+        wins24h: r.wins24h,
+        losses24h: r.losses24h,
+        opsCount24h: r.opsCount24h,
+        successRate24h: r.successRate24h,
+        dirtyEarned24h: r.dirtyEarned24h,
         claimUsdm: claimByAddrLc.get(r.address.toLowerCase()) ?? 0,
       }));
       this.latest.topBySr = topBySr;

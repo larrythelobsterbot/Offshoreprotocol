@@ -1977,8 +1977,17 @@
   <div class="card" id="topSrCard" style="display:none;padding:12px 16px;border-color:#39ff14;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
       <div>
-        <span class="card-title" style="margin:0;color:#39ff14">TOP SR — last 28h</span>
-        <span class="info-pill" title="Wallets ranked by op success rate over the last ~28h. Min 50 ops to filter out small-sample 100% wallets. The leaders here have the best timing discipline (skipping bad windows). Loadout doesn't drive op SR — vault settlement is separate. SR signal is purely 'did ETH cross the threshold during my op window'.">?</span>
+        <span class="card-title" style="margin:0;color:#39ff14" id="topSrTitle">TOP SR — last 28h</span>
+        <span class="info-pill" title="Wallets ranked by op success rate. Min 50 ops on the 28h window to filter small-sample noise. The 24h column is a tighter sub-window of the same scan (block-cutoff filter, no extra RPC cost) — useful when vol regime changed in the last day. Loadout doesn't drive op SR; this is purely 'did ETH cross the threshold during my op window'.">?</span>
+        <!-- Window selector — toggles which column drives the sort + the headline -->
+        <span style="margin-left:12px;display:inline-flex;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
+          <button class="topsr-win active" data-window="28h"
+                  onclick="setTopSrWindow('28h')"
+                  style="background:transparent;border:1px solid #39ff14;color:#39ff14;padding:2px 8px;border-radius:3px;cursor:pointer;">28H</button>
+          <button class="topsr-win" data-window="24h"
+                  onclick="setTopSrWindow('24h')"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">24H</button>
+        </span>
       </div>
       <div id="topSrStatus" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);"></div>
     </div>
@@ -1988,10 +1997,11 @@
           <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
             <th style="text-align:left;padding:4px 8px;">Rank</th>
             <th style="text-align:left;padding:4px 8px;">Wallet</th>
-            <th style="text-align:right;padding:4px 8px;color:#39ff14;">SR</th>
-            <th style="text-align:right;padding:4px 8px;">W / L</th>
-            <th style="text-align:right;padding:4px 8px;">Ops</th>
-            <th style="text-align:right;padding:4px 8px;">DIRTY</th>
+            <th style="text-align:right;padding:4px 8px;color:#39ff14;">SR 28h</th>
+            <th style="text-align:right;padding:4px 8px;color:#a3e635;">SR 24h</th>
+            <th style="text-align:right;padding:4px 8px;">W / L 24h</th>
+            <th style="text-align:right;padding:4px 8px;">Ops 28h</th>
+            <th style="text-align:right;padding:4px 8px;">DIRTY 28h</th>
             <th style="text-align:right;padding:4px 8px;color:#a855f7;">Claim 7d</th>
             <th style="text-align:left;padding:4px 8px;">Explorer</th>
           </tr>
@@ -3512,40 +3522,96 @@ document.addEventListener('DOMContentLoaded', () => {
 // leaders here are the wallets winning the timing/danger-gate game.
 // Loadout doesn't drive op SR (loadouts run in vault, ops are ETH bets);
 // this panel exposes who's actually running tighter discipline.
+// Active window for the top-SR panel. Persists across reloads so the
+// operator's choice sticks. '28h' is the source-of-truth ranking
+// window (full lookback); '24h' is a tighter sub-window computed
+// from the same chain scan.
+let __topSrWindow = localStorage.getItem('topsr-window') || '28h';
+let __topSrLastL = null;
+
+function setTopSrWindow(w) {
+  __topSrWindow = w;
+  localStorage.setItem('topsr-window', w);
+  document.querySelectorAll('.topsr-win').forEach(btn => {
+    const sel = btn.dataset.window === w;
+    btn.style.borderColor = sel ? '#39ff14' : 'var(--border)';
+    btn.style.color       = sel ? '#39ff14' : 'var(--dim)';
+    btn.classList.toggle('active', sel);
+  });
+  document.getElementById('topSrTitle').textContent = `TOP SR — last ${w}`;
+  if (__topSrLastL) renderTopBySr(__topSrLastL);
+}
+
 function renderTopBySr(L) {
+  __topSrLastL = L;
   const card = document.getElementById('topSrCard');
   const tbody = document.getElementById('topSrTbody');
   const status = document.getElementById('topSrStatus');
-  const rows = (L && L.topBySr) || [];
-  if (rows.length === 0) {
+  const raw = (L && L.topBySr) || [];
+  if (raw.length === 0) {
     if (card) card.style.display = 'none';
     return;
   }
   card.style.display = '';
-  // Network avg from current rows isn't available without a proper
-  // computation; surface the leader's SR as the headline instead.
+
+  // Sort key swaps based on the window toggle. 24h mode re-sorts by
+  // successRate24h and only includes wallets that actually traded in
+  // the 24h window (opsCount24h > 0) so the leaderboard isn't padded
+  // with stale entries.
+  const is24h = __topSrWindow === '24h';
+  const rows = is24h
+    ? raw
+        .filter(r => (r.opsCount24h ?? 0) > 0)
+        .slice()
+        .sort((a, b) => (b.successRate24h - a.successRate24h) || (b.opsCount24h - a.opsCount24h))
+        .map((r, i) => ({ ...r, displayRank: i + 1 }))
+    : raw.map(r => ({ ...r, displayRank: r.rank }));
+
+  if (rows.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="9" style="padding:12px;text-align:center;color:var(--dim);font-size:11px;">No wallets with ops in the last 24h.</td></tr>`;
+    status.innerHTML = `0 wallets in the 24h window`;
+    return;
+  }
+
   const leader = rows[0];
+  const leaderSR = is24h ? leader.successRate24h : leader.successRate;
+  const leaderW  = is24h ? leader.wins24h        : leader.wins;
+  const leaderOps= is24h ? leader.opsCount24h    : leader.opsCount;
   status.innerHTML =
-    `Top <b style="color:var(--text)">${rows.length}</b> by SR · min 50 ops · ` +
-    `leader <b style="color:#39ff14">${(leader.successRate*100).toFixed(1)}%</b> ` +
-    `(${leader.wins}/${leader.opsCount})`;
+    `Top <b style="color:var(--text)">${rows.length}</b> by ${is24h ? '24h' : '28h'} SR · min 50 ops (28h gate) · ` +
+    `leader <b style="color:#39ff14">${(leaderSR*100).toFixed(1)}%</b> ` +
+    `(${leaderW}/${leaderOps})`;
+
   const fmtAddr = (a) => a ? a.slice(0, 8) + '..' + a.slice(-4) : '—';
   const fmtBig = (n) => n == null ? '—' :
     n >= 1e6 ? (n/1e6).toFixed(2) + 'M' :
     n >= 1e3 ? (n/1e3).toFixed(1) + 'K' :
     n.toFixed(0);
+  const srTier = (v) =>
+    v >= 0.80 ? '#39ff14' :
+    v >= 0.70 ? '#a3e635' :
+    v >= 0.60 ? '#fbbf24' : 'var(--text-mid)';
+
   tbody.innerHTML = rows.map(r => {
-    const srColor = r.successRate >= 0.80 ? '#39ff14' :
-                    r.successRate >= 0.70 ? '#a3e635' :
-                    r.successRate >= 0.60 ? '#fbbf24' : 'var(--text-mid)';
+    const sr28 = r.successRate;
+    const sr24 = r.opsCount24h > 0 ? r.successRate24h : null;
+    const headlineRankColor = is24h ? '#a3e635' : '#39ff14';
+    const sr28Color = srTier(sr28);
+    const sr24Cell = sr24 != null
+      ? `<td style="padding:4px 8px;text-align:right;color:${srTier(sr24)};font-weight:700;">${(sr24*100).toFixed(1)}%</td>`
+      : `<td style="padding:4px 8px;text-align:right;color:var(--dim);">—</td>`;
+    const wl24Cell = r.opsCount24h > 0
+      ? `<td style="padding:4px 8px;text-align:right;color:var(--text-mid);">${r.wins24h} / ${r.losses24h}</td>`
+      : `<td style="padding:4px 8px;text-align:right;color:var(--dim);">—</td>`;
     const claimDisplay = r.claimUsdm > 0
       ? `$${fmtBig(r.claimUsdm)}`
       : `<span style="color:var(--dim)">—</span>`;
     return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
-      <td style="padding:4px 8px;font-weight:700;color:#39ff14;">#${r.rank}</td>
+      <td style="padding:4px 8px;font-weight:700;color:${headlineRankColor};">#${r.displayRank}</td>
       <td style="padding:4px 8px;font-size:10px;color:var(--text-mid);">${fmtAddr(r.address)}</td>
-      <td style="padding:4px 8px;text-align:right;color:${srColor};font-weight:700;">${(r.successRate*100).toFixed(1)}%</td>
-      <td style="padding:4px 8px;text-align:right;color:var(--text-mid);">${r.wins} / ${r.losses}</td>
+      <td style="padding:4px 8px;text-align:right;color:${sr28Color};font-weight:${is24h ? '500' : '700'};">${(sr28*100).toFixed(1)}%</td>
+      ${sr24Cell}
+      ${wl24Cell}
       <td style="padding:4px 8px;text-align:right;">${r.opsCount}</td>
       <td style="padding:4px 8px;text-align:right;color:#fbbf24;">${fmtBig(r.dirtyEarned)}</td>
       <td style="padding:4px 8px;text-align:right;">${claimDisplay}</td>
@@ -3556,6 +3622,11 @@ function renderTopBySr(L) {
     </tr>`;
   }).join('');
 }
+
+// Restore persisted toggle state on load
+document.addEventListener('DOMContentLoaded', () => {
+  setTopSrWindow(__topSrWindow);
+});
 
 // ============================================================
 // $DIRTY PRICE CARD — daily candles from Kumbaya DEX
