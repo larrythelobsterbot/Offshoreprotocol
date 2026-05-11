@@ -772,6 +772,24 @@ async function main() {
         logger.warn({ err: err.message }, '[Broadcaster] daily digest failed');
       }
 
+      // Operator efficiency DM — runs alongside the public digest.
+      // Sends ONE headline DM with the operator's last-24h DIRTY/INF
+      // (vs 7d-avg trend), SR, ops, DIRTY earned, INF lost, and op-type
+      // breakdown. Operator-private — never goes to the public channel
+      // (composeDailyDigest enforces a no-personal-data invariant).
+      try {
+        if (config.operatorChatId) {
+          const { computeEfficiency } = await import('./engine/efficiency');
+          const eff24h = computeEfficiency(storage, { windowHours: 24 });
+          const eff7d  = computeEfficiency(storage, { windowHours: 168 });
+          const dmText = broadcaster.composeOperatorEfficiencyDm({ eff24h, eff7d });
+          await bot.sendDm(config.operatorChatId, dmText, { parseMode: 'Markdown' });
+          logger.info({ ops24h: eff24h.overall.ops }, '[OperatorDigest] efficiency DM sent');
+        }
+      } catch (err: any) {
+        logger.warn({ err: err.message }, '[OperatorDigest] efficiency DM failed');
+      }
+
       // Schedule audit DM — runs alongside the digest. Pulls the last 48h
       // of slot performance and DMs the operator about any slot
       // underperforming Drug by >15% with sample ≥10 ops. Per-slot dedup

@@ -170,6 +170,87 @@ export class Broadcaster {
     return lines.join('\n');
   }
 
+  /**
+   * Operator-only efficiency summary DM. Composed separately from the
+   * public channel digest because it carries the operator's personal
+   * P&L (DIRTY earned, INF lost, success rate) — which the channel
+   * digest is explicitly forbidden from publishing (see
+   * `composeDailyDigest` privacy invariants).
+   *
+   * Inputs:
+   *   eff24h  — last-24h efficiency snapshot
+   *   eff7d   — last-7d efficiency snapshot (used for trend comparison)
+   *
+   * Both come from `computeEfficiency(storage, { windowHours: N })`.
+   *
+   * Refund-on-success handling: when the 24h window has zero failures
+   * (every op refunded its INF), `eff24h.overall.dirty_per_inf` is
+   * `Infinity`. We render it as "∞ (no losses)" and skip the trend
+   * arrow since percentage delta against ∞ is meaningless.
+   *
+   * Returns Markdown ready for `bot.sendDm(..., { parseMode: 'Markdown' })`.
+   */
+  composeOperatorEfficiencyDm(input: {
+    eff24h: import('./efficiency').EfficiencySnapshot;
+    eff7d: import('./efficiency').EfficiencySnapshot;
+  }): string {
+    const o24 = input.eff24h.overall;
+    const o7  = input.eff7d.overall;
+    const dpi = o24.dirty_per_inf;
+    const dpi7 = o7.dirty_per_inf;
+
+    // Trend arrow: only meaningful when both ends are finite + 7d had losses.
+    let trendStr = '';
+    if (Number.isFinite(dpi) && Number.isFinite(dpi7) && dpi7 > 0) {
+      const pct = ((dpi - dpi7) / dpi7) * 100;
+      const arrow = Math.abs(pct) < 0.5 ? '·' : pct > 0 ? '▲' : '▼';
+      const sign = pct >= 0 ? '+' : '';
+      trendStr = `  ${arrow} ${sign}${pct.toFixed(1)}% vs 7d`;
+    } else if (!Number.isFinite(dpi) && Number.isFinite(dpi7)) {
+      trendStr = `  ▲ ∞ vs 7d`;
+    } else if (Number.isFinite(dpi) && !Number.isFinite(dpi7)) {
+      trendStr = `  ▼ vs 7d ∞`;
+    }
+
+    // Drug-vs-Arms breakdown when both ops actually ran.
+    const byType = input.eff24h.by_op_type ?? [];
+    const drug = byType.find(t => t.op_type === 'drug');
+    const arms = byType.find(t => t.op_type === 'arms');
+
+    const fmtDpi = (v: number) => Number.isFinite(v) ? v.toFixed(2) : '∞';
+    const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`;
+
+    const lines: string[] = [];
+    lines.push(`📊 *24h INF Efficiency*`);
+    lines.push('');
+    if (o24.ops === 0) {
+      lines.push(`_No ops in the last 24h._`);
+      lines.push('');
+      lines.push(`7d: ${fmtDpi(dpi7)} D/INF · ${fmtPct(o7.sr)} SR · ${o7.ops} ops`);
+      return lines.join('\n');
+    }
+    lines.push(`DIRTY/INF lost: *${fmtDpi(dpi)}*${trendStr}`);
+    lines.push(`SR: *${fmtPct(o24.sr)}*  ·  Ops: *${o24.ops}*  ·  ${o24.wins}W / ${o24.ops - o24.wins}L`);
+    lines.push(`DIRTY earned: *${Math.round(o24.dirty_earned).toLocaleString()}*  ·  INF lost: *${o24.inf_spent.toFixed(0)}*`);
+    if (o24.avg_partial_payout > 0) {
+      lines.push(`Avg partial on fail: *${o24.avg_partial_payout.toFixed(1)} DIRTY*`);
+    }
+    if (drug && arms && drug.ops > 0 && arms.ops > 0) {
+      lines.push('');
+      lines.push(`Drug ${drug.ops}× → ${fmtDpi(drug.dirty_per_inf)} D/INF · ${fmtPct(drug.sr)} SR`);
+      lines.push(`Arms ${arms.ops}× → ${fmtDpi(arms.dirty_per_inf)} D/INF · ${fmtPct(arms.sr)} SR`);
+    } else if (drug && drug.ops > 0) {
+      lines.push('');
+      lines.push(`Drug ${drug.ops}× → ${fmtDpi(drug.dirty_per_inf)} D/INF · ${fmtPct(drug.sr)} SR`);
+    } else if (arms && arms.ops > 0) {
+      lines.push('');
+      lines.push(`Arms ${arms.ops}× → ${fmtDpi(arms.dirty_per_inf)} D/INF · ${fmtPct(arms.sr)} SR`);
+    }
+    lines.push('');
+    lines.push(`_(slot-by-slot alerts follow separately for any underperforming HKT hour)_`);
+    return lines.join('\n');
+  }
+
   private canFire(key: keyof typeof this.cooldowns): boolean {
     const c = this.cooldowns[key];
     const now = Date.now();
