@@ -1496,6 +1496,63 @@
   </div>
 </div>
 
+<!-- THRESHOLD CLIFF — live gate state + shadow-mode calibration stats.
+     Operator-facing: helps decide when to flip THRESHOLD_CLIFF_SHADOW=false.
+     Shows current pFail / threshold / gate state + last-7d precision
+     (of would-blocks, how many were actual fails vs wins). -->
+<div style="padding: 0 24px 8px;" data-pane="ops">
+  <div class="card" id="thresholdCliffCard" style="display:block;padding:12px 16px;border-color:#ff6e00;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#ff6e00">THRESHOLD CLIFF</span>
+        <span class="info-pill" title="Live state of the Layer 2 gate that blocks Drug bootstraps when calibrated P(fail) ≥ block threshold (default 0.55, clear 0.45). Shadow mode = logs would-blocks but bootstrap proceeds. Precision = of would-blocks where the next op resolved, how many were actual fails. Flip THRESHOLD_CLIFF_SHADOW=false once precision is consistently >70% over a meaningful sample.">?</span>
+        <span style="margin-left:12px;display:inline-flex;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
+          <button class="tcliff-win" data-days="1"
+                  onclick="setTcliffWindow(1)"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">24H</button>
+          <button class="tcliff-win active" data-days="7"
+                  onclick="setTcliffWindow(7)"
+                  style="background:transparent;border:1px solid #ff6e00;color:#ff6e00;padding:2px 8px;border-radius:3px;cursor:pointer;">7D</button>
+          <button class="tcliff-win" data-days="30"
+                  onclick="setTcliffWindow(30)"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">30D</button>
+        </span>
+      </div>
+      <div id="thresholdCliffMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading…</div>
+    </div>
+
+    <!-- LIVE state row: pFail · threshold · gate · shadow -->
+    <div id="thresholdCliffLive" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px;">
+      <!-- injected -->
+    </div>
+
+    <!-- SHADOW STATS row: would-blocks · precision · avg pFail · stale rate -->
+    <div id="thresholdCliffStats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px;">
+      <!-- injected -->
+    </div>
+
+    <!-- Recent decisions (last 12) -->
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
+            <th style="text-align:left;padding:4px 8px;">when</th>
+            <th style="text-align:left;padding:4px 8px;">corp</th>
+            <th style="text-align:right;padding:4px 8px;">pFail</th>
+            <th style="text-align:right;padding:4px 8px;">threshold</th>
+            <th style="text-align:center;padding:4px 8px;">decision</th>
+            <th style="text-align:center;padding:4px 8px;">next op</th>
+          </tr>
+        </thead>
+        <tbody id="thresholdCliffTbody"></tbody>
+      </table>
+    </div>
+    <div style="margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);line-height:1.5;">
+      <b>decision</b> would-block = pFail ≥ block threshold (hysteresis active). <b>next op</b> = subsequent drug op on the same corp within 95min — <span style="color:#39ff14">fail</span> means gate would have been right, <span style="color:#ff1744">win</span> means gate would have wrongly blocked. Pending = op still in flight.
+    </div>
+  </div>
+</div>
+
 <!-- BURN VS CLAIM — operator's vault claims paired with INF burned in
      each cycle's 8h pre-claim window. Headline question: "are claims
      covering my INF spend?". 1:1 USDm/INF peg, so all numbers are USDm. -->
@@ -3552,6 +3609,137 @@ function renderBurnVsClaim(d) {
 setBvcWindow(bvcWindowDays);
 fetchBurnVsClaim();
 setInterval(fetchBurnVsClaim, 60 * 1000); // refresh every 60s
+
+// ─── THRESHOLD CLIFF (live gate state + shadow calibration) ──────────
+let tcliffWindowDays = parseInt(localStorage.getItem('tcliff-window') || '7', 10);
+async function fetchThresholdCliff() {
+  try {
+    const r = await fetch(`/api/threshold-cliff?days=${tcliffWindowDays}`);
+    if (!r.ok) return;
+    const d = restoreInfinity(await r.json());
+    if (d.error) return;
+    renderThresholdCliff(d);
+  } catch { /* keep last render */ }
+}
+function setTcliffWindow(days) {
+  tcliffWindowDays = days;
+  localStorage.setItem('tcliff-window', String(days));
+  document.querySelectorAll('.tcliff-win').forEach(btn => {
+    const sel = parseInt(btn.dataset.days, 10) === days;
+    btn.style.borderColor = sel ? '#ff6e00' : 'var(--border)';
+    btn.style.color       = sel ? '#ff6e00' : 'var(--dim)';
+    btn.classList.toggle('active', sel);
+  });
+  fetchThresholdCliff();
+}
+function renderThresholdCliff(d) {
+  const meta = document.getElementById('thresholdCliffMeta');
+  const liveEl = document.getElementById('thresholdCliffLive');
+  const statsEl = document.getElementById('thresholdCliffStats');
+  const tbody = document.getElementById('thresholdCliffTbody');
+  if (!d || !d.stats) return;
+
+  const live = d.live?.drug ?? null;
+  const s = d.stats;
+
+  // Color helpers
+  const colorPFail = (p) => {
+    if (p == null) return 'var(--dim)';
+    if (p >= 0.55) return '#ff1744';
+    if (p >= 0.45) return '#ff9100';
+    if (p >= 0.30) return '#ffe600';
+    return '#39ff14';
+  };
+  const fmtPct = (p, digits = 1) => p == null ? '—' : (p * 100).toFixed(digits) + '%';
+  const fmtThPct = (t) => t == null ? '—' : (t * 100).toFixed(3) + '%';
+
+  // Meta line
+  meta.textContent = `${d.windowDays}d window · ${s.total} decisions logged`
+    + (s.wouldBlock > 0 ? ` · ${s.wouldBlock} would-block` : '');
+
+  // Tile helper
+  const tile = (label, value, color, sub) => `
+    <div style="background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:6px;padding:10px 12px;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:0.16em;color:var(--dim);margin-bottom:4px;">${label}</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:18px;font-weight:700;color:${color};">${value}</div>
+      ${sub ? `<div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);margin-top:2px;">${sub}</div>` : ''}
+    </div>`;
+
+  // LIVE state row
+  if (live) {
+    const pFailStr = live.pFail == null ? '—' : fmtPct(live.pFail);
+    const gateLabel = live.active ? 'ACTIVE' : 'inactive';
+    const gateColor = live.active ? '#ff1744' : '#39ff14';
+    const shadowLabel = live.shadow ? 'SHADOW' : 'LIVE';
+    const shadowColor = live.shadow ? '#ffe600' : '#ff1744';
+    const staleLabel = live.stale ? 'STALE' : 'fresh';
+    const staleColor = live.stale ? '#ff9100' : 'var(--dim)';
+    liveEl.innerHTML = [
+      tile('P(FAIL) DRUG',  pFailStr, colorPFail(live.pFail), 'calibrated · refunds-aware'),
+      tile('LIVE THRESHOLD', fmtThPct(live.threshold), '#a855f7', 'contract leverage'),
+      tile('GATE STATE',    gateLabel, gateColor, `hysteresis: block≥55% / clear≤45%`),
+      tile('MODE',          shadowLabel, shadowColor, `op_params: ${staleLabel}`),
+    ].join('');
+  } else {
+    liveEl.innerHTML = `<div style="grid-column:span 4;padding:16px;text-align:center;color:var(--dim);font-family:'JetBrains Mono',monospace;font-size:11px;">live gate state not available — bot may be initializing</div>`;
+  }
+
+  // STATS row (shadow log rollup)
+  const precColor = s.precision.precisionPct == null ? 'var(--dim)'
+    : s.precision.precisionPct >= 70 ? '#39ff14'
+    : s.precision.precisionPct >= 50 ? '#ffe600'
+    : '#ff1744';
+  const precStr = s.precision.precisionPct == null
+    ? 'n/a'
+    : s.precision.precisionPct.toFixed(0) + '%';
+  const precSub = s.precision.resolved > 0
+    ? `${s.precision.truePositives} fails / ${s.precision.falsePositives} wins (n=${s.precision.resolved})`
+    : 'no resolved outcomes yet';
+  statsEl.innerHTML = [
+    tile('WOULD-BLOCKS',  String(s.wouldBlock), s.wouldBlock > 0 ? '#ff9100' : '#39ff14', `of ${s.total} decisions · ${(s.blockedRate*100).toFixed(0)}% block rate`),
+    tile('PRECISION',     precStr, precColor, precSub),
+    tile('AVG pFAIL@BLOCK', fmtPct(s.avgPFailAtBlock), colorPFail(s.avgPFailAtBlock), s.minPFailAtBlock != null && s.maxPFailAtBlock != null ? `range ${fmtPct(s.minPFailAtBlock)} – ${fmtPct(s.maxPFailAtBlock)}` : '—'),
+    tile('AVG THRESHOLD@BLOCK', fmtThPct(s.avgThresholdAtBlock), '#a855f7', 'leverage when gate fired'),
+  ].join('');
+
+  // Recent decisions table
+  if (!s.recent || s.recent.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" style="padding:16px;text-align:center;color:var(--dim);">
+      No shadow decisions logged yet. Decisions land here when corps attempt bootstrap.
+    </td></tr>`;
+    return;
+  }
+  const fmtTs = (t) => {
+    const dt = new Date(t);
+    return dt.toLocaleString('en-GB', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  };
+  const outcomePill = (o) => {
+    const map = {
+      fail:    { color: '#39ff14', label: 'fail ✓' },
+      win:     { color: '#ff1744', label: 'win ✕' },
+      pending: { color: '#ffe600', label: 'pending' },
+      no_op:   { color: 'var(--dim)', label: '—' },
+    };
+    const m = map[o] ?? map.no_op;
+    return `<span style="color:${m.color};font-weight:600;">${m.label}</span>`;
+  };
+  const decisionPill = (b) =>
+    b ? '<span style="color:#ff9100;font-weight:600;">would-block</span>'
+      : '<span style="color:#39ff14;">allow</span>';
+  // Show only the 12 most recent (the storage helper returns up to 50)
+  tbody.innerHTML = s.recent.slice(0, 12).map(r => `
+    <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+      <td style="padding:3px 8px;color:var(--dim);">${fmtTs(r.ts)}</td>
+      <td style="padding:3px 8px;font-family:'JetBrains Mono',monospace;color:var(--text-mid);">${r.corp ? r.corp.slice(0,8) + '…' : '—'}</td>
+      <td style="padding:3px 8px;text-align:right;color:${colorPFail(r.pFail)};">${fmtPct(r.pFail)}</td>
+      <td style="padding:3px 8px;text-align:right;color:#a855f7;">${fmtThPct(r.threshold)}</td>
+      <td style="padding:3px 8px;text-align:center;">${decisionPill(r.would_block)}</td>
+      <td style="padding:3px 8px;text-align:center;">${outcomePill(r.outcome)}</td>
+    </tr>`).join('');
+}
+setTcliffWindow(tcliffWindowDays);
+fetchThresholdCliff();
+setInterval(fetchThresholdCliff, 30 * 1000); // refresh every 30s (live gate state)
 
 // ─── DIRTY HEALTH (mint/burn/sell/buy rollup) ─────────────────
 let dirtyHealthWindow = localStorage.getItem('dirty-health-window') || '24h';

@@ -572,6 +572,40 @@ export class ApiServer {
       }),
     );
 
+    // THRESHOLD-CLIFF — operator-only calibration tile. Surfaces the live
+    // gate state + 7d shadow-mode stats so the operator can eyeball
+    // precision before flipping THRESHOLD_CLIFF_SHADOW=false. Pending
+    // would-blocks (op still in-flight) are excluded from the precision
+    // denominator; only resolved outcomes count.
+    this.app.get<{ Querystring: { days?: string } }>(
+      '/api/threshold-cliff',
+      {
+        schema: {
+          querystring: {
+            type: 'object',
+            properties: {
+              days: { type: 'integer', minimum: 1, maximum: 90 },
+            },
+          },
+        },
+      },
+      publicGate(async (req: any) => {
+        const days = req.query?.days ? Number(req.query.days) : 7;
+        const sinceMs = Date.now() - days * 86400_000;
+        const stats = this.storage.getThresholdCliffShadowStats(sinceMs);
+        // Live gate state is on the broadcast state object (thresholdCliffGate
+        // is attached in src/index.ts getState wrapper). Read it once at
+        // request time so the tile reflects this-tick reality.
+        const live = (this.getState() as any).thresholdCliffGate ?? null;
+        return jsonSafeInfinity({
+          windowDays: days,
+          generatedAt: Date.now(),
+          live,
+          stats,
+        });
+      }),
+    );
+
     // BURN-VS-CLAIM — operator-only economics tile. Pairs each whale_claims
     // row (operator's USDm claims) with the INF burned in the 8h pre-claim
     // window so we can see "are vault claims actually covering my INF

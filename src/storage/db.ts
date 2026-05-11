@@ -1091,6 +1091,126 @@ export class Storage {
     return { cycles, aggregate };
   }
 
+  /**
+   * Roll up threshold-cliff shadow log entries to support the dashboard
+   * tile that helps the operator eyeball calibration quality before
+   * flipping the gate live (THRESHOLD_CLIFF_SHADOW=false).
+   *
+   * Returns:
+   *   - aggregate counters (total events, would_block fraction)
+   *   - distribution stats (avg pFail at block, threshold at block)
+   *   - precision proxy: for each would_block, check op_outcomes for the
+   *     same corp within a 95-min window AFTER the decision. If a drug
+   *     op resolved, was it a fail (correct call) or a win (false-positive)?
+   *
+   * Precision computed only over decisions where we have a resolved
+   * outcome — undetermined-blocks (no subsequent op or still in-flight)
+   * are excluded from the denominator.
+   *
+   * Operator-only — surfaces in /api/threshold-cliff.
+   */
+  getThresholdCliffShadowStats(sinceMs: number): {
+    total: number;
+    wouldBlock: number;
+    wouldAllow: number;
+    blockedRate: number;
+    avgPFailAtBlock: number | null;
+    avgThresholdAtBlock: number | null;
+    minPFailAtBlock: number | null;
+    maxPFailAtBlock: number | null;
+    precision: {
+      resolved: number;
+      truePositives: number;   // would-block + actual fail
+      falsePositives: number;  // would-block + actual win
+      precisionPct: number | null;
+    };
+    recent: Array<{
+      ts: number;
+      would_block: boolean;
+      pFail: number | null;
+      threshold: number | null;
+      stale: boolean;
+      corp: string | null;
+      outcome: 'win' | 'fail' | 'pending' | 'no_op';
+    }>;
+  } {
+    const rows = this.db.prepare(`
+      SELECT ts, would_pause, context_json
+        FROM defense_shadow_log
+       WHERE signal = 'threshold_cliff' AND ts >= ?
+       ORDER BY ts DESC
+    `).all(sinceMs) as Array<{ ts: number; would_pause: number; context_json: string | null }>;
+
+    const parsed = rows.map(r => {
+      let ctx: any = {};
+      try { ctx = r.context_json ? JSON.parse(r.context_json) : {}; } catch {}
+      return {
+        ts: r.ts,
+        would_block: r.would_pause === 1,
+        pFail: typeof ctx.pFail === 'number' ? ctx.pFail : null,
+        threshold: typeof ctx.threshold === 'number' ? ctx.threshold : null,
+        stale: !!ctx.stale,
+        corp: typeof ctx.corp === 'string' ? ctx.corp.toLowerCase() : null,
+      };
+    });
+
+    const total = parsed.length;
+    const blocks = parsed.filter(p => p.would_block);
+    const wouldBlock = blocks.length;
+    const wouldAllow = total - wouldBlock;
+    const blockedRate = total > 0 ? wouldBlock / total : 0;
+
+    const pFails = blocks.map(b => b.pFail).filter((x): x is number => x != null);
+    const ths    = blocks.map(b => b.threshold).filter((x): x is number => x != null);
+    const avg = (xs: number[]) => xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null;
+
+    // Precision: for each would_block, look up next drug op outcome for that corp.
+    // Window: 95min = max drug op duration (90min) + small slack.
+    const window = 95 * 60_000;
+    const outcomeStmt = this.db.prepare(`
+      SELECT ts, succeeded FROM op_outcomes
+       WHERE LOWER(corp) = ? AND op_type = 'drug'
+         AND ts >= ? AND ts <= ?
+       ORDER BY ts ASC LIMIT 1
+    `);
+
+    const recentWithOutcome = parsed.slice(0, 50).map(p => {
+      let outcome: 'win' | 'fail' | 'pending' | 'no_op' = 'no_op';
+      if (p.corp) {
+        const o = outcomeStmt.get(p.corp, p.ts, p.ts + window) as { ts: number; succeeded: number } | undefined;
+        if (o) outcome = o.succeeded === 1 ? 'win' : 'fail';
+        // If no outcome AND less than `window`ms have passed since decision,
+        // mark as pending (op might still be running).
+        else if (Date.now() - p.ts < window) outcome = 'pending';
+      }
+      return { ...p, outcome };
+    });
+
+    // Precision over RESOLVED blocks only (drop pending/no_op).
+    const resolvedBlocks = recentWithOutcome.filter(r => r.would_block && (r.outcome === 'win' || r.outcome === 'fail'));
+    const tp = resolvedBlocks.filter(r => r.outcome === 'fail').length;
+    const fp = resolvedBlocks.filter(r => r.outcome === 'win').length;
+    const precisionPct = resolvedBlocks.length > 0 ? (tp / resolvedBlocks.length) * 100 : null;
+
+    return {
+      total,
+      wouldBlock,
+      wouldAllow,
+      blockedRate,
+      avgPFailAtBlock:    avg(pFails),
+      avgThresholdAtBlock: avg(ths),
+      minPFailAtBlock: pFails.length ? Math.min(...pFails) : null,
+      maxPFailAtBlock: pFails.length ? Math.max(...pFails) : null,
+      precision: {
+        resolved: resolvedBlocks.length,
+        truePositives: tp,
+        falsePositives: fp,
+        precisionPct,
+      },
+      recent: recentWithOutcome,
+    };
+  }
+
   // --- Queries ---
 
   getTicksSince(since: number): StoredTick[] {
