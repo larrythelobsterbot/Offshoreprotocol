@@ -110,4 +110,40 @@ export const config = {
   // behavior — bot re-enables within 30s). Set to a high value to be
   // very forgiving. Recommended 5–15 min.
   botOperatorGraceMin: parseInt(process.env.BOT_OPERATOR_GRACE_MIN ?? '5'),
+
+  // ── Threshold-Cliff Defense (Layer 2: bot gate + Layer 3: TG alert) ──
+  // Catches contract leverage recalibrations + ETH velocity regimes where
+  // bootstrapping is near-certain liquidation. Per Codex audit 2026-05-11
+  // notes: underlying probDrug math is one-sided downside, but calibrateProb
+  // empirically corrects against (symmetric) historical fail rates, so the
+  // calibrated value is the right signal — at canonical thresholds. At
+  // sharply tighter live thresholds the calibration is OOD; gate decisions
+  // are logged to defense_shadow_log for post-hoc validation.
+  //
+  // Layer 2 gate — Drug only initially (operator runs Drug ~100%).
+  // Hysteresis: block when p(fail) crosses BLOCK upward, only clear when
+  // it crosses CLEAR downward. Prevents bootstrap-thrash at the boundary.
+  // Defaults chosen from PL2 economics at $0.099/DIRTY:
+  //   win  EV ≈ +$11.39 (115 DIRTY)   fail EV ≈ -$10.71 (10 DIRTY partial - $11.70 INF)
+  //   break-even P(fail) ≈ 51.5%
+  // Block @0.55 leaves only 3.5pp margin; safe with hysteresis.
+  thresholdCliffShadow:        (process.env.THRESHOLD_CLIFF_SHADOW ?? 'true').toLowerCase() !== 'false',
+  thresholdCliffDisabled:       process.env.THRESHOLD_CLIFF_DISABLED === '1',
+  maxPFailDrugBlock: parseFloat(process.env.MAX_PFAIL_DRUG_BLOCK   ?? '0.55'),
+  maxPFailDrugClear: parseFloat(process.env.MAX_PFAIL_DRUG_CLEAR   ?? '0.45'),
+  // Staleness ceiling — if last op_params sample is older than this many
+  // minutes, the gate treats data as missing and fails safe (blocks Drug
+  // bootstraps in live mode; logs in shadow). 10min cadence + jitter.
+  opParamsMaxAgeMin: parseInt(process.env.OP_PARAMS_MAX_AGE_MIN ?? '25'),
+  // Minimum sample count for threshold to be trusted. Below this, the
+  // sample is too thin to act on (e.g. n=1 single corp seen network-wide).
+  opParamsMinSamples: parseInt(process.env.OP_PARAMS_MIN_SAMPLES ?? '3'),
+  // Layer 3 TG alert — fires when persisted threshold drops by this fraction
+  // within ALERT_WINDOW_MIN. 0.15 = 15% tightening triggers.
+  thresholdDropAlertPct:  parseFloat(process.env.THRESHOLD_DROP_ALERT_PCT  ?? '0.15'),
+  thresholdDropWindowMin: parseInt(process.env.THRESHOLD_DROP_WINDOW_MIN ?? '60'),
+  thresholdDropCooldownMin: parseInt(process.env.THRESHOLD_DROP_COOLDOWN_MIN ?? '60'),
+  // Only fire alert when absolute new threshold is dangerous (below this
+  // value). Prevents alerts on harmless tightening from 1.0% → 0.7%.
+  thresholdDropAbsCeilingPct: parseFloat(process.env.THRESHOLD_DROP_ABS_CEILING_PCT ?? '0.0030'),
 };

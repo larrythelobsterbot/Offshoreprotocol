@@ -33,6 +33,7 @@ import { ethers } from 'ethers';
 import { EventEmitter } from 'events';
 import { logger } from '../logger';
 import type { Storage } from '../storage/db';
+import { config as appConfig } from '../config';
 
 const RPC = 'https://mainnet.megaeth.com/rpc';
 const TC_TOPIC = '0x35c06e2c02cc93628588ec67d74925fa30de5c693ea264ec67458bb0b65c3bf1';
@@ -146,8 +147,16 @@ export class OpParamsFeed extends EventEmitter {
     // Single global value, so we just take whichever row is freshest.
     const candidateCosts = [last[0]?.inf_cost_per_op, last[1]?.inf_cost_per_op, last[2]?.inf_cost_per_op]
       .filter((x): x is number => typeof x === 'number' && x > 0);
+    // Seed `ts` from the freshest DB row so downstream staleness checks
+    // (threshold-cliff gate, etc.) can tell "we have stale data from last
+    // boot" vs "we just polled". Using Date.now() here would lie — the
+    // gate would think a DB-seeded threshold from 6h ago is fresh, which
+    // is exactly the trap that lets the bot bootstrap into a stale
+    // hostile regime. Fall back to 0 if no DB rows yet (forces gate to
+    // treat as missing data → fail safe). Codex audit 2026-05-11.
+    const seedTs = Math.max(last[0]?.ts ?? 0, last[1]?.ts ?? 0, last[2]?.ts ?? 0);
     this.current = {
-      ts: Date.now(),
+      ts: seedTs > 0 ? seedTs : Date.now(),
       thresholds,
       sampleCounts,
       isWeekend: isHktWeekend(),
@@ -288,6 +297,10 @@ export class OpParamsFeed extends EventEmitter {
     }
     if (persistRows.length > 0) {
       this.storage.insertOpParams(persistRows);
+      // ── Layer 3: threshold-drop TG alert detection ──
+      // After persisting, scan recent history for sharp tightening events.
+      // Drug-only for now (operator runs Drug ~100%).
+      this.checkThresholdDropAlert(now, isWeekend);
     }
 
     // Log INF cost change as its own line (only once per poll, not per mode)
@@ -310,6 +323,93 @@ export class OpParamsFeed extends EventEmitter {
     };
     this.emit('snapshot', this.current);
   }
+
+  // Last alert ts per mode — for cooldown enforcement across polls.
+  private lastAlertTs: Record<number, number> = { 0: 0, 1: 0, 2: 0 };
+
+  /**
+   * Layer 3 alert detection. Called after every insertOpParams write so we
+   * only check when a persisted change just happened (op_params_history is
+   * delta-only; comparing arbitrary windows would otherwise mix multiple
+   * change events).
+   *
+   * Fires `'threshold-drop'` event when:
+   *   1. Drug threshold dropped ≥ thresholdDropAlertPct over a window
+   *   2. New threshold is below absolute danger ceiling
+   *   3. Sample counts on both ends are ≥ opParamsMinSamples
+   *   4. is_weekend didn't flip mid-window (regime transition guard)
+   *   5. Outside ±30min guard band around Sat 17:00 HKT / Mon 17:00 HKT
+   *   6. Last alert for this mode was >= thresholdDropCooldownMin ago
+   *
+   * Wired to operator TG DM in src/index.ts.
+   */
+  private checkThresholdDropAlert(nowMs: number, isWeekendNow: boolean): void {
+    // Drug-only for now
+    const mode = 2;
+    const windowMs = appConfig.thresholdDropWindowMin * 60_000;
+    const cooldownMs = appConfig.thresholdDropCooldownMin * 60_000;
+    if (nowMs - this.lastAlertTs[mode] < cooldownMs) return;
+
+    // Pull recent history — limit 20 is plenty for a 1h window even at
+    // very frequent recalibrations.
+    const hist = this.storage.getOpParamsHistory(mode as 0 | 1 | 2, 20);
+    const inWindow = hist.filter(r => r.ts >= nowMs - windowMs && r.ts <= nowMs);
+    if (inWindow.length < 2) return;  // need at least old + new
+
+    // Compare oldest to newest within window (rows come DESC; sort ASC)
+    inWindow.sort((a, b) => a.ts - b.ts);
+    const oldest = inWindow[0];
+    const newest = inWindow[inWindow.length - 1];
+
+    // Filter 4: weekend regime didn't flip mid-window
+    if (oldest.is_weekend !== newest.is_weekend) return;
+
+    // Filter 5: guard band ±30min around HKT regime transitions
+    if (isNearWeekendTransition(nowMs)) return;
+
+    // Filter 3: sample count floor on both ends
+    const minN = appConfig.opParamsMinSamples;
+    if (oldest.sample_count < minN || newest.sample_count < minN) return;
+
+    const drop = (oldest.threshold_pct - newest.threshold_pct) / oldest.threshold_pct;
+    // Filter 1: drop magnitude
+    if (drop < appConfig.thresholdDropAlertPct) return;
+    // Filter 2: absolute danger — new threshold must actually be dangerous
+    if (newest.threshold_pct > appConfig.thresholdDropAbsCeilingPct) return;
+
+    this.lastAlertTs[mode] = nowMs;
+    logger.warn(
+      { mode, oldest_pct: oldest.threshold_pct, newest_pct: newest.threshold_pct, drop_pct: drop, isWeekend: isWeekendNow },
+      '[OpParams] threshold-drop alert fired',
+    );
+    this.emit('threshold-drop', {
+      mode,
+      oldThreshold: oldest.threshold_pct,
+      newThreshold: newest.threshold_pct,
+      dropFraction: drop,
+      windowMin: appConfig.thresholdDropWindowMin,
+      isWeekend: isWeekendNow,
+    });
+  }
+}
+
+/**
+ * True when current HKT time is within 30 minutes of a weekend regime
+ * transition (Saturday 17:00 HKT or Monday 17:00 HKT). Used to suppress
+ * threshold-drop alerts during the natural weekend tightening/loosening
+ * the contract applies — those moves are EXPECTED and would be alert noise.
+ */
+function isNearWeekendTransition(nowMs: number): boolean {
+  // HKT = UTC+8
+  const hkt = new Date(nowMs + 8 * 3600_000);
+  const dow = hkt.getUTCDay();      // 0=Sun, 6=Sat (treating shifted as UTC date)
+  const hh = hkt.getUTCHours();
+  const mm = hkt.getUTCMinutes();
+  const minutesFromHr17 = (hh - 17) * 60 + mm;
+  // Saturday: dow==6, transition at 17:00 HKT (weekday → weekend)
+  // Monday:   dow==1, transition at 17:00 HKT (weekend → weekday)
+  if ((dow === 6 || dow === 1) && Math.abs(minutesFromHr17) <= 30) return true;
+  return false;
 }
 
 /**

@@ -1309,9 +1309,99 @@ export class CorpBot {
     this.lastSafety = scores;
   }
 
+  /**
+   * Per-op-type calibrated P(fail), injected each tick from the engine.
+   * Powers the threshold-cliff gate (Layer 2). Same source as
+   * /api/state.economics[op].probFail — already calibrated against
+   * historical (symmetric) fail rates via calibrateProb().
+   *
+   * Note: the underlying model (dropProbStudentT) is one-sided downside,
+   * but calibrateProb empirically corrects for symmetric outcomes at the
+   * canonical thresholds. At sharply tighter live thresholds the
+   * calibration is out-of-distribution; gate decisions are logged so
+   * post-hoc validation can confirm precision/recall.
+   */
+  private lastProbFail: { extortion: number | null; arms: number | null; drug: number | null } = {
+    extortion: null, arms: null, drug: null,
+  };
+  onProbFail(p: { extortion: number | null; arms: number | null; drug: number | null }) {
+    this.lastProbFail = p;
+  }
+
+  /**
+   * Live op_params snapshot for staleness + threshold-cliff checks.
+   * Set each tick from /api/state.opParams. Null until first sample.
+   */
+  private lastOpParams: {
+    ts: number;
+    thresholds: { 0: number; 1: number; 2: number };
+    sampleCounts: { 0: number; 1: number; 2: number };
+    source: 'live' | 'default';
+  } | null = null;
+  onOpParams(p: {
+    ts: number;
+    thresholds: { 0: number; 1: number; 2: number };
+    sampleCounts: { 0: number; 1: number; 2: number };
+    source: 'live' | 'default';
+  } | null) {
+    this.lastOpParams = p;
+  }
+
+  /**
+   * Threshold-cliff gate per-op-type "currently blocking" state. Hysteresis:
+   * once blocked, stays blocked until p(fail) drops below the CLEAR threshold.
+   * Avoids bootstrap-thrash when p(fail) sits right on the block boundary.
+   */
+  private cliffGateBlocked: { extortion: boolean; arms: boolean; drug: boolean } = {
+    extortion: false, arms: false, drug: false,
+  };
+  /** Read-only accessor for /api/state surfacing. */
+  getThresholdCliffState(): { drug: { active: boolean; shadow: boolean; pFail: number | null; threshold: number | null; stale: boolean } } {
+    const stale = this.isOpParamsStale();
+    return {
+      drug: {
+        active: this.cliffGateBlocked.drug,
+        shadow: appConfig.thresholdCliffShadow,
+        pFail: this.lastProbFail.drug,
+        threshold: this.lastOpParams?.thresholds[2] ?? null,
+        stale,
+      },
+    };
+  }
+  private isOpParamsStale(): boolean {
+    if (!this.lastOpParams) return true;
+    if (this.lastOpParams.source !== 'live') return true;
+    const ageMin = (Date.now() - this.lastOpParams.ts) / 60_000;
+    if (ageMin > appConfig.opParamsMaxAgeMin) return true;
+    if (this.lastOpParams.sampleCounts[2] < appConfig.opParamsMinSamples) return true;
+    return false;
+  }
+
+  /**
+   * Update the threshold-cliff hysteresis state from the latest pFail
+   * injection. Runs at the top of every tick so the dashboard reflects
+   * "currently gated" even when no corp is being considered for bootstrap.
+   * Decoupled from the bootstrap branch so the gate state has a single
+   * source of truth.
+   */
+  private updateCliffHysteresis(): void {
+    const pFailDrug = this.lastProbFail.drug;
+    if (pFailDrug == null) return;
+    const blockTh = appConfig.maxPFailDrugBlock;
+    const clearTh = appConfig.maxPFailDrugClear;
+    if (!this.cliffGateBlocked.drug && pFailDrug >= blockTh) {
+      this.cliffGateBlocked.drug = true;
+    } else if (this.cliffGateBlocked.drug && pFailDrug <= clearTh) {
+      this.cliffGateBlocked.drug = false;
+    }
+  }
+
   private async tick() {
     if (!this.signer) return;
     const now = Date.now();
+    // Update threshold-cliff hysteresis once per tick so both the
+    // bootstrap gate and the dashboard accessor see the same state.
+    this.updateCliffHysteresis();
     // Fresh snapshot collected for /bot status — overwrites lastCorpSnapshot at end.
     const snapshot: { addr: string; auto: boolean; mode: number }[] = [];
 
@@ -1664,6 +1754,66 @@ export class CorpBot {
                     `[SafetyGate] BLOCKED ${label}.. ${opTypeName} (${reason}) — skipping bootstrap`);
                   continue;
                 }
+              }
+            }
+          }
+
+          // ── Threshold-Cliff Gate (Layer 2) ──
+          // Block Drug bootstraps when calibrated P(fail) crosses
+          // BLOCK threshold; clear only when it drops below CLEAR.
+          // Hysteresis prevents thrash at the boundary.
+          // Fails SAFE on stale op_params (treats unknown threshold as
+          // dangerous — better to skip one tick than bootstrap into a
+          // 0.24% threshold cliff we can't see).
+          // See CLAUDE.md for the 05-11 wipeout that motivated this.
+          if (!appConfig.thresholdCliffDisabled && targetMode === MODE_DRUG) {
+            const pFail = this.lastProbFail.drug;
+            const stale = this.isOpParamsStale();
+            const threshold = this.lastOpParams?.thresholds[2] ?? null;
+            const blockTh = appConfig.maxPFailDrugBlock;
+            const clearTh = appConfig.maxPFailDrugClear;
+            // Hysteresis state already updated at top of tick() via
+            // updateCliffHysteresis() — single source of truth for both
+            // the dashboard accessor and this gate decision.
+            // Decision: block if hysteresis is active OR data is stale.
+            // pFail==null + stale → block (defensive); pFail==null + fresh
+            // is rare (engine should always populate) — treat as allow.
+            const wouldBlock = this.cliffGateBlocked.drug || (stale && pFail == null);
+            const reason = stale
+              ? `stale op_params (age=${this.lastOpParams ? Math.round((Date.now() - this.lastOpParams.ts) / 60_000) : 'never'}m, n=${this.lastOpParams?.sampleCounts[2] ?? 0}, source=${this.lastOpParams?.source ?? 'none'})`
+              : pFail == null
+                ? 'pFail not available'
+                : wouldBlock
+                  ? `pFail ${(pFail * 100).toFixed(1)}% ≥ block ${(blockTh * 100).toFixed(0)}% (cliff active)`
+                  : `pFail ${(pFail * 100).toFixed(1)}% < clear ${(clearTh * 100).toFixed(0)}% (cliff inactive)`;
+            try {
+              this.storage?.insertShadowEvent({
+                ts: Date.now(),
+                signal: 'threshold_cliff',
+                would_pause: wouldBlock,
+                reason,
+                op_type_filter: 'drug',
+                context_json: {
+                  corp: addr,
+                  pFail,
+                  threshold,
+                  blockTh,
+                  clearTh,
+                  stale,
+                  shadow: appConfig.thresholdCliffShadow,
+                  sample_count: this.lastOpParams?.sampleCounts[2] ?? 0,
+                  age_min: this.lastOpParams ? (Date.now() - this.lastOpParams.ts) / 60_000 : null,
+                },
+              });
+            } catch { /* logging is best-effort */ }
+            if (wouldBlock) {
+              if (appConfig.thresholdCliffShadow) {
+                this.record('info',
+                  `[ThresholdCliff] would-block ${label}.. Drug (${reason}) [shadow — bootstrap proceeds]`);
+              } else {
+                this.record('warn',
+                  `[ThresholdCliff] BLOCKED ${label}.. Drug (${reason}) — skipping bootstrap`);
+                continue;
               }
             }
           }

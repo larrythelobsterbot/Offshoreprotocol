@@ -398,7 +398,14 @@ async function main() {
 
   const server = new ApiServer(
     storage,
-    () => engine.getState(),
+    // Wrap getState so every consumer (REST + WS) sees the threshold-cliff
+    // gate state attached. Bolted on dynamically because corpBot is not
+    // visible to the engine — same pattern as state.opParams.
+    () => {
+      const s = engine.getState() as any;
+      s.thresholdCliffGate = corpBot.getThresholdCliffState();
+      return s;
+    },
     onOpStatsChanged,
     walletTracker,
     scheduleEvidence,
@@ -465,6 +472,30 @@ async function main() {
     refLink: config.refLink || undefined,
   });
 
+  // Layer 3: Threshold-cliff TG alert. OpParamsFeed emits 'threshold-drop'
+  // when the contract sharply tightens Drug leverage. We forward it to the
+  // operator as a DM so manual trading can pause too (the bot's Layer 2
+  // gate handles bot bootstraps separately).
+  // See src/feeds/op-params.ts::checkThresholdDropAlert for filter logic.
+  opParams.on('threshold-drop', (evt: {
+    mode: number;
+    oldThreshold: number;
+    newThreshold: number;
+    dropFraction: number;
+    windowMin: number;
+    isWeekend: boolean;
+  }) => {
+    if (!config.operatorChatId) return;
+    const opName = ['Extortion', 'Arms', 'Drug'][evt.mode] ?? `mode${evt.mode}`;
+    const msg =
+      `⚠️ *${opName} threshold cliff detected*\n\n` +
+      `\`${(evt.oldThreshold * 100).toFixed(4)}%\` → \`${(evt.newThreshold * 100).toFixed(4)}%\`\n` +
+      `Tightened *${(evt.dropFraction * 100).toFixed(0)}%* in last ${evt.windowMin}min.\n\n` +
+      `Bot Layer 2 gate will block Drug bootstraps when calibrated P(fail) ≥ ${(config.maxPFailDrugBlock * 100).toFixed(0)}%.\n` +
+      `Manual ops risk multiplied — consider pausing discretionary trades.`;
+    void bot.sendDm(config.operatorChatId, msg);
+  });
+
   // --- Corp Bot (Drug ↔ Arms auto-switcher + auto-claim) ---
   // Wires the TG bot in so the operator gets a DM on every mode switch / claim.
   const corpBot = new CorpBot({
@@ -507,7 +538,10 @@ async function main() {
 
   // Broadcast state to WS clients every 1s + observe transitions for channel alerts.
   setInterval(() => {
-    const state = engine.getState();
+    // getState() wrapper already attaches thresholdCliffGate — see ApiServer
+    // construction above. No need to re-attach here.
+    const state = engine.getState() as any;
+    state.thresholdCliffGate = corpBot.getThresholdCliffState();
     server.broadcast(state);
     broadcaster.observe(state);
     // Feed latest danger score to corp bot
@@ -518,6 +552,23 @@ async function main() {
       arms:      state.scores.arms      ?? null,
       drug:      state.scores.drug      ?? null,
     });
+    // Feed calibrated P(fail) (powers the ThresholdCliff gate — Layer 2)
+    corpBot.onProbFail({
+      extortion: state.economics?.extortion?.probFail ?? null,
+      arms:      state.economics?.arms?.probFail      ?? null,
+      drug:      state.economics?.drug?.probFail      ?? null,
+    });
+    // Feed live op_params snapshot (powers ThresholdCliff staleness check)
+    const opParamsSnap = (state as any).opParams as
+      | { ts: number; thresholds: Record<0|1|2, number>; sampleCounts: Record<0|1|2, number>; source: 'live' | 'default' }
+      | null
+      | undefined;
+    corpBot.onOpParams(opParamsSnap ? {
+      ts: opParamsSnap.ts,
+      thresholds: opParamsSnap.thresholds as { 0: number; 1: number; 2: number },
+      sampleCounts: opParamsSnap.sampleCounts as { 0: number; 1: number; 2: number },
+      source: opParamsSnap.source,
+    } : null);
   }, 1000);
 
   // DB cleanup hourly
