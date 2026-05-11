@@ -36,16 +36,17 @@ const TOKEN_USDM   = '0xfafddbb3fc7688494971a79cc65dca3ef82079e7';
 const CYCLE_REWARDS = '0x8C73Cd3BB0bFB577D4578bB075640C1eCc5027c8';
 const MODE_NAMES_ABBREV = ['Extortion', 'Arms', 'Drug'] as const;
 
-// Vault simulation constants — extracted from the in-game JS bundle and
-// validated to match the in-game cycle output UI to ±0.01% across multiple
-// loadout configurations. See /tmp/optimize4.py for the reference impl.
-const VAULT_TOTAL_TICKS    = 900;
-const VAULT_BASE_DAMAGE    = 3333;
-const VAULT_HEAT_COEFF     = 20;
-const VAULT_DISC_CAP       = 7000;   // 70% in basis points
-const VAULT_DAMAGE_SCALE   = 10000;
-// Cycle is 8 hours wall-clock; the 900-tick simulation maps onto this window.
-const VAULT_CYCLE_SECONDS  = 8 * 3600;
+// Vault simulation constants — single source of truth in engine/vault-constants.
+// Local aliases (VAULT_DISC_CAP) preserve existing call-site readability.
+import {
+  VAULT_TOTAL_TICKS,
+  VAULT_BASE_DAMAGE,
+  VAULT_HEAT_COEFF,
+  VAULT_DISC_CAP_BP as VAULT_DISC_CAP,
+  VAULT_DAMAGE_SCALE,
+  VAULT_CYCLE_SECONDS,
+  VAULT_UI_SCALE,
+} from '../engine/vault-constants';
 const ITEM_TYPES = ['?', 'Business', 'Insurance', 'Accountant', 'Method', 'Associates', 'OpSec'];
 const RARITY_NAMES = ['?', 'Common', 'Rare', 'Epic', 'Legendary', 'Mythic'];
 const RARITY_MULT  = [1, 1, 1.5, 2.5, 4.5, 8];
@@ -370,11 +371,7 @@ export function computeVaultProjection(
   const outputPerTick = A * (1 + bonus_rate);
   const statusBonusMul = 1 + (gen.levelBonus / 100);
   const projectedOutput = outputPerTick * survivedTicks * statusBonusMul;
-  // UI scaling: in-game shows millions. The validated optimizer used a
-  // ~1029 multiplier to convert sim output → UI millions. Confirmed against
-  // a live loadout (sim 179,397 → UI 184.63M).
-  const UI_SCALE = 1029;
-  const projectedOutputUI = (projectedOutput * UI_SCALE) / 1e6;
+  const projectedOutputUI = (projectedOutput * VAULT_UI_SCALE) / 1e6;
 
   // === LIVE STATE — interpolate to now ===
   const elapsed = Math.max(0, nowSec - cycle.startTs);

@@ -19,19 +19,19 @@ export const STATUS_BASE_ST = [0, 60, 73, 86, 100, 113, 126, 140, 153, 166, 188]
 // Mirrors the contract's `levelBonus` returned from getAggregateStats().
 export const STATUS_CLEANING_BONUS_PCT = [0, 0, 1, 3, 6, 10, 15, 21, 28, 36, 46];
 
-// Simulator constants (basis points where shown). Match the in-game JS
-// bundle exactly. See feeds/loadout-scanner.ts:42-48 for the canonical
-// values these mirror.
-const TOTAL_TICKS  = 900;
-const BASE_DAMAGE  = 3333;
-const HEAT_COEFF   = 20;
-const DISC_CAP_BP  = 7000;    // 70% Discretion cap in basis points
-const DAMAGE_SCALE = 10000;
+// Simulator constants — re-exported from the single source of truth in
+// `vault-constants.ts`. Local aliases preserved so the existing math
+// stays readable at call sites.
+import {
+  VAULT_TOTAL_TICKS    as TOTAL_TICKS,
+  VAULT_BASE_DAMAGE    as BASE_DAMAGE,
+  VAULT_HEAT_COEFF     as HEAT_COEFF,
+  VAULT_DISC_CAP_BP    as DISC_CAP_BP,
+  VAULT_DAMAGE_SCALE   as DAMAGE_SCALE,
+  VAULT_UI_SCALE,
+} from './vault-constants';
 
-// UI scale: simulator output × 1029 / 1e6 = in-game M-cash. Matches the
-// loadout-scanner's anchored value (verified against a live loadout
-// scoring 184.63M with simulator output 179,397).
-export const UI_SCALE = 1029;
+export const UI_SCALE = VAULT_UI_SCALE;
 
 /**
  * Asset slot. Stats are already rarity-multiplied (i.e. these are the

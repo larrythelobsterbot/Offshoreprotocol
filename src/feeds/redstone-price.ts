@@ -122,6 +122,13 @@ export class RedStonePriceFeed extends EventEmitter {
   /** Read-only view of the in-memory divergence ring. */
   getDivergenceLog(): RedStoneDivergence[] { return this.divergenceLog.slice(); }
 
+  /** Latest divergence sample, or null if the ring is empty. O(1). */
+  getLatestDivergence(): RedStoneDivergence | null {
+    return this.divergenceLog.length > 0
+      ? this.divergenceLog[this.divergenceLog.length - 1]
+      : null;
+  }
+
   /** True only when the most recent poll succeeded AND wasn't stale. */
   isHealthy(): boolean {
     return !!this.current && !this.current.stale && this.consecutiveFailures === 0;
@@ -181,9 +188,21 @@ export class RedStonePriceFeed extends EventEmitter {
     return div;
   }
 
+  // Memoized stats so the 1Hz WS broadcast doesn't re-walk the ring
+  // when nothing has changed. Recomputed only when divergenceLog has
+  // grown since the last call (i.e. a new RedStone poll landed).
+  private statsCache: {
+    samples: number;
+    stats: {
+      avg5mBps: number; avg1hBps: number; max1hBps: number;
+      pctTimeRedstoneLeads: number; samples: number;
+    };
+  } | null = null;
+
   /**
    * Rolling-window aggregates from the in-memory ring. Used by the
    * dashboard state attachment so we don't recompute on every WS push.
+   * Single-pass walk over the ring; memoized between updates.
    */
   getDivergenceStats(): {
     avg5mBps: number;
@@ -192,21 +211,33 @@ export class RedStonePriceFeed extends EventEmitter {
     pctTimeRedstoneLeads: number;
     samples: number;
   } {
+    if (this.statsCache && this.statsCache.samples === this.divergenceLog.length) {
+      return this.statsCache.stats;
+    }
     const now = Date.now();
-    const win5m = this.divergenceLog.filter(d => now - d.ts <= 5 * 60_000);
-    const win1h = this.divergenceLog.filter(d => now - d.ts <= 60 * 60_000);
-    const mean = (xs: number[]) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
-    const maxAbs = (xs: number[]) => xs.length ? xs.reduce((m, v) => Math.max(m, Math.abs(v)), 0) : 0;
-    const pctLeads = win1h.length
-      ? win1h.filter(d => d.redstoneLeads).length / win1h.length * 100
-      : 0;
-    return {
-      avg5mBps: mean(win5m.map(d => d.diffBps)),
-      avg1hBps: mean(win1h.map(d => d.diffBps)),
-      max1hBps: maxAbs(win1h.map(d => d.diffBps)),
-      pctTimeRedstoneLeads: pctLeads,
+    const cutoff5m = now - 5 * 60_000;
+    const cutoff1h = now - 60 * 60_000;
+    let sum5m = 0, count5m = 0;
+    let sum1h = 0, count1h = 0, max1hAbs = 0, leads1h = 0;
+    for (const d of this.divergenceLog) {
+      if (d.ts >= cutoff5m) { sum5m += d.diffBps; count5m++; }
+      if (d.ts >= cutoff1h) {
+        sum1h += d.diffBps;
+        count1h++;
+        const a = Math.abs(d.diffBps);
+        if (a > max1hAbs) max1hAbs = a;
+        if (d.redstoneLeads) leads1h++;
+      }
+    }
+    const stats = {
+      avg5mBps: count5m > 0 ? sum5m / count5m : 0,
+      avg1hBps: count1h > 0 ? sum1h / count1h : 0,
+      max1hBps: max1hAbs,
+      pctTimeRedstoneLeads: count1h > 0 ? (leads1h / count1h) * 100 : 0,
       samples: this.divergenceLog.length,
     };
+    this.statsCache = { samples: this.divergenceLog.length, stats };
+    return stats;
   }
 
   // ──────────────────────────────────────────────────────────────────

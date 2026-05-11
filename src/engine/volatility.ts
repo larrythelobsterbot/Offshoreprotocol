@@ -19,6 +19,27 @@ import type { AmmRate } from '../feeds/amm-rate';
 import type { TokenomicsBlock } from '../feeds/tokenomics';
 import { DEFAULT_THRESHOLDS } from '../feeds/op-params';
 
+/**
+ * Maps a vol value (annualised %) to the composite danger score's
+ * "vol regime" contribution (0-25 points). Pure function — used by
+ * both the live `calcScores()` path and the shadow recompute, so the
+ * two CAN'T silently disagree.
+ */
+export function volToDangerComponent(refVol: number): number {
+  if (refVol > 120) return 25;
+  if (refVol > 80)  return 18;
+  if (refVol > 60)  return 13;
+  if (refVol > 40)  return 7;
+  return 2;
+}
+
+/** Maps the ETH velocity risk tier to its danger contribution. */
+export function ethVelocityRiskToComponent(risk: 'safe' | 'elevated' | 'critical'): number {
+  if (risk === 'critical') return 15;
+  if (risk === 'elevated') return 7;
+  return 0;
+}
+
 // Operation thresholds — STALE FALLBACKS sourced from op-params.ts
 // (single source of truth). Live values come from the OpParamsFeed via
 // setOpParamsProvider; only used when the feed isn't wired. Stored in
@@ -249,25 +270,27 @@ export class VolatilityEngine extends EventEmitter {
   /**
    * Shadow recomputation of the price-sensitive danger inputs as if the
    * most recent tick were `shadowPrice` instead of `this.ethPrice`. Used
-   * by the dashboard's Oracle Divergence panel to surface
-   * "what would danger be RIGHT NOW if we trusted RedStone instead of
-   * Hyperliquid?".
+   * by the dashboard's Oracle Divergence panel to surface "what would
+   * danger be RIGHT NOW if we trusted RedStone instead of Hyperliquid?".
    *
-   * Implementation: take the existing returns1m series and substitute
-   * the last entry with a return that lands at `shadowPrice` instead of
-   * the current `this.ethPrice`. Recompute vol/pFail/velocity from that
-   * shadow series. Everything else (CVD, OB, NetworkHealth, etc.) is
-   * price-independent at this tick, so we reuse the live values.
-   *
-   * Returns null when there isn't enough data to compute a meaningful
-   * shadow (no live price, no candles, no thresholds).
+   * `liveInputs` is the result of an already-completed `getState()` call —
+   * passing them in here lets us reconstruct "other (price-independent)
+   * components" WITHOUT re-running `calcScores()` + `getVolatility()`,
+   * which the caller (getDecoratedState) just computed. Cuts the 1Hz
+   * broadcast CPU roughly in half. Falls back to internal computation
+   * when liveInputs is omitted (rare — tests / on-demand callers).
    */
-  computeShadowDangerAtPrice(shadowPrice: number): {
+  computeShadowDangerAtPrice(shadowPrice: number, liveInputs?: {
+    dangerScore: number;
+    /** vol.vol30m ?? vol.vol5m ?? 0  — already on state.volatility. */
+    refVol: number;
+    /** Live ETH velocity risk tier from getEthVelocitySnap(). */
+    ethVelocityRisk: 'safe' | 'elevated' | 'critical';
+  }): {
     dangerScore: number;
     pFailExtortion: number;
     pFailArms: number;
     pFailDrug: number;
-    // Components for debugging / panel breakdown.
     components: {
       volComponent: number;
       ethVelocityComponent: number;
@@ -309,20 +332,12 @@ export class VolatilityEngine extends EventEmitter {
     const probArms      = calibrateProb(pFailRaw(v30, 30, liveTh.arms),      'arms',      utcHour);
     const probDrug      = calibrateProb(pFailRaw(v90, 90, liveTh.drug),      'drug',      utcHour);
 
-    // Recompute the two price-sensitive danger components.
+    // Price-sensitive danger components for the shadow path.
     const refVol = v30 ?? v5 ?? 0;
-    let volComponent = 2;
-    if (refVol > 120) volComponent = 25;
-    else if (refVol > 80) volComponent = 18;
-    else if (refVol > 60) volComponent = 13;
-    else if (refVol > 40) volComponent = 7;
+    const volComponent = volToDangerComponent(refVol);
 
-    // ETH velocity on the shadow returns. Uses the SAME classifier the
-    // live EthVelocitySignal uses (classifyEthVelocity in
-    // eth-velocity-signal.ts) so HL-vs-RS comparisons are like-for-like.
-    // Codex audit #3: an earlier version hard-coded -50 / -20 and missed
-    // the sustained-bps5m+accel critical path, understating shadow
-    // danger in the bearish range this feature exists to study.
+    // ETH velocity on shadow returns. Uses the SHARED classifier so the
+    // shadow agrees with the live EthVelocitySignal exactly.
     let shadowBps1m: number | null = null;
     let shadowBps5m: number | null = null;
     let shadowAccel: number | null = null;
@@ -336,31 +351,31 @@ export class VolatilityEngine extends EventEmitter {
       shadowBps5m = (win5.reduce((s, x) => s + x.r, 0) / win5.length) * 10_000;
     }
     const shadowEthRisk = classifyEthVelocity(shadowBps1m, shadowBps5m, shadowAccel);
-    const ethVelocityComponent = shadowEthRisk === 'critical' ? 15
-      : shadowEthRisk === 'elevated' ? 7
-      : 0;
+    const ethVelocityComponent = ethVelocityRiskToComponent(shadowEthRisk);
 
-    // Reconstruct the rest of the danger score from the live calc path
-    // by reading whichever side-channel inputs are price-independent
-    // RIGHT NOW. We can't easily re-call calcScores() because it would
-    // also touch the price components — so we approximate the
-    // "other components" as (currentDanger − currentVolComponent −
-    // currentEthVelocityComponent). This keeps the shadow danger
-    // self-consistent with the live one when shadowPrice == ethPrice.
-    const live = this.calcScores();
-    const liveRefVol = (this.getVolatility().vol30m ?? this.getVolatility().vol5m ?? 0);
-    let liveVolComponent = 2;
-    if (liveRefVol > 120) liveVolComponent = 25;
-    else if (liveRefVol > 80) liveVolComponent = 18;
-    else if (liveRefVol > 60) liveVolComponent = 13;
-    else if (liveRefVol > 40) liveVolComponent = 7;
-    const liveEv = this.getEthVelocitySnap ? this.getEthVelocitySnap() : null;
-    let liveEthVelocityComponent = 0;
-    if (liveEv && liveEv.bps1m != null) {
-      if (liveEv.risk === 'critical') liveEthVelocityComponent = 15;
-      else if (liveEv.risk === 'elevated') liveEthVelocityComponent = 7;
+    // Derive the price-independent danger contributions ("other"
+    // components: CVD, OB, NetworkHealth, etc.) by subtracting the
+    // live price-sensitive contributions from the live composite.
+    // Inputs preferred (caller already computed them); fall back to
+    // internal computation when none provided.
+    let liveDanger: number;
+    let liveRefVol: number;
+    let liveEthRisk: 'safe' | 'elevated' | 'critical';
+    if (liveInputs) {
+      liveDanger  = liveInputs.dangerScore;
+      liveRefVol  = liveInputs.refVol;
+      liveEthRisk = liveInputs.ethVelocityRisk;
+    } else {
+      const live = this.calcScores();
+      const liveVol = this.getVolatility();
+      liveDanger  = live.dangerScore;
+      liveRefVol  = liveVol.vol30m ?? liveVol.vol5m ?? 0;
+      const liveEv = this.getEthVelocitySnap ? this.getEthVelocitySnap() : null;
+      liveEthRisk = (liveEv?.risk ?? 'safe') as 'safe' | 'elevated' | 'critical';
     }
-    const otherComponents = Math.max(0, live.dangerScore - liveVolComponent - liveEthVelocityComponent);
+    const liveVolComponent = volToDangerComponent(liveRefVol);
+    const liveEthVelocityComponent = ethVelocityRiskToComponent(liveEthRisk);
+    const otherComponents = Math.max(0, liveDanger - liveVolComponent - liveEthVelocityComponent);
 
     const shadowDanger = Math.round(
       Math.min(100, Math.max(0, volComponent + ethVelocityComponent + otherComponents)),
@@ -614,13 +629,9 @@ export class VolatilityEngine extends EventEmitter {
     // not into the composite, since they're op-type-agnostic markers.
     let danger = 0;
 
-    // Vol regime (0-25)
+    // Vol regime (0-25) — shared with shadow path via volToDangerComponent.
     const refVol = vol.vol30m ?? vol.vol5m ?? 0;
-    if (refVol > 120) danger += 25;
-    else if (refVol > 80) danger += 18;
-    else if (refVol > 60) danger += 13;
-    else if (refVol > 40) danger += 7;
-    else danger += 2;
+    danger += volToDangerComponent(refVol);
 
     // Game liq velocity (0-25) — danger-v2 PRIMARY new component.
     // Critical drug or arms cascade → 25; elevated → 12; safe → 0.

@@ -12,7 +12,7 @@ import { LoadoutScannerFeed } from './feeds/loadout-scanner';
 import { ScheduleEvidenceFeed } from './feeds/schedule-evidence';
 import { NetworkHealthFeed } from './feeds/network-health';
 import { OpParamsFeed } from './feeds/op-params';
-import { RedStonePriceFeed, type RedStonePrice, type RedStoneDivergence } from './feeds/redstone-price';
+import { RedStonePriceFeed, type RedStonePrice } from './feeds/redstone-price';
 import { WhaleTradesFeed } from './feeds/whale-trades';
 import { WhaleClaimsFeed } from './feeds/whale-claims';
 import { WhaleCopyFeed } from './feeds/whale-copy';
@@ -415,21 +415,31 @@ async function main() {
     s.thresholdCliffGate = corpBot.getThresholdCliffState();
     // Attach the RedStone block. Stats are computed from the in-memory
     // ring every tick — small ring (200 samples), so this is cheap.
-    if (latestRedstone) {
+    const rsPrice = redstone.getPrice();
+    if (rsPrice) {
       const stats = redstone.getDivergenceStats();
-      const shadow = latestRedstone.price > 0
-        ? engine.computeShadowDangerAtPrice(latestRedstone.price)
+      const rsDiv = redstone.getLatestDivergence();
+      // Reuse the live components from the state we JUST computed so
+      // computeShadowDangerAtPrice doesn't have to re-run calcScores()
+      // + getVolatility() on every 1Hz broadcast.
+      const liveEv = ethVelocity.getSnapshot();
+      const shadow = rsPrice.price > 0
+        ? engine.computeShadowDangerAtPrice(rsPrice.price, {
+            dangerScore: s.scores?.dangerScore ?? 0,
+            refVol: s.volatility?.vol30m ?? s.volatility?.vol5m ?? 0,
+            ethVelocityRisk: liveEv?.risk ?? 'safe',
+          })
         : null;
       s.redstone = {
-        price: latestRedstone.price,
-        updatedAt: latestRedstone.updatedAt,
-        fetchedAt: latestRedstone.fetchedAt,
-        stale: latestRedstone.stale,
+        price: rsPrice.price,
+        updatedAt: rsPrice.updatedAt,
+        fetchedAt: rsPrice.fetchedAt,
+        stale: rsPrice.stale,
         oracle: config.redstoneOracleAddress,
-        divergence: latestDivergence ? {
-          currentBps: latestDivergence.diffBps,
-          redstoneLeads: latestDivergence.redstoneLeads,
-          ts: latestDivergence.ts,
+        divergence: rsDiv ? {
+          currentBps: rsDiv.diffBps,
+          redstoneLeads: rsDiv.redstoneLeads,
+          ts: rsDiv.ts,
           avg5mBps: stats.avg5mBps,
           avg1hBps: stats.avg1hBps,
           max1hBps: stats.max1hBps,
@@ -556,12 +566,10 @@ async function main() {
     pollMs: config.redstonePollMs,
     staleThresholdS: config.redstoneStaleThresholdS,
   });
-  // Mutable holders for the latest price + divergence so getState()
-  // doesn't have to re-walk the ring on every WS broadcast.
-  let latestRedstone: RedStonePrice | null = null;
-  let latestDivergence: RedStoneDivergence | null = null;
   // Track the last DB-snapshot write (every 60s) and the last TG-alert
-  // fire (cooldown). Independent timers.
+  // fire (cooldown). Independent timers. Latest price + divergence are
+  // read from feed accessors (redstone.getPrice() / getLatestDivergence())
+  // — single source of truth, no risk of cache/feed drift.
   let lastDivergenceSnapshotMs = 0;
   let lastDivergenceAlertMs = 0;
   // HL freshness ceiling for the divergence comparison. We allow HL to
@@ -572,7 +580,6 @@ async function main() {
   // against a frozen anchor. Codex audit #2.
   const HL_STALENESS_CEILING_MS = Math.max(10_000, config.redstonePollMs * 3);
   redstone.on('price', (snap: RedStonePrice) => {
-    latestRedstone = snap;
     const hl = engine.getEthPrice();
     if (hl == null || hl <= 0) return;
     const nowMs = Date.now();
@@ -590,7 +597,6 @@ async function main() {
     }
     const div = redstone.recordDivergence(hl);
     if (!div) return;
-    latestDivergence = div;
 
 
     const isSpike = Math.abs(div.diffBps) > config.redstoneDivergenceAlertBps;
@@ -638,9 +644,12 @@ async function main() {
       const activeDrug = corps.filter((c) => c?.tradeInfo?.active && c?.tradeInfo?.mode === 2);
       if (activeDrug.length > 0) {
         lastDivergenceAlertMs = nowMs;
-        // Compute shadow danger for the alert body so the operator can
-        // see the magnitude of the disagreement.
-        const shadow = engine.computeShadowDangerAtPrice(snap.price);
+        const liveEv = ethVelocity.getSnapshot();
+        const shadow = engine.computeShadowDangerAtPrice(snap.price, {
+          dangerScore: state?.scores?.dangerScore ?? 0,
+          refVol: state?.volatility?.vol30m ?? state?.volatility?.vol5m ?? 0,
+          ethVelocityRisk: liveEv?.risk ?? 'safe',
+        });
         const pfHL = state?.volatility?.probDrug ?? null;
         const pfRS = shadow?.pFailDrug ?? null;
         const msg =

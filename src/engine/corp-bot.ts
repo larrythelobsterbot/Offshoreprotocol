@@ -815,6 +815,12 @@ export class CorpBot {
   // oscillates rapidly around the 45/65 thresholds. One DM per (kind) per minute.
   private lastDmAt: Map<string, number> = new Map();
   private static readonly DM_COOLDOWN_MS = 60_000;
+  // Hard cap to keep per-corp DM kinds (e.g. 'grace:0xabc..') from
+  // leaking memory across pm2-restart-free uptimes. Entries older than
+  // 7d are evicted on the next notify() call; values are timestamps so
+  // a single linear scan finishes in microseconds even at the cap.
+  private static readonly DM_COOLDOWN_RETENTION_MS = 7 * 86400_000;
+  private lastDmAtPrunedAt = 0;
 
   /**
    * Push an entry into the in-memory log ring and forward to pino.
@@ -861,6 +867,16 @@ export class CorpBot {
     const last = this.lastDmAt.get(kind) ?? 0;
     if (now - last < cooldownMs) return;
     this.lastDmAt.set(kind, now);
+    // Prune stale entries hourly. Per-corp kinds (e.g. 'grace:0xabc..')
+    // would otherwise accumulate indefinitely as corps cycle in and out
+    // of the operator's portfolio.
+    if (now - this.lastDmAtPrunedAt > 3600_000) {
+      const cutoff = now - CorpBot.DM_COOLDOWN_RETENTION_MS;
+      for (const [k, ts] of this.lastDmAt) {
+        if (ts < cutoff) this.lastDmAt.delete(k);
+      }
+      this.lastDmAtPrunedAt = now;
+    }
 
     try {
       await this.tgBot.sendDm(this.operatorChatId, text, { parseMode: 'Markdown' });
@@ -918,9 +934,11 @@ export class CorpBot {
    * summary entirely (preset-change already conveys the same intent).
    */
   private flushTickEvents(): void {
-    const events = this.tickEvents;
-    this.tickEvents = [];
-    if (events.length === 0) return;
+    if (this.tickEvents.length === 0) return;
+    // Snapshot then drain — keeps the same array reference so we don't
+    // churn allocations between ticks.
+    const events = this.tickEvents.slice();
+    this.tickEvents.length = 0;
     if (this.tickPresetChangeFired) return;  // preset-change subsumes per-corp churn
 
     // Group switches by (from, to) pair. e.g. all corps that went
@@ -1552,10 +1570,11 @@ export class CorpBot {
     // Update threshold-cliff hysteresis once per tick so both the
     // bootstrap gate and the dashboard accessor see the same state.
     this.updateCliffHysteresis();
-    // Reset per-tick aggregator state (Cut #2 + #4). Per-corp events
-    // accumulate here and get flushed as ONE summary DM at the end
-    // of the tick unless preset-change already fired.
-    this.tickEvents = [];
+    // Reset per-tick aggregator state. Per-corp events accumulate here
+    // and get flushed as ONE summary DM at the end of the tick unless
+    // preset-change already fired. `.length = 0` reuses the existing
+    // array instead of churning a new allocation per tick.
+    this.tickEvents.length = 0;
     this.tickPresetChangeFired = false;
     // Fresh snapshot collected for /bot status — overwrites lastCorpSnapshot at end.
     const snapshot: { addr: string; auto: boolean; mode: number }[] = [];

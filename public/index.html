@@ -3292,6 +3292,11 @@ function fmtBps(b) {
   return `${s}${b.toFixed(1)} bps`;
 }
 
+// Cached signature so we skip the (expensive) innerHTML rebuild when
+// nothing underneath has changed. The "fetched Xs ago" timestamp in
+// the header DOES need to tick every second — we update that one text
+// node directly without rebuilding the whole panel.
+let __oracleLastSig = '';
 function renderOracleDivergence(s) {
   const card = document.getElementById('oracleCard');
   if (!card) return;
@@ -3299,20 +3304,36 @@ function renderOracleDivergence(s) {
   const body = document.getElementById('oracleBody');
   const health = document.getElementById('oracleHealth');
   if (!rs) {
-    body.innerHTML = '<div style="color:var(--dim);font-size:11px;">RedStone feed initialising… (no price yet)</div>';
-    if (health) health.textContent = '';
+    if (__oracleLastSig !== 'null') {
+      body.innerHTML = '<div style="color:var(--dim);font-size:11px;">RedStone feed initialising… (no price yet)</div>';
+      if (health) health.textContent = '';
+      __oracleLastSig = 'null';
+    }
     return;
   }
+  // Signature of everything that affects the panel BODY. ETH price is
+  // rounded to the nearest cent so 1Hz HL ticks don't force a rebuild
+  // every second when the move is sub-cent.
+  const sig = [
+    rs.fetchedAt, rs.price, rs.stale,
+    rs.divergence?.ts ?? '', rs.divergence?.currentBps?.toFixed(1) ?? '',
+    rs.shadow?.dangerScore ?? '',
+    Math.round((s.ethPrice ?? 0) * 100),
+  ].join('|');
+  // Always refresh the "fetched Xs ago" header line — it's a single
+  // text-node update, not a DOM rebuild, so it's cheap to do every push.
   const ageS = rs.fetchedAt ? Math.max(0, Math.floor((Date.now() - rs.fetchedAt) / 1000)) : null;
-  const updatedAgo = rs.updatedAt
-    ? Math.max(0, Math.floor(Date.now() / 1000 - rs.updatedAt))
-    : null;
   if (health) {
     health.textContent = rs.stale
       ? '⚠ STALE'
       : (ageS != null ? `fetched ${ageS}s ago` : '');
     health.style.color = rs.stale ? 'var(--red)' : 'var(--dim)';
   }
+  if (sig === __oracleLastSig) return;
+  __oracleLastSig = sig;
+  const updatedAgo = rs.updatedAt
+    ? Math.max(0, Math.floor(Date.now() / 1000 - rs.updatedAt))
+    : null;
   const hl = s.ethPrice;
   const div = rs.divergence;
   const diffBps = div ? div.currentBps : null;
