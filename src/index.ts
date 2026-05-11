@@ -782,7 +782,8 @@ async function main() {
           const { computeEfficiency } = await import('./engine/efficiency');
           const eff24h = computeEfficiency(storage, { windowHours: 24 });
           const eff7d  = computeEfficiency(storage, { windowHours: 168 });
-          const dmText = broadcaster.composeOperatorEfficiencyDm({ eff24h, eff7d });
+          const claims24h = corpBot.getClaimSummary(24);
+          const dmText = broadcaster.composeOperatorEfficiencyDm({ eff24h, eff7d, claims24h });
           await bot.sendDm(config.operatorChatId, dmText, { parseMode: 'Markdown' });
           logger.info({ ops24h: eff24h.overall.ops }, '[OperatorDigest] efficiency DM sent');
         }

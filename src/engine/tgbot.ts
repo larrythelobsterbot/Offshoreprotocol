@@ -638,6 +638,8 @@ Subcommands: \`/bot help\``);
 \`/bot\` — current state
 \`/bot logs\` — last 20 CorpBot log lines
 \`/bot claim\` — claim pending rewards on all corps now
+\`/bot eff [hours]\` — on-demand INF efficiency DM (default 24h)
+\`/bot quiet on|off|status\` — mute low-signal DMs (claims, mode-switches, etc) keeping only critical alerts + daily digest
 
 *Stop / start (most common):*
 \`/bot off\` — *full stop* (locks paused preset, calls disableAutoTrade on every corp)
@@ -1212,6 +1214,67 @@ Subcommands:
           }
 
           await this.sendDm(chatId, `Unknown breaker action: \`${action}\`. Try \`/bot breaker\`.`);
+          return;
+        }
+
+        case 'quiet': {
+          // Toggle low-signal DMs. When ON, only critical alerts pass
+          // through (circuit breaker, burn-money expiry, copy auto-
+          // disable, operator-grace, threshold-cliff, RedStone divergence,
+          // and the daily 09:00 HKT digest). Persisted to corp-bot-state.json.
+          const arg = (parts[1] || 'status').toLowerCase();
+          if (arg === 'on') {
+            corpBot.setQuiet(true);
+            await this.sendDm(chatId,
+              `🤫 *Quiet mode ON*\n\n` +
+              `Per-corp claim / switch / re-enable / trade-start DMs are suppressed.\n` +
+              `You'll still receive:\n` +
+              `  • Circuit breaker trip/clear\n` +
+              `  • Threshold-cliff alerts\n` +
+              `  • RedStone divergence alerts\n` +
+              `  • Burn-money expiry\n` +
+              `  • Copy-mode auto-disable\n` +
+              `  • Operator-grace acknowledgment\n` +
+              `  • 09:00 HKT efficiency digest\n\n` +
+              `Disable: \`/bot quiet off\``);
+          } else if (arg === 'off') {
+            corpBot.setQuiet(false);
+            await this.sendDm(chatId, `🔔 *Quiet mode OFF* — all DMs restored.`);
+          } else if (arg === 'status') {
+            await this.sendDm(chatId,
+              `Quiet mode is currently *${corpBot.isQuiet() ? 'ON 🤫' : 'OFF 🔔'}*.\n` +
+              `Toggle: \`/bot quiet on\` or \`/bot quiet off\``);
+          } else {
+            await this.sendDm(chatId, `Usage: \`/bot quiet on|off|status\``);
+          }
+          return;
+        }
+
+        case 'efficiency':
+        case 'eff': {
+          // On-demand version of the 09:00 HKT daily DM. Computes the
+          // 24h + 7d efficiency snapshots from the live DB and renders
+          // through the same composer the scheduler uses, so the
+          // operator sees an identical message any time.
+          // `hours` arg lets the operator request a different window
+          // (e.g. `/bot eff 48` for last 48h). Defaults to 24h.
+          const arg = parts[1];
+          const hours = arg ? Math.max(1, Math.min(720, parseInt(arg, 10) || 24)) : 24;
+          const { computeEfficiency } = await import('./efficiency');
+          const { Broadcaster } = await import('./broadcaster');
+          const eff = computeEfficiency(this.cfg.storage, { windowHours: hours });
+          const eff7d = computeEfficiency(this.cfg.storage, { windowHours: 168 });
+          // Claim summary across the same window the caller asked for.
+          const claims = corpBot.getClaimSummary(hours);
+          // Throwaway broadcaster instance — composer is a pure method
+          // that doesn't use the bot/channel fields.
+          const tmp = new Broadcaster({ bot: this, channelHandle: '' } as any);
+          // Override the headline label when caller asked for non-24h.
+          const dm = tmp.composeOperatorEfficiencyDm({ eff24h: eff, eff7d, claims24h: claims });
+          const text = hours === 24
+            ? dm
+            : dm.replace('📊 *24h INF Efficiency*', `📊 *${hours}h INF Efficiency*`);
+          await this.sendDm(chatId, text);
           return;
         }
 

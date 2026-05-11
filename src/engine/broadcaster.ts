@@ -193,6 +193,9 @@ export class Broadcaster {
   composeOperatorEfficiencyDm(input: {
     eff24h: import('./efficiency').EfficiencySnapshot;
     eff7d: import('./efficiency').EfficiencySnapshot;
+    /** Optional 24h claim total (from CorpBot.getClaimSummary). When
+     *  present, surfaces a "💰 Claimed: N DIRTY across M claims" line. */
+    claims24h?: { totalDirty: number; count: number; corps: number } | null;
   }): string {
     const o24 = input.eff24h.overall;
     const o7  = input.eff7d.overall;
@@ -234,6 +237,13 @@ export class Broadcaster {
     lines.push(`DIRTY earned: *${Math.round(o24.dirty_earned).toLocaleString()}*  ·  INF lost: *${o24.inf_spent.toFixed(0)}*`);
     if (o24.avg_partial_payout > 0) {
       lines.push(`Avg partial on fail: *${o24.avg_partial_payout.toFixed(1)} DIRTY*`);
+    }
+    if (input.claims24h && input.claims24h.count > 0) {
+      lines.push(
+        `💰 Claimed: *${Math.round(input.claims24h.totalDirty).toLocaleString()} DIRTY*` +
+        `  across *${input.claims24h.count}* claim${input.claims24h.count === 1 ? '' : 's'}` +
+        ` on *${input.claims24h.corps}* corp${input.claims24h.corps === 1 ? '' : 's'}`,
+      );
     }
     if (drug && arms && drug.ops > 0 && arms.ops > 0) {
       lines.push('');

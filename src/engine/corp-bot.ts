@@ -324,6 +324,50 @@ export class CorpBot {
   // Recent CorpBot log lines for /bot logs. Append-only, capped.
   private logBuffer: string[] = [];
 
+  // ─── TG noise reduction (2026-05-11) ──────────────────────────
+  // Per-tick event aggregator. Per-corp events (switch / trade-start)
+  // get pushed here during the tick rather than emitting a DM
+  // immediately; flushed into ONE summary DM at the end of the tick.
+  // Drops the per-corp message storm (was 10-30 DMs/day) into one
+  // line per logical event. See flushTickEvents().
+  private tickEvents: Array<
+    | { kind: 'switch';   corp: string; fromMode: number; toMode: number }
+    | { kind: 'start';    corp: string; toMode: number }
+  > = [];
+  /** True when the current tick already fired a preset-change DM — used
+   *  to suppress redundant per-corp switch/start DMs in the same tick. */
+  private tickPresetChangeFired = false;
+
+  // 24h ring of claim events. Replaces the per-claim DM (which fired
+  // 15-30× per day). Aggregated into the 09:00 HKT efficiency digest
+  // as a single "💰 claimed N DIRTY across M claims yesterday" line.
+  private claimRing: Array<{ ts: number; corp: string; dirty: number }> = [];
+
+  /** If true, mute all non-critical DMs. Persisted across restarts.
+   *  Critical kinds always pass through — see CRITICAL_DM_KINDS. */
+  private dmQuiet = false;
+
+  /** Hard-allowed DM kinds even when dmQuiet=true. Stuff the operator
+   *  ALWAYS needs to see: circuit breaker, burn-money expiry, copy
+   *  auto-disable, threshold-cliff alerts. (RedStone + threshold alerts
+   *  fire from index.ts via bot.sendDm directly — they bypass notify(),
+   *  so they're naturally exempt.) */
+  private static readonly CRITICAL_DM_KINDS = new Set<string>([
+    'breaker-trip',
+    'breaker-cleared',
+    'burn-money:timeout',
+    'copy-auto-disable',
+    'grace',  // operator action requires acknowledgment
+  ]);
+
+  /** Per-kind DM cooldown overrides. Defaults to DM_COOLDOWN_MS (60s).
+   *  Chatty kinds get 5min to deduplicate close-together events. */
+  private static readonly DM_COOLDOWN_OVERRIDES: Record<string, number> = {
+    'preset-change':   5 * 60_000,
+    'tick-summary':    2 * 60_000,
+  };
+  // ──────────────────────────────────────────────────────────────
+
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
   // Reentrancy guard — true while a tick is mid-flight. Prevents two ticks
@@ -451,6 +495,7 @@ export class CorpBot {
         dangerHigh:        this.dangerHigh,
         dangerLow:         this.dangerLow,
         panicThreshold:    this.panicThreshold,
+        dmQuiet:           this.dmQuiet,
         savedAt:           Date.now(),
       };
       const fs = require('fs');
@@ -493,6 +538,7 @@ export class CorpBot {
       if (typeof state.dangerHigh    === 'number') this.dangerHigh    = state.dangerHigh;
       if (typeof state.dangerLow     === 'number') this.dangerLow     = state.dangerLow;
       if (typeof state.panicThreshold === 'number') this.panicThreshold = state.panicThreshold;
+      if (typeof state.dmQuiet === 'boolean') this.dmQuiet = state.dmQuiet;
 
       logger.info({
         manualPresetName: this.manualPresetName,
@@ -796,9 +842,24 @@ export class CorpBot {
     // Validate chat ID is a real integer (defends against parseInt('123abc')→123).
     if (!Number.isInteger(this.operatorChatId)) return;
 
+    // Quiet mode mutes everything except hard-allowed critical kinds.
+    // Critical kinds always pass through so circuit-breaker / burn-money
+    // expiry / copy auto-disable can't be silenced by accident.
+    if (this.dmQuiet) {
+      // Strip per-corp suffix (e.g. 'grace:0xabc..' → 'grace') before
+      // checking the critical set — operator just sets the bucket label
+      // once and we apply it across all per-corp variants.
+      const baseKind = kind.split(':')[0];
+      if (!CorpBot.CRITICAL_DM_KINDS.has(baseKind)) return;
+    }
+
+    // Per-kind cooldown: chatty kinds (preset-change, tick-summary) get
+    // a longer dedupe window than the 60s default.
+    const baseKind = kind.split(':')[0];
+    const cooldownMs = CorpBot.DM_COOLDOWN_OVERRIDES[baseKind] ?? CorpBot.DM_COOLDOWN_MS;
     const now  = Date.now();
     const last = this.lastDmAt.get(kind) ?? 0;
-    if (now - last < CorpBot.DM_COOLDOWN_MS) return;
+    if (now - last < cooldownMs) return;
     this.lastDmAt.set(kind, now);
 
     try {
@@ -806,6 +867,95 @@ export class CorpBot {
     } catch {
       /* sendDm already swallows errors, this is just defence in depth */
     }
+  }
+
+  /** Push a per-corp event into the current tick's aggregator. Flushed
+   *  as a single summary DM at the end of the tick. Cut #2 + #4. */
+  private pushTickEvent(ev: typeof this.tickEvents[number]): void {
+    this.tickEvents.push(ev);
+  }
+
+  /** Record a claim for the 24h digest ring. No DM fires — claims are
+   *  now aggregated into the daily efficiency DM only. Cut #1. */
+  private recordClaim(corp: string, dirty: number): void {
+    const now = Date.now();
+    this.claimRing.push({ ts: now, corp, dirty });
+    // Evict anything older than 26h to keep the ring bounded.
+    const cutoff = now - 26 * 3600_000;
+    while (this.claimRing.length > 0 && this.claimRing[0].ts < cutoff) {
+      this.claimRing.shift();
+    }
+  }
+
+  /**
+   * Summary of the last `windowH` of claims for the daily DM. Returns
+   * null when no claims have been recorded — caller can skip the line.
+   */
+  getClaimSummary(windowH: number = 24): { totalDirty: number; count: number; corps: number } | null {
+    const cutoff = Date.now() - windowH * 3600_000;
+    const recent = this.claimRing.filter(c => c.ts >= cutoff);
+    if (recent.length === 0) return null;
+    const totalDirty = recent.reduce((s, c) => s + c.dirty, 0);
+    const corps = new Set(recent.map(c => c.corp)).size;
+    return { totalDirty, count: recent.length, corps };
+  }
+
+  /** Operator-facing quiet flag getter (powers /bot quiet status). */
+  isQuiet(): boolean { return this.dmQuiet; }
+
+  /** Toggle quiet mode. Persisted to corp-bot-state.json. */
+  setQuiet(on: boolean): void {
+    if (this.dmQuiet === on) return;
+    this.dmQuiet = on;
+    this.record('info', `[CorpBot] quiet mode ${on ? 'ENABLED' : 'disabled'}`);
+    this.saveState();
+  }
+
+  /**
+   * Aggregate this tick's per-corp events into a single summary DM
+   * and emit. Called at the end of every tick. Cut #2 + #4: if the
+   * tick already fired a preset-change DM, suppress the per-corp
+   * summary entirely (preset-change already conveys the same intent).
+   */
+  private flushTickEvents(): void {
+    const events = this.tickEvents;
+    this.tickEvents = [];
+    if (events.length === 0) return;
+    if (this.tickPresetChangeFired) return;  // preset-change subsumes per-corp churn
+
+    // Group switches by (from, to) pair. e.g. all corps that went
+    // Drug→Arms collapse to one line.
+    const switches = new Map<string, { from: number; to: number; corps: string[] }>();
+    const starts   = new Map<number, string[]>();
+    for (const ev of events) {
+      if (ev.kind === 'switch') {
+        const key = `${ev.fromMode}-${ev.toMode}`;
+        let g = switches.get(key);
+        if (!g) { g = { from: ev.fromMode, to: ev.toMode, corps: [] }; switches.set(key, g); }
+        g.corps.push(ev.corp);
+      } else {
+        let g = starts.get(ev.toMode);
+        if (!g) { g = []; starts.set(ev.toMode, g); }
+        g.push(ev.corp);
+      }
+    }
+
+    const lines: string[] = [];
+    for (const g of switches.values()) {
+      const fromName = MODE_NAMES[g.from] ?? `mode${g.from}`;
+      const toName   = MODE_NAMES[g.to]   ?? `mode${g.to}`;
+      const corpsLabel = g.corps.length === 1
+        ? `1 corp`
+        : `${g.corps.length} corps`;
+      lines.push(`⚙️ *${corpsLabel}* switched *${fromName} → ${toName}*`);
+    }
+    for (const [toMode, corps] of starts.entries()) {
+      const toName = MODE_NAMES[toMode] ?? `mode${toMode}`;
+      const corpsLabel = corps.length === 1 ? `1 corp` : `${corps.length} corps`;
+      lines.push(`▶️ *${corpsLabel}* started a *${toName}* trade`);
+    }
+    if (lines.length === 0) return;
+    void this.notify(lines.join('\n'), 'tick-summary');
   }
 
   /** Call this once after construction. Returns false if no key configured. */
@@ -1402,6 +1552,11 @@ export class CorpBot {
     // Update threshold-cliff hysteresis once per tick so both the
     // bootstrap gate and the dashboard accessor see the same state.
     this.updateCliffHysteresis();
+    // Reset per-tick aggregator state (Cut #2 + #4). Per-corp events
+    // accumulate here and get flushed as ONE summary DM at the end
+    // of the tick unless preset-change already fired.
+    this.tickEvents = [];
+    this.tickPresetChangeFired = false;
     // Fresh snapshot collected for /bot status — overwrites lastCorpSnapshot at end.
     const snapshot: { addr: string; auto: boolean; mode: number }[] = [];
 
@@ -1486,6 +1641,7 @@ export class CorpBot {
         (now - this.lastPresetChangeAt) > CorpBot.PRESET_CHANGE_DM_COOLDOWN_MS) {
       this.lastNotifiedPreset = presetLabel;
       this.lastPresetChangeAt = now;
+      this.tickPresetChangeFired = true;   // suppress per-corp tick summary
       const modesStr = preset.paused ? 'PAUSED'
         : preset.modes.map(m => MODE_NAMES[m] ?? '?').join(' / ');
       void this.notify(
@@ -1541,13 +1697,11 @@ export class CorpBot {
           const tx = await contract.claimRewards();
           await tx.wait();
           this.record('info', `[CorpBot] ✅ Claimed ${label}.. ${rewardDirty.toFixed(2)} DIRTY`);
-          void this.notify(
-            `💰 *Auto-claimed*\n` +
-            `Corp: \`${label}\`\n` +
-            `Reward: *${rewardDirty.toFixed(2)} DIRTY*\n` +
-            `[tx](https://www.megaexplorer.xyz/tx/${tx.hash})`,
-            `claim:${addr}`
-          );
+          // Cut #1: don't fire a per-claim DM. Operator sees claims on
+          // the dashboard wallet view, and claims are mechanical (not
+          // actionable). The 24h total is rolled into the 09:00 HKT
+          // efficiency digest via getClaimSummary().
+          this.recordClaim(addr, rewardDirty);
         }
 
         // --- Read current state (single batch) ---
@@ -1650,13 +1804,9 @@ export class CorpBot {
           await tx.wait();
           this.lastSwitch.set(addr, now);
           this.record('info', `[CorpBot] ✅ Auto-trade re-enabled ${label}..`);
-          void this.notify(
-            `🔁 *Auto-trade re-enabled*\n` +
-            `Corp: \`${label}\`\n` +
-            `Mode: *${MODE_NAMES[targetMode]}*\n` +
-            `[tx](https://www.megaexplorer.xyz/tx/${tx.hash})`,
-            `reenable:${addr}`
-          );
+          // Cut #3: don't DM the re-enable. The grace DM already told
+          // the operator "I'll wait N minutes" — re-enable is the
+          // expected outcome of that wait, so confirming it is noise.
           // Fall through to the bootstrap-startTrade check — same tick.
           needBootstrap = !isActive && cooldownPassed;
           // Update snapshot to reflect the new auto state
@@ -1855,14 +2005,11 @@ export class CorpBot {
             } catch (err: any) {
               logger.warn({ err: err.message }, '[CorpBot] insertBootstrap failed (non-fatal)');
             }
-            void this.notify(
-              `▶️ *Trade started*\n` +
-              `Corp: \`${label}\`\n` +
-              `Mode: *${MODE_NAMES[targetMode]}*\n` +
-              `(corp was idle with auto-trade on but never running — manually kicked off)\n` +
-              `[tx](https://www.megaexplorer.xyz/tx/${tx.hash})`,
-              `start:${addr}`
-            );
+            // Cut #2 + #4: push into the tick aggregator instead of
+            // firing a per-corp DM. flushTickEvents() emits one summary
+            // line at the end of the tick (or suppresses it entirely
+            // when a preset-change DM already covered the same intent).
+            this.pushTickEvent({ kind: 'start', corp: addr, toMode: targetMode });
           } catch (err: any) {
             // startTrade can fail if the corp already has an active trade
             // (race condition) or insufficient INF. Log and move on.
@@ -1889,12 +2036,9 @@ export class CorpBot {
           this.record('info', `[CorpBot] ✅ Switched ${label}.. → ${toName}`);
           const snapEntry = snapshot.find(s => s.addr === addr);
           if (snapEntry) snapEntry.mode = targetMode;
-          void this.notify(
-            `⚙️ *Mode switched: ${fromName} → ${toName}*\n` +
-            `Corp: \`${label}\`\n` +
-            `[tx](https://www.megaexplorer.xyz/tx/${tx.hash})`,
-            `switch:${addr}`
-          );
+          // Cut #2 + #4: push into the tick aggregator. Multiple corps
+          // switching Drug→Arms in the same tick collapse to one DM.
+          this.pushTickEvent({ kind: 'switch', corp: addr, fromMode: curMode, toMode: targetMode });
         }
       } catch (err: any) {
         this.record('warn', `[CorpBot] tick error ${label}..: ${err.message}`, { corp: label });
@@ -1903,6 +2047,10 @@ export class CorpBot {
 
     // Replace the cached snapshot atomically once the tick completes.
     if (snapshot.length > 0) this.lastCorpSnapshot = snapshot;
+
+    // Flush this tick's per-corp event aggregator into ONE summary DM
+    // (or suppress entirely if a preset-change already fired). Cut #2/4.
+    this.flushTickEvents();
 
     // Mark any copy events that didn't get a corp this tick as dropped.
     // The queue is drain-once per tick; we'd rather record "no_corp_available"
