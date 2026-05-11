@@ -493,7 +493,9 @@ async function main() {
       `Tightened *${(evt.dropFraction * 100).toFixed(0)}%* in last ${evt.windowMin}min.\n\n` +
       `Bot Layer 2 gate will block Drug bootstraps when calibrated P(fail) ≥ ${(config.maxPFailDrugBlock * 100).toFixed(0)}%.\n` +
       `Manual ops risk multiplied — consider pausing discretionary trades.`;
-    void bot.sendDm(config.operatorChatId, msg);
+    // Send with inline-keyboard buttons (⏸ Pause / ✕ Dismiss) so the
+    // operator can act directly from the alert without typing.
+    void bot.sendThresholdCliffAlert(config.operatorChatId, msg);
   });
 
   // --- Corp Bot (Drug ↔ Arms auto-switcher + auto-claim) ---

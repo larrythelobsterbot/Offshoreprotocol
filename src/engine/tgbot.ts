@@ -133,6 +133,24 @@ export class TgBot {
     return json.result;
   }
 
+  /**
+   * Send a threshold-cliff alert to the operator with inline action buttons.
+   * Two buttons:
+   *   - ⏸ Pause Bot     → corpBot.pause() (stops new bootstraps until /bot resume)
+   *   - ✕ Dismiss       → just removes the keyboard from the message
+   *
+   * Cooldown handled upstream in OpParamsFeed.checkThresholdDropAlert
+   * (no spam — 60min between alerts per mode).
+   */
+  async sendThresholdCliffAlert(chatId: number, text: string): Promise<void> {
+    if (!this.alive) return;
+    const rows: IKBtn[][] = [[
+      { text: '⏸ Pause Bot',  data: 'cliff:pause' },
+      { text: '✕ Dismiss',    data: 'cliff:dismiss' },
+    ]];
+    await this.sendDmKb(chatId, text, rows);
+  }
+
   /** Public helper: send a DM (used by per-subscriber alert poller). */
   async sendDm(chatId: number, text: string, opts: { parseMode?: 'Markdown' | 'HTML' } = {}): Promise<void> {
     if (!this.alive) return;
@@ -1547,6 +1565,45 @@ Type commands to change values:
         // Refresh main menu after any action
         const view = this.renderMainMenu();
         await this.editKb(chatId, messageId, view.text, view.rows);
+        return;
+      }
+
+      if (type === 'cliff') {
+        // Threshold-cliff alert action buttons (from sendThresholdCliffAlert).
+        // Operator clicks one of: pause | dismiss.
+        if (action === 'pause') {
+          cb.pause();
+          // Edit the original alert message to remove the keyboard and
+          // append a confirmation line. Markdown-safe — no user input.
+          const originalText = cq.message.text ?? 'Threshold cliff alert';
+          // Telegram's edit returns 'message is not modified' if text + reply_markup
+          // are unchanged; we always append text so it's always modified.
+          await this.api('editMessageText', {
+            chat_id: chatId,
+            message_id: messageId,
+            text: originalText + '\n\n✓ *Bot paused* — no new bootstraps until you run `/bot resume`.',
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true,
+            // Empty reply_markup removes the inline keyboard
+            reply_markup: { inline_keyboard: [] },
+          }).catch(() => { /* tolerate edit failures */ });
+          await this.ackCallback(cq.id, 'Bot paused');
+          return;
+        }
+        if (action === 'dismiss') {
+          const originalText = cq.message.text ?? 'Threshold cliff alert';
+          await this.api('editMessageText', {
+            chat_id: chatId,
+            message_id: messageId,
+            text: originalText + '\n\n_(alert dismissed — bot still running)_',
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true,
+            reply_markup: { inline_keyboard: [] },
+          }).catch(() => { /* tolerate edit failures */ });
+          await this.ackCallback(cq.id, 'Dismissed');
+          return;
+        }
+        await this.ackCallback(cq.id, 'Unknown cliff action');
         return;
       }
 
