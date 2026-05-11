@@ -149,7 +149,15 @@ async function main() {
   // semantically "primary OB" in the dashboard render path. The Binance
   // and Bybit slots stay live in case those feeds ever start delivering
   // data again — the engine will just see the freshest snapshot win.
+  //
+  // lastHlTickMs is updated on every HL tick. The RedStone divergence
+  // path consults it to refuse comparison-against-stale-HL: if HL has
+  // gone quiet (geo block, DNS issue, WS disconnect) we don't want to
+  // log false divergence or fire a TG alert against a frozen anchor.
+  // Codex audit #2.
+  let lastHlTickMs = 0;
   hlws.on('tick', (tick) => {
+    lastHlTickMs = Date.now();
     engine.onTick(tick.p);
     tickBatch.push({ t: tick.t, p: tick.p, src: 'hl' });
   });
@@ -397,50 +405,54 @@ async function main() {
     () => ethVelocity.getSnapshot(),
   );
 
+  // Single shared "decorated state" factory — attaches all the
+  // post-engine blocks (threshold-cliff gate, redstone) so REST,
+  // initial-WS-hello, AND the 1Hz WS broadcast all see the same shape.
+  // Previously the WS broadcast bypassed this wrapper and the redstone
+  // block was effectively frozen at first connect (Codex audit #1).
+  const getDecoratedState = () => {
+    const s = engine.getState() as any;
+    s.thresholdCliffGate = corpBot.getThresholdCliffState();
+    // Attach the RedStone block. Stats are computed from the in-memory
+    // ring every tick — small ring (200 samples), so this is cheap.
+    if (latestRedstone) {
+      const stats = redstone.getDivergenceStats();
+      const shadow = latestRedstone.price > 0
+        ? engine.computeShadowDangerAtPrice(latestRedstone.price)
+        : null;
+      s.redstone = {
+        price: latestRedstone.price,
+        updatedAt: latestRedstone.updatedAt,
+        fetchedAt: latestRedstone.fetchedAt,
+        stale: latestRedstone.stale,
+        oracle: config.redstoneOracleAddress,
+        divergence: latestDivergence ? {
+          currentBps: latestDivergence.diffBps,
+          redstoneLeads: latestDivergence.redstoneLeads,
+          ts: latestDivergence.ts,
+          avg5mBps: stats.avg5mBps,
+          avg1hBps: stats.avg1hBps,
+          max1hBps: stats.max1hBps,
+          pctTimeRedstoneLeads: stats.pctTimeRedstoneLeads,
+          samples: stats.samples,
+        } : null,
+        shadow: shadow ? {
+          dangerScore: shadow.dangerScore,
+          pFailExtortion: shadow.pFailExtortion,
+          pFailArms: shadow.pFailArms,
+          pFailDrug: shadow.pFailDrug,
+          components: shadow.components,
+        } : null,
+      };
+    } else {
+      s.redstone = null;
+    }
+    return s;
+  };
+
   const server = new ApiServer(
     storage,
-    // Wrap getState so every consumer (REST + WS) sees the threshold-cliff
-    // gate state attached. Bolted on dynamically because corpBot is not
-    // visible to the engine — same pattern as state.opParams.
-    () => {
-      const s = engine.getState() as any;
-      s.thresholdCliffGate = corpBot.getThresholdCliffState();
-      // Attach the RedStone block. Stats are computed from the in-memory
-      // ring every tick — small ring (200 samples), so this is cheap.
-      if (latestRedstone) {
-        const stats = redstone.getDivergenceStats();
-        const shadow = latestRedstone.price > 0
-          ? engine.computeShadowDangerAtPrice(latestRedstone.price)
-          : null;
-        s.redstone = {
-          price: latestRedstone.price,
-          updatedAt: latestRedstone.updatedAt,
-          fetchedAt: latestRedstone.fetchedAt,
-          stale: latestRedstone.stale,
-          oracle: config.redstoneOracleAddress,
-          divergence: latestDivergence ? {
-            currentBps: latestDivergence.diffBps,
-            redstoneLeads: latestDivergence.redstoneLeads,
-            ts: latestDivergence.ts,
-            avg5mBps: stats.avg5mBps,
-            avg1hBps: stats.avg1hBps,
-            max1hBps: stats.max1hBps,
-            pctTimeRedstoneLeads: stats.pctTimeRedstoneLeads,
-            samples: stats.samples,
-          } : null,
-          shadow: shadow ? {
-            dangerScore: shadow.dangerScore,
-            pFailExtortion: shadow.pFailExtortion,
-            pFailArms: shadow.pFailArms,
-            pFailDrug: shadow.pFailDrug,
-            components: shadow.components,
-          } : null,
-        };
-      } else {
-        s.redstone = null;
-      }
-      return s;
-    },
+    getDecoratedState,
     onOpStatsChanged,
     walletTracker,
     scheduleEvidence,
@@ -552,15 +564,35 @@ async function main() {
   // fire (cooldown). Independent timers.
   let lastDivergenceSnapshotMs = 0;
   let lastDivergenceAlertMs = 0;
+  // HL freshness ceiling for the divergence comparison. We allow HL to
+  // lag up to MAX(10s, 3× redstonePollMs) before we treat the comparison
+  // as unsafe. RedStone polls every 3s by default; HL WS pushes ticks
+  // continuously (typically sub-second). If HL hasn't ticked for 9s+
+  // something is wrong upstream and we'd be measuring divergence
+  // against a frozen anchor. Codex audit #2.
+  const HL_STALENESS_CEILING_MS = Math.max(10_000, config.redstonePollMs * 3);
   redstone.on('price', (snap: RedStonePrice) => {
     latestRedstone = snap;
     const hl = engine.getEthPrice();
     if (hl == null || hl <= 0) return;
+    const nowMs = Date.now();
+    const hlAgeMs = lastHlTickMs > 0 ? nowMs - lastHlTickMs : Infinity;
+    const hlFresh = hlAgeMs <= HL_STALENESS_CEILING_MS;
+    if (!hlFresh) {
+      // Don't compute, log, or alert against a stale HL anchor. Surface
+      // a single warn line so the operator can see why divergence
+      // samples dried up.
+      logger.warn(
+        { hlAgeMs, ceilingMs: HL_STALENESS_CEILING_MS },
+        '[RedStone] HL tick stale; skipping divergence comparison',
+      );
+      return;
+    }
     const div = redstone.recordDivergence(hl);
     if (!div) return;
     latestDivergence = div;
 
-    const nowMs = Date.now();
+
     const isSpike = Math.abs(div.diffBps) > config.redstoneDivergenceAlertBps;
     const dueSnapshot = nowMs - lastDivergenceSnapshotMs > 60_000;
     if (isSpike || dueSnapshot) {
@@ -668,10 +700,12 @@ async function main() {
 
   // Broadcast state to WS clients every 1s + observe transitions for channel alerts.
   setInterval(() => {
-    // getState() wrapper already attaches thresholdCliffGate — see ApiServer
-    // construction above. No need to re-attach here.
-    const state = engine.getState() as any;
-    state.thresholdCliffGate = corpBot.getThresholdCliffState();
+    // Use the shared decorator so the WS broadcast carries the same
+    // attached blocks (thresholdCliffGate + redstone) that REST and the
+    // initial WS hello carry. Previously this path used raw engine state
+    // and the dashboard's ORACLE FEEDS card silently froze at first
+    // connect — Codex audit #1.
+    const state = getDecoratedState();
     server.broadcast(state);
     broadcaster.observe(state);
     // Feed latest danger score to corp bot

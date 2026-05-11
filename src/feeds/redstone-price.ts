@@ -90,7 +90,15 @@ export class RedStonePriceFeed extends EventEmitter {
   private pollTimer: NodeJS.Timeout | null = null;
   private backoffMs = 0;
   private consecutiveFailures = 0;
+  /**
+   * Wall-clock timestamp (ms) of the first failed poll in the current
+   * failure run, or null when last poll succeeded. Used to flip
+   * `stale: true` precisely after FAILURE_STALE_AFTER_MS of continuous
+   * failure regardless of how backoff has progressed. Codex audit #5.
+   */
+  private failureStartedAtMs: number | null = null;
   private stopped = false;
+  private static readonly FAILURE_STALE_AFTER_MS = 5 * 60_000;
 
   constructor(cfg: RedStonePriceFeedConfig) {
     super();
@@ -214,14 +222,16 @@ export class RedStonePriceFeed extends EventEmitter {
   private async runOnce(): Promise<void> {
     try {
       await this.poll();
-      // Success — reset backoff.
+      // Success — reset backoff + failure clock.
       if (this.consecutiveFailures > 0) {
         logger.info({ failures: this.consecutiveFailures }, '[RedStone] feed recovered');
       }
       this.consecutiveFailures = 0;
       this.backoffMs = 0;
+      this.failureStartedAtMs = null;
     } catch (err: any) {
       this.consecutiveFailures++;
+      if (this.failureStartedAtMs == null) this.failureStartedAtMs = Date.now();
       this.backoffMs = this.backoffMs === 0
         ? INIT_BACKOFF_MS
         : Math.min(this.backoffMs * 2, MAX_BACKOFF_MS);
@@ -229,9 +239,10 @@ export class RedStonePriceFeed extends EventEmitter {
         { err: err.message, failures: this.consecutiveFailures, nextRetryMs: this.backoffMs },
         '[RedStone] poll failed',
       );
-      // After 5 minutes of continuous failure, mark current price stale so
-      // downstream consumers can degrade gracefully.
-      if (this.current && this.consecutiveFailures * this.backoffMs > 5 * 60_000) {
+      // Flip the snapshot to stale after a fixed wall-clock window of
+      // continuous failure (independent of backoff progression).
+      const elapsedFailMs = Date.now() - this.failureStartedAtMs;
+      if (this.current && elapsedFailMs > RedStonePriceFeed.FAILURE_STALE_AFTER_MS) {
         this.current = { ...this.current, stale: true };
       }
     }

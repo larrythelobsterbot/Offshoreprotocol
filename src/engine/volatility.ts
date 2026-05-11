@@ -7,6 +7,7 @@ import type {
 import { config } from '../config';
 import { calibrateProb, getHourlyRiskLevel, getSuggestedOp } from './calibration';
 import { dropProbStudentT } from './distributions';
+import { classifyEthVelocity } from './eth-velocity-signal';
 import { buildEconomics } from './economics';
 import type { OpStatsBlock } from './op-stats';
 import type { OpType } from './economics';
@@ -316,19 +317,28 @@ export class VolatilityEngine extends EventEmitter {
     else if (refVol > 60) volComponent = 13;
     else if (refVol > 40) volComponent = 7;
 
-    // ETH velocity using shadow returns. Mirrors getEthVelocity() but on
-    // the shadow series. The danger contribution mirrors the EthVelocity
-    // signal's risk levels: critical = 15, elevated = 7, none = 0. We
-    // approximate the live signal's classifier here (its real one is in
-    // src/engine/eth-velocity-signal.ts) by using a conservative bps1m
-    // threshold for "shadow" purposes only: <-50 bps = critical, <-20 bps
-    // = elevated. Same defaults the signal ships with.
-    let ethVelocityComponent = 0;
+    // ETH velocity on the shadow returns. Uses the SAME classifier the
+    // live EthVelocitySignal uses (classifyEthVelocity in
+    // eth-velocity-signal.ts) so HL-vs-RS comparisons are like-for-like.
+    // Codex audit #3: an earlier version hard-coded -50 / -20 and missed
+    // the sustained-bps5m+accel critical path, understating shadow
+    // danger in the bearish range this feature exists to study.
+    let shadowBps1m: number | null = null;
+    let shadowBps5m: number | null = null;
+    let shadowAccel: number | null = null;
     if (shadowReturns.length >= 1) {
-      const bps1m = shadowReturns[shadowReturns.length - 1].r * 10_000;
-      if (bps1m <= -50) ethVelocityComponent = 15;
-      else if (bps1m <= -20) ethVelocityComponent = 7;
+      shadowBps1m = shadowReturns[shadowReturns.length - 1].r * 10_000;
     }
+    if (shadowReturns.length >= 2) {
+      shadowAccel = (shadowReturns[shadowReturns.length - 1].r
+                   - shadowReturns[shadowReturns.length - 2].r) * 10_000;
+      const win5 = shadowReturns.slice(-5);
+      shadowBps5m = (win5.reduce((s, x) => s + x.r, 0) / win5.length) * 10_000;
+    }
+    const shadowEthRisk = classifyEthVelocity(shadowBps1m, shadowBps5m, shadowAccel);
+    const ethVelocityComponent = shadowEthRisk === 'critical' ? 15
+      : shadowEthRisk === 'elevated' ? 7
+      : 0;
 
     // Reconstruct the rest of the danger score from the live calc path
     // by reading whichever side-channel inputs are price-independent
