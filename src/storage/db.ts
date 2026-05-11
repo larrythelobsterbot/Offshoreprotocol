@@ -439,6 +439,33 @@ export class Storage {
       -- sample tradeInfo() across active corps every 10 min and persist
       -- here whenever the value CHANGES, so we have a complete change
       -- history to debug "why did SR drop yesterday".
+      -- Hedge shadow log. Phase 1 of the World Exchange hedge feature
+      -- runs in SHADOW mode: every drug-batch bootstrap or completion
+      -- writes a row describing what the hedge bot WOULD have opened
+      -- or closed if it were running live. Each 'close' row carries
+      -- the theoretical P&L computed from the entry price + the live
+      -- RedStone price at close time. Used to validate the sizing math
+      -- + adverse-selection cost before flipping to live mode.
+      CREATE TABLE IF NOT EXISTS hedge_shadow_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,                 -- ms epoch
+        event TEXT NOT NULL,                 -- 'open' | 'close'
+        corps_count INTEGER NOT NULL,
+        inf_cost_per_op REAL NOT NULL,
+        total_inf_at_risk REAL NOT NULL,
+        drug_threshold REAL NOT NULL,
+        eth_price_entry REAL NOT NULL,
+        eth_price_exit REAL,                  -- null for 'open'
+        notional REAL NOT NULL,
+        margin REAL NOT NULL,
+        take_profit_price REAL NOT NULL,
+        theoretical_pnl REAL,                 -- null for 'open'
+        any_op_failed INTEGER,                -- null for 'open'; 0/1 for 'close'
+        would_have_profited INTEGER,          -- null for 'open'; 0/1 for 'close'
+        fee_estimate REAL                     -- combined open + close estimate
+      );
+      CREATE INDEX IF NOT EXISTS idx_hedge_shadow_ts ON hedge_shadow_log(ts);
+
       -- Oracle divergence log — RedStone (game's enforcement oracle)
       -- vs Hyperliquid (bot's tick source). Written every 60s as a
       -- snapshot AND every time |diff_bps| crosses the alert threshold.
@@ -1387,6 +1414,7 @@ export class Storage {
       // oracle_divergence uses `ts` (ms epoch), not `timestamp`. Same
       // retention window applies.
       this.db.prepare('DELETE FROM oracle_divergence WHERE ts < ?').run(cutoff);
+      this.db.prepare('DELETE FROM hedge_shadow_log    WHERE ts < ?').run(cutoff);
     });
     txn();
     this.db.pragma('optimize');
@@ -1933,6 +1961,83 @@ export class Storage {
     return this.db.prepare(
       `SELECT ts, threshold_pct, sample_count, is_weekend FROM op_params_history WHERE mode = ? ORDER BY ts DESC LIMIT ?`,
     ).all(mode, limit) as any;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Hedge shadow log (Phase 1 of World Exchange hedge)
+  // ────────────────────────────────────────────────────────────
+
+  insertHedgeShadow(row: {
+    ts: number;
+    event: 'open' | 'close';
+    corps_count: number;
+    inf_cost_per_op: number;
+    total_inf_at_risk: number;
+    drug_threshold: number;
+    eth_price_entry: number;
+    eth_price_exit: number | null;
+    notional: number;
+    margin: number;
+    take_profit_price: number;
+    theoretical_pnl: number | null;
+    any_op_failed: 0 | 1 | null;
+    would_have_profited: 0 | 1 | null;
+    fee_estimate: number;
+  }): void {
+    this.db.prepare(`
+      INSERT INTO hedge_shadow_log
+        (ts, event, corps_count, inf_cost_per_op, total_inf_at_risk,
+         drug_threshold, eth_price_entry, eth_price_exit,
+         notional, margin, take_profit_price,
+         theoretical_pnl, any_op_failed, would_have_profited, fee_estimate)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      row.ts, row.event, row.corps_count, row.inf_cost_per_op,
+      row.total_inf_at_risk, row.drug_threshold,
+      row.eth_price_entry, row.eth_price_exit,
+      row.notional, row.margin, row.take_profit_price,
+      row.theoretical_pnl, row.any_op_failed, row.would_have_profited,
+      row.fee_estimate,
+    );
+  }
+
+  getHedgeShadowSince(sinceMs: number, limit = 200): Array<Record<string, any>> {
+    return this.db.prepare(`
+      SELECT * FROM hedge_shadow_log
+      WHERE ts >= ?
+      ORDER BY ts ASC
+      LIMIT ?
+    `).all(sinceMs, limit) as any;
+  }
+
+  /** Cumulative theoretical P&L over a window (sums close-event rows only). */
+  getHedgeShadowStats(sinceMs: number): {
+    opens: number;
+    closes: number;
+    totalTheoreticalPnl: number;
+    totalFees: number;
+    triggered: number;       // closes where any op failed
+    wouldProfit: number;     // closes where theoretical_pnl > 0
+  } {
+    const row = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN event = 'open'  THEN 1 ELSE 0 END) AS opens,
+        SUM(CASE WHEN event = 'close' THEN 1 ELSE 0 END) AS closes,
+        COALESCE(SUM(CASE WHEN event = 'close' THEN theoretical_pnl ELSE 0 END), 0) AS totalTheoreticalPnl,
+        COALESCE(SUM(fee_estimate), 0) AS totalFees,
+        SUM(CASE WHEN event = 'close' AND any_op_failed = 1 THEN 1 ELSE 0 END) AS triggered,
+        SUM(CASE WHEN event = 'close' AND would_have_profited = 1 THEN 1 ELSE 0 END) AS wouldProfit
+      FROM hedge_shadow_log
+      WHERE ts >= ?
+    `).get(sinceMs) as any;
+    return {
+      opens: Number(row?.opens ?? 0),
+      closes: Number(row?.closes ?? 0),
+      totalTheoreticalPnl: Number(row?.totalTheoreticalPnl ?? 0),
+      totalFees: Number(row?.totalFees ?? 0),
+      triggered: Number(row?.triggered ?? 0),
+      wouldProfit: Number(row?.wouldProfit ?? 0),
+    };
   }
 
   // ────────────────────────────────────────────────────────────

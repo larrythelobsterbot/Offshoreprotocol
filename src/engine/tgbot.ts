@@ -69,6 +69,10 @@ export interface TgBotConfig {
   // optionally so the TG bot still works even when CorpBot is disabled
   // (e.g. PUBLIC_MODE deployments without a signing key).
   corpBot?: CorpBot | null;
+  // Optional HedgeBot reference for /bot hedge subcommands. Independent
+  // of CorpBot — present even on deployments where the bot signs no
+  // trades, since shadow logging is non-destructive.
+  hedgeBot?: import('./hedge-bot').HedgeBot | null;
   // Optional read-only state getter — used by /bot burn-money to surface
   // live OpParamsFeed thresholds in the confirmation prompt. Can be
   // omitted; subcommand falls back to "unknown".
@@ -94,6 +98,11 @@ export class TgBot {
   /** Attach the CorpBot reference after construction (CorpBot is built later). */
   attachCorpBot(corpBot: CorpBot) {
     this.cfg.corpBot = corpBot;
+  }
+
+  /** Attach the HedgeBot reference (built after TgBot in src/index.ts). */
+  attachHedgeBot(hedgeBot: import('./hedge-bot').HedgeBot) {
+    this.cfg.hedgeBot = hedgeBot;
   }
 
   async start() {
@@ -640,6 +649,7 @@ Subcommands: \`/bot help\``);
 \`/bot claim\` — claim pending rewards on all corps now
 \`/bot eff [hours]\` — on-demand INF efficiency DM (default 24h)
 \`/bot quiet on|off|status\` — mute low-signal DMs (claims, mode-switches, etc) keeping only critical alerts + daily digest
+\`/bot hedge [on|off|shadow|live|stats]\` — World Exchange hedge controls (shadow mode default; live requires confirm)
 
 *Stop / start (most common):*
 \`/bot off\` — *full stop* (locks paused preset, calls disableAutoTrade on every corp)
@@ -1247,6 +1257,111 @@ Subcommands:
           } else {
             await this.sendDm(chatId, `Usage: \`/bot quiet on|off|status\``);
           }
+          return;
+        }
+
+        case 'hedge': {
+          // World Exchange hedge controls. Phase 1 ships shadow-only;
+          // /bot hedge live is wired but the live execution path is
+          // intentionally not yet implemented (Phase 2). Confirmation
+          // required for state transitions that could lead to real
+          // trades.
+          const hedge = this.cfg.hedgeBot;
+          if (!hedge) {
+            await this.sendDm(chatId, '_Hedge bot is not running on this deployment._');
+            return;
+          }
+          const sub2 = (parts[1] || 'status').toLowerCase();
+          if (sub2 === 'status' || sub2 === '') {
+            const s = hedge.getState();
+            const last = s.lastSizing;
+            const lines: string[] = [
+              `*🛡 Hedge status*`,
+              `enabled: *${s.enabled ? 'YES' : 'no'}*  ·  mode: *${s.mode.toUpperCase()}*${s.disabled ? '  ·  ⚠ disabled' : ''}`,
+            ];
+            if (s.activeHedge) {
+              const a = s.activeHedge;
+              lines.push('');
+              lines.push(`Active${s.mode === 'shadow' ? ' (shadow)' : ''}:`);
+              lines.push(`  corps: ${a.corpsHedged.length}  ·  notional: \`$${a.notional.toFixed(0)}\`  ·  margin: \`$${a.margin.toFixed(0)}\``);
+              lines.push(`  entry: \`$${a.entryPrice.toFixed(2)}\`  ·  TP: \`$${a.takeProfitPrice.toFixed(2)}\``);
+            } else {
+              lines.push('  (no active hedge)');
+            }
+            if (last) {
+              lines.push('');
+              lines.push(`Last sizing computation:`);
+              lines.push(`  corps: ${last.corpsActive}  ·  INF at risk: \`${last.totalInfAtRisk.toFixed(1)}\``);
+              lines.push(`  drug threshold: \`${(last.drugThreshold * 100).toFixed(4)}%\`  ·  ETH: \`$${last.ethPrice.toFixed(2)}\``);
+              lines.push(`  → notional \`$${last.notional.toFixed(0)}\`  ·  margin \`$${last.margin.toFixed(0)}\`  ·  TP \`$${last.takeProfitPrice.toFixed(2)}\``);
+            }
+            lines.push('');
+            lines.push(`Subcommands: \`/bot hedge on|off|shadow|live|stats\``);
+            await this.sendDm(chatId, lines.join('\n'));
+            return;
+          }
+          if (sub2 === 'on') {
+            hedge.setEnabled(true);
+            await this.sendDm(chatId, `🛡 Hedge *enabled* (mode: *${hedge.getState().mode.toUpperCase()}*).`);
+            return;
+          }
+          if (sub2 === 'off') {
+            hedge.setEnabled(false);
+            await this.sendDm(chatId, `🛡 Hedge *disabled*.`);
+            return;
+          }
+          if (sub2 === 'shadow') {
+            hedge.setMode('shadow');
+            await this.sendDm(chatId, `🛡 Hedge mode: *SHADOW* (logging only, no trades).`);
+            return;
+          }
+          if (sub2 === 'live') {
+            // Two-step confirm because live mode trades real money.
+            const arg3 = (parts[2] || '').toLowerCase();
+            if (arg3 !== 'confirm') {
+              const s = hedge.getState();
+              const last = s.lastSizing;
+              await this.sendDm(chatId,
+                `⚠️ *Switching the hedge to LIVE will execute real trades on World Exchange.*\n\n` +
+                (last
+                  ? `Most recent sizing would have opened: \`$${last.notional.toFixed(0)}\` notional · \`$${last.margin.toFixed(0)}\` margin · TP \`$${last.takeProfitPrice.toFixed(2)}\`.\n\n`
+                  : '') +
+                `*Pre-requisites:*\n` +
+                `  1. \`npm run world-poc\` completed successfully (POC validates SDK integration)\n` +
+                `  2. Dashboard shadow stats look right vs your expectations\n` +
+                `  3. Sufficient USDM deposited on World Exchange (~3000 at 9 corps)\n\n` +
+                `Confirm with: \`/bot hedge live confirm\``);
+              return;
+            }
+            // The live execution path itself is Phase 2 — for now we
+            // flip the mode flag so the operator can see the toggle
+            // works, but onDrugBatchStart will log an error if it tries
+            // to actually trade and fall back to a shadow row.
+            hedge.setMode('live');
+            await this.sendDm(chatId,
+              `🛡 Hedge mode: *LIVE*.\n\n` +
+              `_Note: live execution wiring (the SDK call to open/close on World) is not yet implemented. The bot will fall back to shadow logging until Phase 2 ships._\n\n` +
+              `Revert: \`/bot hedge shadow\``);
+            return;
+          }
+          if (sub2 === 'stats') {
+            const s = hedge.getState();
+            const st = s.stats;
+            const triggerRate = st.totalShadowCloses > 0
+              ? (st.triggered / st.totalShadowCloses) * 100
+              : 0;
+            const winRate = st.totalShadowCloses > 0
+              ? (st.wouldProfit / st.totalShadowCloses) * 100
+              : 0;
+            await this.sendDm(chatId,
+              `*🛡 Hedge stats (last 30d shadow)*\n\n` +
+              `Opens: *${st.totalShadowOpens}*  ·  Closes: *${st.totalShadowCloses}*\n` +
+              `Triggered (any op failed): *${st.triggered}* (${triggerRate.toFixed(0)}%)\n` +
+              `Would have profited: *${st.wouldProfit}* (${winRate.toFixed(0)}%)\n\n` +
+              `Theoretical P&L: \`$${st.totalShadowPnl.toFixed(2)}\`  (after \`$${st.totalShadowFees.toFixed(0)}\` est. fees)`);
+            return;
+          }
+          await this.sendDm(chatId, `Unknown hedge action: \`${sub2}\`. Try \`/bot hedge\`.`);
           return;
         }
 

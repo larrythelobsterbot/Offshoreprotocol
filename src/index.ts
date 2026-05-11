@@ -32,6 +32,7 @@ import { TgBot } from './engine/tgbot';
 import { SubscriberPoller } from './engine/sub-poller';
 import { Broadcaster } from './engine/broadcaster';
 import { CorpBot } from './engine/corp-bot';
+import { HedgeBot } from './engine/hedge-bot';
 import { config } from './config';
 import { logger } from './logger';
 
@@ -246,6 +247,15 @@ async function main() {
         ts: o.ts,
       });
 
+      // Hedge close hook — if the corp is part of an active hedge, push
+      // its outcome into the pending bucket; once all hedged corps have
+      // reported, close the hedge. Drug-only (hedge is Drug-only).
+      const active = hedgeBot.getState().activeHedge;
+      if (active && active.corpsHedged.some((c) => c.toLowerCase() === o.corp.toLowerCase())) {
+        pendingHedgeOutcomes.push({ corp: o.corp, success: o.succeeded, dirtyEarned: o.rewardDirty });
+        tryCloseHedge();
+      }
+
       if (o.opType === 'unknown') {
         logger.warn({ txHash: o.txHash, durationMin: o.durationMin, mode: o.mode },
           '[OpScraper] outcome with unknown opType; not logging');
@@ -413,6 +423,9 @@ async function main() {
   const getDecoratedState = () => {
     const s = engine.getState() as any;
     s.thresholdCliffGate = corpBot.getThresholdCliffState();
+    // Hedge bot state — small object, cheap to attach every tick.
+    // Same source-of-truth pattern as the other engine bolt-ons.
+    s.hedge = hedgeBot?.getState() ?? null;
     // Attach the RedStone block. Stats are computed from the in-memory
     // ring every tick — small ring (200 samples), so this is cheap.
     const rsPrice = redstone.getPrice();
@@ -706,6 +719,73 @@ async function main() {
   // Give the TG bot a back-reference to the corp bot so the /bot admin
   // command can drive it. Operator-only auth is enforced inside cmdBot.
   bot.attachCorpBot(corpBot);
+
+  // ── HedgeBot (World Exchange hedge — Phase 1: shadow only) ──
+  // Listens for bootstrap events from CorpBot, batches them over
+  // worldHedgeBatchDelayS seconds, then computes the hedge sizing
+  // and logs (shadow) or executes (live, Phase 2). Decoupled from
+  // CorpBot via a single-callback hook so neither side knows about
+  // the other's internals.
+  const hedgeBot = new HedgeBot({
+    storage,
+    leverage:           config.worldHedgeLeverage,
+    maxMarginUsdm:      config.worldMaxMarginUsdm,
+    minCorpsForHedge:   config.worldMinCorpsForHedge,
+    shadowMode:         config.worldHedgeShadow,
+    disabled:           config.worldHedgeDisabled,
+    feeEstimateUsdmPerTrade: config.worldHedgeFeeEstimateUsdm,
+  });
+  bot.attachHedgeBot(hedgeBot);
+
+  // Bootstrap batcher. CorpBot's stagger gate (default 15min) means
+  // corps don't all bootstrap simultaneously, but they do cluster
+  // within a window. We open a single hedge per cluster.
+  let pendingBootstraps: { corp: string; mode: 0 | 1 | 2; ts: number }[] = [];
+  let hedgeBatchTimer: NodeJS.Timeout | null = null;
+  const fireHedgeBatch = () => {
+    hedgeBatchTimer = null;
+    const drugBootstraps = pendingBootstraps.filter(b => b.mode === 2);
+    pendingBootstraps = [];
+    if (drugBootstraps.length === 0) return;
+    const corpAddresses = Array.from(new Set(drugBootstraps.map(b => b.corp)));
+    const opSnap = opParams.getSnapshot();
+    const rs = redstone.getPrice();
+    void hedgeBot.onDrugBatchStart({
+      corpAddresses,
+      infCostPerOp:   opSnap?.infCostPerOp   ?? 0,
+      drugThreshold:  opSnap?.thresholds?.[2] ?? 0,
+      ethPrice:       rs?.price ?? 0,
+      redstoneStale:  rs?.stale ?? true,
+    });
+  };
+  corpBot.setBootstrapHook((ev) => {
+    pendingBootstraps.push({ corp: ev.corp, mode: ev.mode, ts: ev.ts });
+    if (!hedgeBatchTimer) {
+      hedgeBatchTimer = setTimeout(fireHedgeBatch, config.worldHedgeBatchDelayS * 1000);
+      hedgeBatchTimer.unref?.();
+    }
+  });
+
+  // Batch-close hook: when the scraper resolves an outcome on a corp
+  // that's part of an active hedge, count it. Once we've seen outcomes
+  // for every corp in the hedge, close the position. (Phase 1: shadow
+  // close; Phase 2: live close.) Lives as a Map keyed on the corp set
+  // so a second hedge starting before the first one closes can stack
+  // correctly later.
+  const pendingHedgeOutcomes: Array<{ corp: string; success: boolean; dirtyEarned: number }> = [];
+  const tryCloseHedge = () => {
+    const active = hedgeBot.getState().activeHedge;
+    if (!active) return;
+    const seen = new Set(pendingHedgeOutcomes.map(o => o.corp.toLowerCase()));
+    const needed = new Set(active.corpsHedged.map(c => c.toLowerCase()));
+    for (const n of needed) if (!seen.has(n)) return;
+    const outcomes = pendingHedgeOutcomes.splice(0, pendingHedgeOutcomes.length);
+    void hedgeBot.onDrugBatchComplete({
+      corpAddresses: active.corpsHedged,
+      outcomes,
+      ethPriceNow: redstone.getPrice()?.price ?? active.entryPrice,
+    });
+  };
 
   // Broadcast state to WS clients every 1s + observe transitions for channel alerts.
   setInterval(() => {

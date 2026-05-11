@@ -171,4 +171,35 @@ export const config = {
     parseInt(process.env.REDSTONE_DIVERGENCE_ALERT_COOLDOWN_MIN ?? '10'),
   // Hard kill switch.
   redstoneDisabled: process.env.REDSTONE_DISABLED === '1',
+
+  // ── World Exchange hedge framework (Phase 1: shadow only) ──
+  // The Exchange + ETH perp book addresses come from the operator
+  // (no programmatic discovery — see docs/world-sdk-notes.md).
+  // Bot stays in shadow until POC + sizing math are both validated.
+  worldExchangeAddress: (process.env.WORLD_EXCHANGE_ADDRESS || '').trim(),
+  worldEthPerpBook:     (process.env.WORLD_ETH_PERP_BOOK   || '').trim(),
+  // World's documented max leverage on ETH-perp at brief writing.
+  worldHedgeLeverage: parseInt(process.env.WORLD_HEDGE_LEVERAGE ?? '10'),
+  // Hard cap on margin per hedge. Sizing > cap → skip, log warn.
+  // 500 USDM at 9 corps + 12 INF/op + 0.4% threshold = $2,700 notional
+  // = $270 margin. So 500 leaves significant headroom while still
+  // capping any sizing-math bug at $500 loss in live mode.
+  worldMaxMarginUsdm:  parseFloat(process.env.WORLD_MAX_MARGIN ?? '500'),
+  // Don't hedge below this many corps — sub-PL3 portfolios pay more
+  // in fees than they save on small-batch INF loss.
+  worldMinCorpsForHedge: parseInt(process.env.WORLD_MIN_CORPS ?? '6'),
+  // Default to shadow. Flip via /bot hedge live (with confirm) only
+  // after the POC has been run + dashboard shadow stats look right.
+  worldHedgeShadow: (process.env.WORLD_HEDGE_SHADOW ?? 'true').toLowerCase() !== 'false',
+  // Hard kill switch — turns off the whole module (no shadow logging either).
+  worldHedgeDisabled: process.env.WORLD_HEDGE_DISABLED === '1',
+  // Seconds to wait after the FIRST corp bootstraps before firing the
+  // hedge. Lets stagger-gated bootstraps cluster into a single hedge.
+  // CorpBot's stagger gate defaults to 15min, but in practice batches
+  // resolve faster on a busy schedule. 120s is a safe initial value.
+  worldHedgeBatchDelayS: parseInt(process.env.WORLD_HEDGE_BATCH_DELAY_S ?? '120'),
+  // Estimated USDM per trade for shadow-log accounting. Brief notes
+  // a $10 max-fee cap on ETH-perp; we use that as the worst-case
+  // estimate until we have real fills from the POC.
+  worldHedgeFeeEstimateUsdm: parseFloat(process.env.WORLD_HEDGE_FEE_USDM ?? '10'),
 };

@@ -275,6 +275,20 @@ export class CorpBot {
   // operator locks) but bypasses danger override + schedule.
   private copyEnabled: boolean = false;
   private copyHooks: CopyModeHooks | null = null;
+
+  /**
+   * Optional bootstrap-event hook. HedgeBot subscribes to this to learn
+   * when a corp goes from idle → trading so it can batch up multiple
+   * corps and open ONE hedge per batch. Fired once per successful
+   * startTrade() call from the bot. Kept as a single callback rather
+   * than an EventEmitter pattern so we don't widen CorpBot's interface.
+   */
+  private bootstrapHook: ((event: {
+    corp: string;
+    mode: 0 | 1 | 2;
+    strategy: string;
+    ts: number;
+  }) => void) | null = null;
   // Per-tick scratch: events drained from WhaleCopyFeed this tick.
   // Kept as instance state so the per-corp loop can pop events as it
   // bootstraps free corps.
@@ -1222,6 +1236,16 @@ export class CorpBot {
     this.copyHooks = hooks;
   }
 
+  /** Subscribe to bootstrap events (one per successful startTrade). */
+  setBootstrapHook(fn: (event: {
+    corp: string;
+    mode: 0 | 1 | 2;
+    strategy: string;
+    ts: number;
+  }) => void): void {
+    this.bootstrapHook = fn;
+  }
+
   /**
    * Turn copy-mode on. Sets the active preset to 'copy' so the tick loop
    * starts consuming the WhaleCopyFeed queue. Returns the pool's current
@@ -2012,9 +2036,10 @@ export class CorpBot {
             // can join outcomes back to the strategy that fired the op.
             // `presetLabel` already encodes source: 'auto:all-drug',
             // 'manual:copy', 'breaker:paused', 'danger:panic', etc.
+            const bootstrapTs = Date.now();
             try {
               this.storage?.insertBootstrap({
-                ts: Date.now(),
+                ts: bootstrapTs,
                 corp: addr,
                 mode: targetMode as 0 | 1 | 2,
                 strategy: presetLabel,
@@ -2023,6 +2048,20 @@ export class CorpBot {
               });
             } catch (err: any) {
               logger.warn({ err: err.message }, '[CorpBot] insertBootstrap failed (non-fatal)');
+            }
+            // Notify the hedge bot (if wired). Fire-and-forget; we never
+            // let a hedge subscriber's bug crash the trading tick.
+            if (this.bootstrapHook) {
+              try {
+                this.bootstrapHook({
+                  corp: addr,
+                  mode: targetMode as 0 | 1 | 2,
+                  strategy: presetLabel,
+                  ts: bootstrapTs,
+                });
+              } catch (err: any) {
+                logger.warn({ err: err.message }, '[CorpBot] bootstrapHook threw (ignored)');
+              }
             }
             // Cut #2 + #4: push into the tick aggregator instead of
             // firing a per-corp DM. flushTickEvents() emits one summary
