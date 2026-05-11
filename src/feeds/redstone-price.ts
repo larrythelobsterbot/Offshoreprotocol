@@ -184,15 +184,19 @@ export class RedStonePriceFeed extends EventEmitter {
     if (this.divergenceLog.length > this.cfg.divergenceRingSize) {
       this.divergenceLog.splice(0, this.divergenceLog.length - this.cfg.divergenceRingSize);
     }
+    this.divergenceVersion++;
     this.emit('divergence', div);
     return div;
   }
 
-  // Memoized stats so the 1Hz WS broadcast doesn't re-walk the ring
-  // when nothing has changed. Recomputed only when divergenceLog has
-  // grown since the last call (i.e. a new RedStone poll landed).
+  // Monotonic version counter — incremented on every push to the
+  // divergence ring. The stats memo keys on this rather than ring
+  // length because once the ring saturates at `divergenceRingSize`,
+  // length stops changing (push + splice keeps length constant) and
+  // a length-keyed cache would freeze forever. Codex audit 2026-05-11.
+  private divergenceVersion = 0;
   private statsCache: {
-    samples: number;
+    version: number;
     stats: {
       avg5mBps: number; avg1hBps: number; max1hBps: number;
       pctTimeRedstoneLeads: number; samples: number;
@@ -211,7 +215,7 @@ export class RedStonePriceFeed extends EventEmitter {
     pctTimeRedstoneLeads: number;
     samples: number;
   } {
-    if (this.statsCache && this.statsCache.samples === this.divergenceLog.length) {
+    if (this.statsCache && this.statsCache.version === this.divergenceVersion) {
       return this.statsCache.stats;
     }
     const now = Date.now();
@@ -236,7 +240,7 @@ export class RedStonePriceFeed extends EventEmitter {
       pctTimeRedstoneLeads: count1h > 0 ? (leads1h / count1h) * 100 : 0,
       samples: this.divergenceLog.length,
     };
-    this.statsCache = { samples: this.divergenceLog.length, stats };
+    this.statsCache = { version: this.divergenceVersion, stats };
     return stats;
   }
 
