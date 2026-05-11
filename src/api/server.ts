@@ -17,6 +17,19 @@ import type { DirtyFlowFeed } from '../feeds/dirty-flow';
 import type { NetworkOpsFeed } from '../feeds/network-ops';
 import { computeEfficiency, computeScheduleAudit } from '../engine/efficiency';
 import { jsonSafeInfinity } from '../utils/json-safe';
+import {
+  optimizeLoadouts,
+  ASSET_TYPES,
+  type AssetType,
+  type OptimizerItem,
+} from '../engine/loadout-optimizer';
+import {
+  simulateLoadout,
+  deriveGeneratorBase,
+  STATUS_BASE_ST,
+  STATUS_CLEANING_BONUS_PCT,
+  type GeneratorBase,
+} from '../engine/loadout-simulator';
 
 // --- Public-safe state picker (FlowDirty.fun) ---
 // Strips operator-private fields from DashboardState before broadcasting on
@@ -867,6 +880,257 @@ export class ApiServer {
         };
       });
     }
+
+    // ── LOADOUT OPTIMIZER ─────────────────────────────────────────────
+    // Three endpoints serving the ENTERPRISE-tab optimizer panel:
+    //   GET  /api/inventory         — operator's owned items + current
+    //                                  loadouts in optimizer-friendly shape
+    //   POST /api/simulate-loadout  — score a hypothetical allocation
+    //   GET  /api/optimize-loadouts — find the best allocation and report
+    //                                  the swap diff vs current
+    // All three are operator-only (publicGate) — inventory is private state.
+
+    // Helper: pull the operator's inventory + current loadouts from the
+    // live state. Returns `null` if the loadout scanner hasn't completed
+    // its first poll yet (caller should 503 in that case).
+    const operatorInventory = (): {
+      address: string;
+      statusLevel: number;
+      statusXp: number;
+      statusBaseST: number;
+      statusCleaningBonus: number;
+      items: OptimizerItem[];
+      currentAssignment: (number | null)[][];
+      generators: { id: number; itemIds: (number | null)[]; base: GeneratorBase }[];
+    } | null => {
+      const state = this.getState();
+      const user = state?.loadouts?.user;
+      if (!user) return null;
+
+      // The user.inventory array surfaced by the scanner only contains
+      // items returned from getInventory(); on this contract version
+      // currently-equipped items live exclusively in generators[].slots[]
+      // and are NOT duplicated in inventory. Merge both sources so the
+      // optimizer sees the full owned roster.
+      const items: OptimizerItem[] = [];
+      const seenIds = new Set<number>();
+      const pushItem = (
+        it: { itemId: number; templateId: number; name: string; type: string; rarity: number;
+              cr: number; hp: number; eff: number; bc: number; bm: number; disc: number },
+      ) => {
+        if (seenIds.has(it.itemId)) return;
+        if (!(ASSET_TYPES as readonly string[]).includes(it.type)) return;
+        seenIds.add(it.itemId);
+        items.push({
+          itemId: it.itemId, templateId: it.templateId, name: it.name,
+          type: it.type as AssetType, rarity: it.rarity,
+          cr: it.cr, hp: it.hp, eff: it.eff, bc: it.bc, bm: it.bm, disc: it.disc,
+        });
+      };
+      for (const inv of user.inventory) pushItem(inv);
+      for (const g of user.generators) {
+        for (const slot of g.slots) {
+          if (!slot) continue;
+          pushItem({
+            itemId: slot.itemId, templateId: slot.templateId, name: slot.name,
+            type: slot.category, rarity: slot.rarity,
+            cr: slot.cr, hp: slot.hp, eff: slot.eff, bc: slot.bc, bm: slot.bm, disc: slot.disc,
+          });
+        }
+      }
+      // currentAssignment[loadoutIndex][assetTypeIndex] = itemId | null
+      // Also reverse-derive each generator's base stats from chain
+      // aggregate − slot sums. Required for accurate hypothetical
+      // simulation: the Enterprise contract adds a non-trivial per-gen
+      // constant on top of slot sums (see loadout-simulator.ts).
+      const generators = user.generators.map((g) => {
+        const ids: (number | null)[] = ASSET_TYPES.map((t) => {
+          const slot = g.slots.find((s) => s && s.category === t);
+          return slot ? slot.itemId : null;
+        });
+        const equipped = g.slots.filter((s): s is NonNullable<typeof s> => !!s);
+        const base = deriveGeneratorBase(
+          { hp: g.hp, cr: g.cr, eff: g.eff, bc: g.bc, bm: g.bm, disc: g.disc, levelBonus: g.levelBonus },
+          equipped,
+        );
+        return { id: g.id, itemIds: ids, base };
+      });
+      const currentAssignment = generators.map((g) => g.itemIds);
+
+      const sl = Math.max(1, Math.min(10, user.statusLevel || 1));
+      return {
+        address: user.address,
+        statusLevel: sl,
+        statusXp: user.statusXp,
+        statusBaseST: STATUS_BASE_ST[sl],
+        statusCleaningBonus: STATUS_CLEANING_BONUS_PCT[sl],
+        items,
+        currentAssignment,
+        generators,
+      };
+    };
+
+    this.app.get('/api/inventory', publicGate(async (_req: any, reply: any) => {
+      const inv = operatorInventory();
+      if (!inv) return reply.status(503).send({ error: 'Loadout scanner has not finished its first poll yet' });
+      return inv;
+    }));
+
+    // POST /api/simulate-loadout — score a hypothetical allocation. Body:
+    //   { loadouts: [{ assetIds: number[] }], statusLevel?: number }
+    // assetIds is the set of itemIds equipped in that loadout (1-6 items,
+    // any order — we group by type internally). Returns per-loadout stats
+    // + a combined cycle output.
+    this.app.post<{
+      Body: {
+        loadouts: { assetIds: number[] }[];
+        statusLevel?: number;
+      };
+    }>(
+      '/api/simulate-loadout',
+      {
+        schema: {
+          body: {
+            type: 'object',
+            required: ['loadouts'],
+            properties: {
+              loadouts: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 4,
+                items: {
+                  type: 'object',
+                  required: ['assetIds'],
+                  properties: {
+                    assetIds: {
+                      type: 'array',
+                      maxItems: 12,        // 6 slots × leeway for the UI to pass extras
+                      items: { type: 'integer', minimum: 1 },
+                    },
+                  },
+                  additionalProperties: false,
+                },
+              },
+              statusLevel: { type: 'integer', minimum: 1, maximum: 10 },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
+      publicGate(async (req: any, reply: any) => {
+        const inv = operatorInventory();
+        if (!inv) return reply.status(503).send({ error: 'Loadout scanner has not finished its first poll yet' });
+        const itemsById = new Map<number, OptimizerItem>(inv.items.map((it) => [it.itemId, it]));
+        const sl = req.body.statusLevel ?? inv.statusLevel;
+        const bases = inv.generators.map((g) => g.base);
+
+        // Strict validation: reject unknown IDs, dup IDs across the
+        // submission, and multiple items of the same asset type within
+        // a single loadout. Each of these would silently misrepresent
+        // what the operator could actually equip in-game, so a 200 with
+        // a coerced answer would be misleading.
+        const seenIds = new Set<number>();
+        const validated: { loadoutIndex: number; ordered: (OptimizerItem | null)[] }[] = [];
+        for (let li = 0; li < req.body.loadouts.length; li++) {
+          const L = req.body.loadouts[li];
+          const byType = new Map<AssetType, OptimizerItem>();
+          for (const id of L.assetIds) {
+            const it = itemsById.get(id);
+            if (!it) {
+              return reply.status(400).send({
+                error: 'Bad Request',
+                message: `Unknown itemId ${id} in loadout #${li + 1}; operator does not own this asset.`,
+              });
+            }
+            if (seenIds.has(id)) {
+              return reply.status(400).send({
+                error: 'Bad Request',
+                message: `itemId ${id} (${it.name}) is assigned to more than one loadout. Each asset can only be in one loadout.`,
+              });
+            }
+            seenIds.add(id);
+            if (byType.has(it.type)) {
+              const existing = byType.get(it.type)!;
+              return reply.status(400).send({
+                error: 'Bad Request',
+                message: `Loadout #${li + 1} has two ${it.type} assets (${existing.name} + ${it.name}); each loadout has exactly one slot per type.`,
+              });
+            }
+            byType.set(it.type, it);
+          }
+          const ordered = ASSET_TYPES.map((t) => byType.get(t) ?? null);
+          validated.push({ loadoutIndex: li, ordered });
+        }
+
+        const loadouts = validated.map(({ loadoutIndex: li, ordered }) => {
+          const sim = simulateLoadout(ordered, sl, bases[li] ?? undefined);
+          return {
+            loadoutIndex: li,
+            loadoutName: `E${li + 1}`,
+            items: ordered.map((it) => it ? {
+              itemId: it.itemId,
+              templateId: it.templateId,
+              name: it.name,
+              type: it.type,
+              rarity: it.rarity,
+            } : null),
+            simulation: sim,
+          };
+        });
+        const combinedOutputUI = loadouts.reduce((a, b) => a + b.simulation.projectedOutputUI, 0);
+        const avgSurvived = loadouts.length
+          ? loadouts.reduce((a, b) => a + b.simulation.pctCycleSurvived, 0) / loadouts.length
+          : 0;
+        return {
+          statusLevel: sl,
+          loadouts,
+          combined: { totalOutputUI: combinedOutputUI, avgPctCycleSurvived: avgSurvived },
+        };
+      }),
+    );
+
+    // GET /api/optimize-loadouts?loadouts=N — run the optimizer.
+    // Defaults to the operator's current number of unlocked enterprises.
+    this.app.get<{ Querystring: { loadouts?: string; statusLevel?: string } }>(
+      '/api/optimize-loadouts',
+      {
+        schema: {
+          querystring: {
+            type: 'object',
+            properties: {
+              loadouts: { type: 'integer', minimum: 1, maximum: 4 },
+              statusLevel: { type: 'integer', minimum: 1, maximum: 10 },
+            },
+          },
+        },
+      },
+      publicGate(async (req: any, reply: any) => {
+        const inv = operatorInventory();
+        if (!inv) return reply.status(503).send({ error: 'Loadout scanner has not finished its first poll yet' });
+        const numLoadouts = req.query.loadouts ? Number(req.query.loadouts) : inv.generators.length;
+        if (numLoadouts < 1) {
+          return reply.status(400).send({ error: 'No unlocked loadouts to optimize' });
+        }
+        const sl = req.query.statusLevel ? Number(req.query.statusLevel) : inv.statusLevel;
+        // Truncate currentAssignment to numLoadouts (caller may request
+        // optimization for fewer enterprises than the operator currently owns).
+        const currentAssignment = inv.currentAssignment.slice(0, numLoadouts);
+        const generatorBases: (GeneratorBase | null)[] = [];
+        for (let i = 0; i < numLoadouts; i++) {
+          generatorBases.push(inv.generators[i]?.base ?? null);
+        }
+        const t0 = Date.now();
+        const result = optimizeLoadouts({
+          items: inv.items,
+          numLoadouts,
+          statusLevel: sl,
+          currentAssignment,
+          generatorBases,
+        });
+        const elapsedMs = Date.now() - t0;
+        return { ...result, statusBaseST: STATUS_BASE_ST[sl], statusCleaningBonus: STATUS_CLEANING_BONUS_PCT[sl], elapsedMs };
+      }),
+    );
 
     // Health check
     this.app.get('/api/health', async () => {

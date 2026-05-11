@@ -697,6 +697,161 @@
   .mini-slot.r-5 { border-color: #ec4899; color: #f472b6; box-shadow: 0 0 5px rgba(236,72,153,0.4); }
   .mini-slot.empty { border-style: dashed; opacity: 0.3; }
 
+  /* ─── Loadout Optimizer panel ─── */
+  .opt-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    margin-top: 8px;
+  }
+  @media (min-width: 1100px) { .opt-row.dual { grid-template-columns: 1fr 1fr; } }
+  .opt-block {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 4px;
+    padding: 10px 12px;
+  }
+  .opt-block.optimized { border-color: rgba(0, 230, 118, 0.35); }
+  .opt-block-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 8px;
+  }
+  .opt-block.optimized .opt-block-title { color: var(--green); }
+  .opt-delta {
+    font-size: 13px; font-weight: 700;
+    color: var(--green);
+    font-family: 'JetBrains Mono', monospace;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .opt-delta.flat { color: var(--dim); }
+  .opt-loadout {
+    padding: 6px 0;
+    border-top: 1px dashed rgba(255,255,255,0.07);
+  }
+  .opt-loadout:first-child { border-top: none; }
+  .opt-loadout-head {
+    display: flex; justify-content: space-between; align-items: center;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .opt-loadout-head .name { color: #a855f7; font-weight: 700; }
+  .opt-loadout-head .out { color: var(--text); }
+  .opt-survbar {
+    height: 5px; border-radius: 3px; background: rgba(255,255,255,0.06);
+    overflow: hidden; margin: 4px 0 6px;
+  }
+  .opt-survbar > div { height: 100%; }
+  .opt-survbar > div.good   { background: var(--green); }
+  .opt-survbar > div.warn   { background: var(--yellow); }
+  .opt-survbar > div.danger { background: var(--red); }
+  .opt-asset-grid {
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px;
+  }
+  @media (max-width: 700px) { .opt-asset-grid { grid-template-columns: repeat(3, 1fr); } }
+  .opt-asset {
+    border: 1.5px solid #6b7280;
+    border-radius: 3px;
+    padding: 3px 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    line-height: 1.25;
+    overflow: hidden; text-overflow: ellipsis;
+    cursor: pointer;
+    transition: background 0.1s;
+    min-height: 36px;
+  }
+  .opt-asset:hover { background: rgba(255,255,255,0.05); }
+  .opt-asset.r-1 { border-color: #6b7280; color: #d1d5db; }
+  .opt-asset.r-2 { border-color: #3b82f6; color: #60a5fa; }
+  .opt-asset.r-3 { border-color: #a855f7; color: #c084fc; }
+  .opt-asset.r-4 { border-color: #fbbf24; color: #fcd34d; box-shadow: 0 0 3px rgba(251,191,36,0.3); }
+  .opt-asset.r-5 { border-color: #ec4899; color: #f472b6; box-shadow: 0 0 4px rgba(236,72,153,0.4); }
+  .opt-asset.empty {
+    border-style: dashed; border-color: rgba(255,255,255,0.12); color: rgba(255,255,255,0.3);
+  }
+  .opt-asset.selected {
+    background: rgba(168, 85, 247, 0.18);
+    outline: 2px solid #a855f7;
+  }
+  .opt-asset .cat {
+    color: var(--dim); font-size: 8px;
+    text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .opt-asset .nm { font-weight: 700; font-size: 10px; }
+  .opt-swaps {
+    margin-top: 8px;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    color: var(--text);
+  }
+  .opt-swaps .swap-line {
+    padding: 2px 0; color: var(--dim);
+  }
+  .opt-swaps .swap-line b { color: var(--text); }
+  .opt-swaps .arrow { color: #a855f7; margin: 0 6px; }
+  .opt-analysis {
+    background: rgba(168, 85, 247, 0.06);
+    border-left: 3px solid #a855f7;
+    border-radius: 0 4px 4px 0;
+    padding: 8px 10px;
+    margin-top: 10px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--text);
+  }
+  .opt-analysis .head { color: #a855f7; font-weight: 700; margin-bottom: 4px; }
+  .opt-analysis .hint { color: var(--dim); padding: 2px 0; }
+  .opt-analysis .hint b { color: var(--text); }
+  .opt-sim {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: rgba(34, 211, 238, 0.05);
+    border: 1px solid rgba(34, 211, 238, 0.25);
+    border-radius: 4px;
+  }
+  .opt-sim-head {
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--cyan); text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  .opt-sim-body { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text); }
+  .opt-sim-body .mute { color: var(--dim); }
+  .opt-sim-actions { margin-top: 6px; display: flex; gap: 8px; }
+  .opt-sim-actions button {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.15);
+    color: var(--text);
+    padding: 4px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  }
+  .opt-sim-actions button:hover { background: rgba(255,255,255,0.08); border-color: var(--cyan); }
+  .opt-unequipped {
+    margin-top: 10px;
+  }
+  .opt-unequipped-title {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .opt-refresh-btn {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.15);
+    color: var(--text);
+    padding: 4px 12px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  }
+  .opt-refresh-btn:hover { background: rgba(168, 85, 247, 0.1); border-color: #a855f7; color: #c084fc; }
+  .opt-refresh-btn:disabled { opacity: 0.5; cursor: wait; }
+
   /* --- Whale rows (collapsible) --- */
   .whale-row {
     border-top: 1px dashed rgba(255,255,255,0.08);
@@ -1758,6 +1913,23 @@
   </div>
 </div>
 
+<!-- Loadout Optimizer + Swap Simulator (Phase: enterprise tab) -->
+<div style="padding: 0 24px 8px;" data-pane="enterprise">
+  <div class="card loadout-card" id="optimizerCard" style="display:none;padding:12px 16px;border-color:#a855f7;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#a855f7">LOADOUT OPTIMIZER</span>
+        <span class="info-pill" title="Brute-forces / hill-climbs every allocation of your owned assets across unlocked Enterprises to maximise combined cycle output. Uses the validated in-game simulator (±0.01% vs UI). Click an asset in either pane to preview a swap.">?</span>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <div id="optStatus" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);"></div>
+        <button class="opt-refresh-btn" id="optRefreshBtn">🔄 Refresh</button>
+      </div>
+    </div>
+    <div id="optBody"></div>
+  </div>
+</div>
+
 <!-- Loadout panels (My Loadouts + Network Meta + Top Players) -->
 <div style="padding: 0 24px 8px;" data-pane="enterprise">
   <div class="card loadout-card" id="myLoadoutsCard" style="display:none;padding:12px 16px;border-color:#a855f7;">
@@ -2705,6 +2877,372 @@ function renderLoadouts(L) {
   renderTopPlayers(L);
   renderTopBySr(L);
 }
+
+// ============================================================
+// LOADOUT OPTIMIZER PANEL — fetches /api/optimize-loadouts and
+// renders current vs optimized + interactive swap simulator.
+// ============================================================
+const OPT_TYPE_ICON = {
+  Business: '💼', Insurance: '🛡', Accountant: '📊',
+  Method: '🧪', Associates: '🤝', OpSec: '🔒',
+};
+
+// Escape user/server-supplied strings before interpolating into
+// innerHTML or HTML attribute values. Today these names come from a
+// closed template registry, but the optimizer also surfaces analysis
+// hints and partner item names — defending the boundary keeps the
+// panel safe if any string source becomes mutable.
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const OPT_STATE = {
+  data: null,          // last /api/optimize-loadouts response
+  inventory: null,     // last /api/inventory response
+  selected: null,      // currently picked asset for swap-sim: { itemId, loadoutIdx | -1 }
+  inFlight: false,
+};
+
+function survBarClass(pct) {
+  if (pct >= 90) return 'good';
+  if (pct >= 60) return 'warn';
+  return 'danger';
+}
+
+function renderOptAsset(item, category, loadoutIdx, selected) {
+  if (!item) {
+    return `<div class="opt-asset empty" data-cat="${escapeHtml(category)}" data-loadout="${loadoutIdx}">
+      <div class="cat">${OPT_TYPE_ICON[category] || ''} ${escapeHtml(category)}</div>
+      <div class="nm">—</div>
+    </div>`;
+  }
+  const sel = selected && selected.itemId === item.itemId ? ' selected' : '';
+  const rarityName = item.rarity ? ['?','Common','Rare','Epic','Legendary','Mythic'][item.rarity] : '?';
+  return `<div class="opt-asset r-${item.rarity || 1}${sel}"
+       data-item-id="${item.itemId}" data-loadout="${loadoutIdx}" data-type="${escapeHtml(item.type)}"
+       title="${escapeHtml(item.name)} (${escapeHtml(rarityName)})">
+    <div class="cat">${OPT_TYPE_ICON[item.type] || ''} ${escapeHtml(item.type)}</div>
+    <div class="nm">${escapeHtml(item.name || ('#' + item.itemId))}</div>
+  </div>`;
+}
+
+function renderOptAllocation(alloc, title, kind, deltaPct) {
+  if (!alloc) return '';
+  const blockClass = kind === 'optimized' ? 'opt-block optimized' : 'opt-block';
+  const deltaHtml = (kind === 'optimized' && deltaPct != null)
+    ? (Math.abs(deltaPct) < 0.05
+        ? `<span class="opt-delta flat">flat — already optimal</span>`
+        : `<span class="opt-delta">${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%</span>`)
+    : `<span class="opt-delta" style="color:var(--text)">${alloc.combinedOutputUI.toFixed(2)}M</span>`;
+  const rows = alloc.loadouts.map((L, li) => {
+    const s = L.simulation;
+    const pct = Math.max(0, Math.min(100, s.pctCycleSurvived));
+    const bar = `<div class="opt-survbar"><div class="${survBarClass(pct)}" style="width:${pct.toFixed(1)}%"></div></div>`;
+    const slots = L.items.map((it, ci) => renderOptAsset(it, ['Business','Insurance','Accountant','Method','Associates','OpSec'][ci], li, OPT_STATE.selected)).join('');
+    return `<div class="opt-loadout">
+      <div class="opt-loadout-head">
+        <span><span class="name">${escapeHtml(L.loadoutName)}</span> · ${pct.toFixed(0)}% survived · ${s.ticksAlive}/900 ticks · Disc ${s.stats.disc.toFixed(0)}%/70</span>
+        <span class="out">${s.projectedOutputUI.toFixed(2)}M</span>
+      </div>
+      ${bar}
+      <div class="opt-asset-grid">${slots}</div>
+    </div>`;
+  }).join('');
+  return `<div class="${blockClass}">
+    <div class="opt-block-title">
+      <span>${title}</span>
+      ${deltaHtml}
+    </div>
+    ${rows}
+    <div style="text-align:right;margin-top:6px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text)">
+      combined: <b>${alloc.combinedOutputUI.toFixed(2)}M</b>
+    </div>
+  </div>`;
+}
+
+function renderOptSwaps(swaps) {
+  if (!swaps || swaps.length === 0) {
+    return `<div class="opt-swaps" style="color:var(--dim)">No swaps — your current allocation is already optimal for the assets you own.</div>`;
+  }
+  const lines = swaps.map(sw =>
+    `<div class="swap-line">🔄 <b>${escapeHtml(sw.itemName)}</b> [${escapeHtml(sw.type)}]<span class="arrow">→</span>${escapeHtml(sw.from)}<span class="arrow">→</span><b>${escapeHtml(sw.to)}</b></div>`
+  ).join('');
+  return `<div class="opt-swaps"><div style="color:var(--text);font-weight:700;margin-bottom:4px;">SWAPS TO MAKE (${swaps.length})</div>${lines}</div>`;
+}
+
+function renderOptAnalysis(an) {
+  if (!an) return '';
+  const headColor = an.bottleneck === 'survival' ? 'var(--red)' : an.bottleneck === 'output' ? 'var(--yellow)' : 'var(--green)';
+  const labelMap = { survival: '⚠️ SURVIVAL is the bottleneck', output: '⬆️ OUTPUT is the bottleneck', balanced: '✓ ALLOCATION is balanced' };
+  const hints = an.targetStatHints.map(h => `<div class="hint">• ${escapeHtml(h)}</div>`).join('');
+  return `<div class="opt-analysis">
+    <div class="head" style="color:${headColor}">${labelMap[an.bottleneck] || an.bottleneck}</div>
+    <div class="hint">Avg cycle survived: <b>${an.avgPctCycleSurvived.toFixed(0)}%</b> · Avg Discretion used: <b>${an.discretionUsedAvg.toFixed(0)}%</b>/${an.discretionCap}</div>
+    ${hints}
+  </div>`;
+}
+
+function renderOptUnequipped(inventory, optimized) {
+  if (!inventory) return '';
+  const equippedSet = new Set();
+  if (optimized) for (const L of optimized.loadouts) for (const it of L.items) if (it) equippedSet.add(it.itemId);
+  const items = inventory.items.filter(it => !equippedSet.has(it.itemId));
+  if (items.length === 0) return '';
+  const cards = items.map(it => renderOptAsset(it, it.type, -1, OPT_STATE.selected)).join('');
+  return `<div class="opt-unequipped">
+    <div class="opt-unequipped-title">UNEQUIPPED (${items.length}) — click to preview swap into a loadout</div>
+    <div class="opt-asset-grid">${cards}</div>
+  </div>`;
+}
+
+function renderOptSimPreview(preview) {
+  if (!preview) {
+    return `<div class="opt-sim">
+      <div class="opt-sim-head">SWAP SIMULATOR</div>
+      <div class="opt-sim-body mute">Click an equipped asset, then click an unequipped asset (or another equipped one) to preview the swap delta.</div>
+    </div>`;
+  }
+  const { swapDesc, before, after, deltaCombined, perLoadout } = preview;
+  const good = deltaCombined > 1e-3;
+  const flat = Math.abs(deltaCombined) < 1e-3;
+  const color = flat ? 'var(--dim)' : good ? 'var(--green)' : 'var(--red)';
+  const sign = deltaCombined >= 0 ? '+' : '';
+  const lines = perLoadout.map(p =>
+    `<div>${escapeHtml(p.name)}: out <b>${p.beforeOut.toFixed(2)}M</b> → <b style="color:${p.dOut >= 0 ? 'var(--green)' : 'var(--red)'}">${p.afterOut.toFixed(2)}M</b> (${p.dOut >= 0 ? '+' : ''}${p.dOut.toFixed(2)}M) · surv <b>${p.beforeSurv.toFixed(0)}%</b> → <b>${p.afterSurv.toFixed(0)}%</b></div>`
+  ).join('');
+  // swapDesc is the only field the caller may pre-format with intentional
+  // HTML (e.g. <b>name</b>). Callers MUST pass already-escaped fragments.
+  return `<div class="opt-sim">
+    <div class="opt-sim-head">SWAP PREVIEW</div>
+    <div class="opt-sim-body">
+      <div style="margin-bottom:6px;">${swapDesc}</div>
+      ${lines}
+      <div style="margin-top:6px;">Combined: <b>${before.toFixed(2)}M</b> → <b style="color:${color}">${after.toFixed(2)}M</b>
+        <span style="color:${color};font-weight:700;">(${sign}${deltaCombined.toFixed(2)}M / ${flat ? '0%' : (sign + ((deltaCombined / before) * 100).toFixed(1) + '%')})</span>
+        ${flat ? '— no change' : good ? ' ✓ good swap' : ' ✗ bad swap'}
+      </div>
+    </div>
+    <div class="opt-sim-actions">
+      <button id="optSimClear">✗ Clear</button>
+    </div>
+  </div>`;
+}
+
+async function fetchOptimizer() {
+  if (OPT_STATE.inFlight) return;
+  OPT_STATE.inFlight = true;
+  const btn = document.getElementById('optRefreshBtn');
+  if (btn) btn.disabled = true;
+  document.getElementById('optStatus').textContent = 'loading…';
+  try {
+    const [optResp, invResp] = await Promise.all([
+      fetch('/api/optimize-loadouts').then(r => r.ok ? r.json() : r.json().then(b => Promise.reject(b))),
+      fetch('/api/inventory').then(r => r.ok ? r.json() : r.json().then(b => Promise.reject(b))),
+    ]);
+    OPT_STATE.data = optResp;
+    OPT_STATE.inventory = invResp;
+    OPT_STATE.selected = null;
+    renderOptimizer();
+    document.getElementById('optStatus').textContent =
+      `Status ${invResp.statusLevel} · ${invResp.items.length} items · ${optResp.searchMode} (${optResp.comboCount} combos · ${optResp.elapsedMs}ms)`;
+  } catch (err) {
+    document.getElementById('optStatus').textContent = 'failed: ' + (err.message || err.error || 'unknown');
+    document.getElementById('optBody').innerHTML = `<div style="color:var(--red);font-size:11px;padding:8px 0;">Could not load optimizer. ${err.message || err.error || ''}</div>`;
+  } finally {
+    OPT_STATE.inFlight = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderOptimizer(simPreview) {
+  const card = document.getElementById('optimizerCard');
+  if (!card) return;
+  const data = OPT_STATE.data;
+  if (!data || !data.optimized) {
+    card.style.display = '';
+    document.getElementById('optBody').innerHTML = '<div style="color:var(--dim);font-size:11px;">No optimizer data yet. Click refresh.</div>';
+    return;
+  }
+  card.style.display = '';
+  const dual = data.current
+    ? `<div class="opt-row dual">
+        ${renderOptAllocation(data.current, 'CURRENT', 'current')}
+        ${renderOptAllocation(data.optimized, 'OPTIMIZED', 'optimized', data.deltaPct)}
+      </div>`
+    : `<div class="opt-row">${renderOptAllocation(data.optimized, 'OPTIMIZED', 'optimized')}</div>`;
+  document.getElementById('optBody').innerHTML =
+    dual +
+    renderOptAnalysis(data.analysis) +
+    renderOptSwaps(data.swaps) +
+    renderOptUnequipped(OPT_STATE.inventory, data.optimized) +
+    renderOptSimPreview(simPreview);
+  attachOptClickHandlers();
+}
+
+// Map type → simulator index in the optimized allocation. Used for
+// fast lookups when building a hypothetical swap.
+const OPT_TYPE_INDEX = { Business:0, Insurance:1, Accountant:2, Method:3, Associates:4, OpSec:5 };
+
+function attachOptClickHandlers() {
+  document.querySelectorAll('#optBody .opt-asset').forEach((el) => {
+    el.onclick = () => handleOptAssetClick(el);
+  });
+  const clear = document.getElementById('optSimClear');
+  if (clear) clear.onclick = () => { OPT_STATE.selected = null; renderOptimizer(null); };
+  const btn = document.getElementById('optRefreshBtn');
+  if (btn) btn.onclick = () => fetchOptimizer();
+}
+
+function findItemAcross(itemId) {
+  if (!OPT_STATE.inventory) return null;
+  return OPT_STATE.inventory.items.find(it => it.itemId === itemId) || null;
+}
+
+async function handleOptAssetClick(el) {
+  const itemIdRaw = el.getAttribute('data-item-id');
+  const loadoutIdx = parseInt(el.getAttribute('data-loadout'), 10);
+  if (!itemIdRaw) {
+    // Empty slot click → ignored (operator clicks the unequipped pool instead).
+    return;
+  }
+  const itemId = parseInt(itemIdRaw, 10);
+  if (!OPT_STATE.selected) {
+    OPT_STATE.selected = { itemId, loadoutIdx };
+    renderOptimizer(null);
+    return;
+  }
+  // Same asset twice → unselect.
+  if (OPT_STATE.selected.itemId === itemId) {
+    OPT_STATE.selected = null;
+    renderOptimizer(null);
+    return;
+  }
+  // Two assets picked → run a swap simulation. We model a 2-way swap
+  // applied to the CURRENT allocation (not the optimized one) so the
+  // delta shown reflects what the operator would do from where they are.
+  await runSwapPreview(OPT_STATE.selected, { itemId, loadoutIdx });
+}
+
+async function runSwapPreview(picked1, picked2) {
+  const data = OPT_STATE.data;
+  if (!data || !data.current) return;
+  const it1 = findItemAcross(picked1.itemId);
+  const it2 = findItemAcross(picked2.itemId);
+  if (!it1 || !it2) return;
+
+  // In-game constraint: each loadout has exactly one slot per asset
+  // type. A "swap" only makes sense between two assets of the SAME
+  // type — otherwise it's really an unequip+equip pair that would
+  // displace a third asset, which the preview can't model honestly.
+  // Reject cross-type clicks with a friendly hint.
+  if (it1.type !== it2.type) {
+    OPT_STATE.selected = null;
+    renderOptimizer({
+      swapDesc: `<span style="color:var(--yellow)">Cross-type swap not supported</span> — <b>${escapeHtml(it1.name)}</b> is ${it1.type}, <b>${escapeHtml(it2.name)}</b> is ${it2.type}. Pick two assets of the same type.`,
+      before: data.current.combinedOutputUI,
+      after: data.current.combinedOutputUI,
+      deltaCombined: 0,
+      perLoadout: data.current.loadouts.map((L) => ({
+        name: L.loadoutName,
+        beforeOut: L.simulation.projectedOutputUI,
+        afterOut: L.simulation.projectedOutputUI,
+        dOut: 0,
+        beforeSurv: L.simulation.pctCycleSurvived,
+        afterSurv: L.simulation.pctCycleSurvived,
+      })),
+    });
+    return;
+  }
+
+  // Build the post-swap loadout itemId arrays from `current`.
+  const baseAssign = data.current.loadouts.map(L => L.items.map(it => it ? it.itemId : null));
+  function locate(itemId) {
+    for (let li = 0; li < baseAssign.length; li++) {
+      for (let ci = 0; ci < 6; ci++) {
+        if (baseAssign[li][ci] === itemId) return { li, ci };
+      }
+    }
+    return { li: -1, ci: -1 };
+  }
+  const loc1 = locate(picked1.itemId);
+  const loc2 = locate(picked2.itemId);
+  // Both unequipped — nothing to preview.
+  if (loc1.li === -1 && loc2.li === -1) {
+    OPT_STATE.selected = null;
+    renderOptimizer(null);
+    return;
+  }
+
+  // Same-type swap: exchange positions. The category slot index is
+  // identical for both because they share a type.
+  const ci = OPT_TYPE_INDEX[it1.type];
+  const newAssign = baseAssign.map(row => row.slice());
+  if (loc1.li >= 0) newAssign[loc1.li][ci] = it2.itemId;
+  if (loc2.li >= 0 && loc2.li !== loc1.li) newAssign[loc2.li][ci] = it1.itemId;
+  // Simulate via /api/simulate-loadout — server returns chain-anchored
+  // base contributions, which we can't easily replicate client-side.
+  const body = { loadouts: newAssign.map(row => ({ assetIds: row.filter(x => x != null) })) };
+  let after;
+  try {
+    const resp = await fetch('/api/simulate-loadout', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+    });
+    if (!resp.ok) throw await resp.json();
+    after = await resp.json();
+  } catch (err) {
+    OPT_STATE.selected = null;
+    renderOptimizer(null);
+    return;
+  }
+  const perLoadout = data.current.loadouts.map((L, li) => {
+    const afterL = after.loadouts[li];
+    return {
+      name: L.loadoutName,
+      beforeOut: L.simulation.projectedOutputUI,
+      afterOut: afterL ? afterL.simulation.projectedOutputUI : 0,
+      dOut: (afterL ? afterL.simulation.projectedOutputUI : 0) - L.simulation.projectedOutputUI,
+      beforeSurv: L.simulation.pctCycleSurvived,
+      afterSurv: afterL ? afterL.simulation.pctCycleSurvived : 0,
+    };
+  });
+  const swapDesc = (() => {
+    const lbl = (it, loc) => loc.li === -1 ? 'unequipped' : `E${loc.li + 1}`;
+    return `Swap <b>${escapeHtml(it1.name)}</b> (${escapeHtml(lbl(it1, loc1))}) ↔ <b>${escapeHtml(it2.name)}</b> (${escapeHtml(lbl(it2, loc2))})`;
+  })();
+  const preview = {
+    swapDesc,
+    before: data.current.combinedOutputUI,
+    after: after.combined.totalOutputUI,
+    deltaCombined: after.combined.totalOutputUI - data.current.combinedOutputUI,
+    perLoadout,
+  };
+  OPT_STATE.selected = null;
+  renderOptimizer(preview);
+}
+
+// Auto-load when the operator first switches to the ENTERPRISE tab.
+let __optAutoLoaded = false;
+function maybeAutoLoadOptimizer() {
+  if (__optAutoLoaded) return;
+  const active = document.body.getAttribute('data-active-tab');
+  if (active === 'enterprise') {
+    __optAutoLoaded = true;
+    fetchOptimizer();
+  }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  // First check on load
+  maybeAutoLoadOptimizer();
+  // Hook tab switches — observe data-active-tab attribute changes
+  const obs = new MutationObserver(maybeAutoLoadOptimizer);
+  obs.observe(document.body, { attributes: true, attributeFilter: ['data-active-tab'] });
+});
 
 // ─── TOP SR — discipline-ranked wallet leaderboard ────────────────────
 // Min 50 ops over the rank window to filter small-sample 100%s. The
