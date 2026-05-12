@@ -137,17 +137,13 @@ export interface HedgeState {
  * Setting equal and solving:
  *   notional = (corpsActive × infCostPerOp × infUsdEstimate) / drugThreshold
  *
- * ⚠ `infUsdEstimate` is the conversion from INF tokens → USD. There is
- * no live INF/USDM price feed in the codebase (INF doesn't appear to
- * have a tradeable DEX market), so this is an operator-tuned env
- * estimate (HEDGE_INF_USD_ESTIMATE, default $1.00). Previously the
- * formula treated `infCostPerOp` (INF tokens) as USD directly, which
- * SCALED the notional by 1/infUsdEstimate — under-hedged when INF was
- * worth >$1, over-hedged when <$1. The bug was latent because the
- * hedge ran in shadow mode the entire time.
- *
- * Once INF has a price feed (e.g. via a future DEX pool or auction
- * contract), `infUsdEstimate` should be replaced with a live read.
+ * `infUsdEstimate` converts INF tokens → USD. INF is pegged 1:1 to
+ * USD (operator-confirmed 2026-05-12), so HEDGE_INF_USD_ESTIMATE=1.0
+ * is the correct production value. The knob exists so the operator
+ * can adjust if the peg ever breaks (rare for on-chain-game fuel
+ * tokens but not unheard of). Previously the formula omitted this
+ * factor entirely, which was correct-by-coincidence at the 1:1 peg
+ * but would silently misize on any drift.
  */
 export function computeHedgeSizing(params: {
   corpAddresses: string[];

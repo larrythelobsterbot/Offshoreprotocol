@@ -262,14 +262,15 @@ price (the one used at execution). Useful for our oracle-divergence log.
 Per the existing `hedge-bot.ts` sizing model, at 9 corps × ~10 INF/op
 × drug threshold 0.0039:
 
-- `totalInfAtRisk = 9 × 10 = 90 INF` ≈ **$180** at current DIRTY price.
-  ⚠ NOTE: the existing formula `totalInfAtRisk = corpsActive * infCostPerOp`
-  treats `infCostPerOp` as USD. Per `CLAUDE.md` it's 9.12 INF (token units),
-  not USD. **This appears to be a pre-existing units bug in `hedge-bot.ts`
-  predating this brief — flag for the operator to confirm before adapting.**
-- `notional = $180 / 0.0039 = $46,154`
-- At 25x: `margin = $1,846`
-- Round-trip trading fee: `$46k × 0.108% ≈ $50`
+- `totalInfAtRisk = 9 × 10 = 90 INF` = **$90 USD** at the INF 1:1 USD peg
+  (operator-confirmed 2026-05-12). The pre-existing hedge-bot bug — flagged
+  in commit 9c6d3a5 and now fixed — was that the formula multiplied
+  `corpsActive × infCostPerOp` and treated that as USD, which was
+  correct-by-coincidence at 1:1 but would silently misize if INF ever
+  de-pegs.
+- `notional = $90 / 0.0039 = $23,077`
+- At 25x: `margin = $923`
+- Round-trip trading fee: `$23k × 0.108% ≈ $25`
 - Plus ~$0.15 in gas
 
 For the hedge to be EV-positive, the average per-batch outcome needs to
@@ -317,10 +318,12 @@ empirical data to size the buffer.
 
 1. **50x leverage cap** — operator's 25x target is fine, but at 50x the
    stress-test math (1 ETH = +5% move) gets tighter. Confirm 25x stays.
-2. **Pre-existing sizing units bug** in `hedge-bot.ts` (see "Hedge EV
-   math" above) — does `infCostPerOp` mean USD or INF tokens? Probably
-   needs a `× DIRTY/USDM rate` multiplier somewhere.
-3. **Fee budget** — $50 round-trip on a $46k hedge. Set a minimum
+2. ~~Pre-existing sizing units bug~~ — RESOLVED in commit 9c6d3a5. INF
+   is pegged 1:1 to USD per operator, so the (now-explicit)
+   `HEDGE_INF_USD_ESTIMATE=1.0` default is the right production value.
+   Updated estimates: $23k notional / $923 margin at 25x for a 9-corp
+   batch (down from the $46k I'd estimated when assuming INF was $2).
+3. **Fee budget** — ~$25 round-trip on a $23k hedge. Set a minimum
    hedge-worth threshold (`hedgeMinNotional`) so we don't bother
    hedging tiny 1-2 corp batches where fees eat the EV.
 4. **Approval strategy** — `MaxUint256` approve to Router once and
