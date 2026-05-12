@@ -1547,7 +1547,228 @@
   color: #a855f7;
 }
 .wt-filter:hover { background: rgba(255,255,255,0.05); }
+
+/* ── Mission Control strip (OPS tab) ────────────────────────── */
+.mc-wrap {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: linear-gradient(180deg, var(--bg) 0%, var(--bg) 80%, rgba(10,12,16,0.85) 100%);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 24px 12px;
+}
+.mc-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: auto auto;
+  gap: 8px;
+}
+.mc-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  min-height: 96px;
+}
+.mc-card-wide { grid-column: span 2; }
+.mc-label {
+  font-size: 9px;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 4px;
+}
+.mc-num { color: var(--text); font-weight: 600; }
+.mc-num-lg { font-size: 22px; font-weight: 700; line-height: 1; }
+.mc-dim { color: var(--dim); }
+.mc-meta { color: var(--text); }
+.mc-meta-row { font-size: 10px; color: var(--dim); margin-top: 2px; }
+.mc-trend { font-size: 10px; margin-left: 4px; }
+.mc-trend.up   { color: var(--green); }
+.mc-trend.down { color: var(--red); }
+.mc-trend.flat { color: var(--dim); }
+
+/* P&L card */
+.mc-pnl-primary { font-size: 18px; font-weight: 700; line-height: 1.1; margin-bottom: 4px; }
+.mc-pnl-primary .mc-num { font-size: 18px; }
+.mc-pnl-primary .pos    { color: var(--green); }
+.mc-pnl-primary .neg    { color: var(--red); }
+.mc-pnl-row { display: flex; gap: 8px; align-items: baseline; font-size: 11px; color: var(--dim); }
+.mc-pnl-row .mc-num { color: var(--text); }
+.mc-pnl-row .mc-num.bad { color: var(--red); }
+.mc-pnl-row .mc-num.ok  { color: var(--green); }
+
+/* Danger card */
+.mc-danger-primary { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.mc-danger-bar { display: flex; gap: 2px; margin: 4px 0 4px; }
+.mc-danger-seg {
+  display: inline-block;
+  width: 16px;
+  height: 7px;
+  border-radius: 1px;
+  background: var(--green);
+  opacity: 0.15;
+}
+.mc-level-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-top: 2px;
+}
+.mc-level-label.elevated { color: var(--yellow); }
+.mc-level-label.high     { color: var(--orange); }
+.mc-level-label.critical { color: var(--red); }
+
+/* Hedge card */
+.mc-hedge-primary { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }
+.mc-icon  { font-size: 16px; }
+.mc-icon.dim { color: var(--dim); }
+.mc-icon.warn { color: var(--yellow); }
+.mc-icon.live { color: var(--green); }
+.mc-icon.armed { color: var(--cyan); }
+.mc-status { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; }
+.mc-status.dim   { color: var(--dim); }
+.mc-status.warn  { color: var(--yellow); }
+.mc-status.armed { color: var(--cyan); }
+.mc-status.live  { color: var(--green); }
+
+/* Fleet card */
+.mc-fleet-primary { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.mc-fleet-primary .mc-num { font-size: 16px; }
+.mc-level { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); }
+.mc-level.elevated { color: var(--yellow); }
+.mc-level.high     { color: var(--orange); }
+.mc-level.critical { color: var(--red); }
+.mc-fleet-dots { display: flex; gap: 8px; margin-bottom: 4px; }
+.mc-fleet-group { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.mc-fleet-group .row { display: flex; gap: 2px; }
+.mc-fleet-group .label { font-size: 8px; color: var(--dim); letter-spacing: 0.5px; }
+.mc-fleet-dot {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.mc-fleet-dot.running    { background: var(--green); box-shadow: 0 0 4px rgba(0,230,118,0.4); }
+.mc-fleet-dot.idle       { background: rgba(0,230,118,0.4); }
+.mc-fleet-dot.completing { background: var(--orange); }
+.mc-fleet-dot.paused     { background: rgba(255,255,255,0.12); }
+.mc-fleet-dot.locked     { background: var(--red); }
+
+/* Cycle card */
+.mc-cycle-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 14px;
+  font-size: 11px;
+}
+.mc-cycle-grid .mc-num { font-size: 12px; }
+.mc-cycle-wide { grid-column: 1 / -1; font-size: 10px; color: var(--dim); border-top: 1px dashed var(--border); padding-top: 4px; margin-top: 2px; }
+.mc-cycle-wide .mc-num { color: var(--text); }
+
+/* Alerts card */
+.mc-alerts-list { display: flex; flex-direction: column; gap: 3px; }
+.mc-alert {
+  font-size: 11px;
+  color: var(--text);
+  padding: 3px 6px;
+  border-radius: 3px;
+  border-left: 2px solid var(--dim);
+  background: rgba(255,255,255,0.02);
+}
+.mc-alert-dim { color: var(--dim); border-left-color: var(--border); }
+.mc-alert.warn { border-left-color: var(--yellow); }
+.mc-alert.ok   { border-left-color: var(--green); }
+.mc-alert.bad  { border-left-color: var(--red); }
+.mc-alert.info { border-left-color: var(--cyan); }
+
+@media (max-width: 900px) {
+  .mc-grid { grid-template-columns: 1fr 1fr; }
+  .mc-card-wide { grid-column: span 2; }
+}
+@media (max-width: 520px) {
+  .mc-grid { grid-template-columns: 1fr; }
+  .mc-card-wide { grid-column: span 1; }
+  .mc-wrap { padding: 8px 12px; }
+}
 </style>
+
+<!-- Mission Control — sticky 6-card OPS summary strip. Stays visible
+     while scrolling through detail panels below. Every element answers
+     a question that leads to an action; if it doesn't drive a decision
+     it doesn't belong here. Updates from BOTH the WS state push (1Hz)
+     for real-time fields (danger / corps / hedge / NH) AND a 30s poll
+     of /api/mission-control for heavier rollups (efficiency, claims,
+     cycle estimates, alerts). -->
+<div data-pane="ops" id="mcWrap" class="mc-wrap">
+  <div class="mc-grid">
+    <div class="mc-card" id="mc-pnl">
+      <div class="mc-label">P&amp;L · 24h</div>
+      <div class="mc-pnl-primary"><span id="mcPnlNet" class="mc-num">—</span></div>
+      <div class="mc-pnl-row">
+        <span>D/INF</span>
+        <span id="mcPnlDpi" class="mc-num">—</span>
+        <span id="mcPnlDpiTrend" class="mc-trend"></span>
+      </div>
+      <div class="mc-pnl-row">
+        <span>cycle</span>
+        <span id="mcPnlCycle" class="mc-num">—</span>
+      </div>
+    </div>
+
+    <div class="mc-card" id="mc-danger">
+      <div class="mc-label">DANGER</div>
+      <div class="mc-danger-primary"><span id="mcDangerScore" class="mc-num-lg">—</span></div>
+      <div id="mcDangerBar" class="mc-danger-bar"></div>
+      <div class="mc-meta-row"><span class="mc-dim">NH:</span> <span id="mcDangerNh" class="mc-meta">—</span></div>
+      <div class="mc-meta-row"><span class="mc-dim">cliff:</span> <span id="mcDangerCliff" class="mc-meta">—</span></div>
+      <div id="mcDangerLevel" class="mc-level-label"></div>
+    </div>
+
+    <div class="mc-card" id="mc-hedge">
+      <div class="mc-label">HEDGE</div>
+      <div class="mc-hedge-primary">
+        <span id="mcHedgeIcon" class="mc-icon">◇</span>
+        <span id="mcHedgeStatus" class="mc-status">DISABLED</span>
+      </div>
+      <div class="mc-meta-row" id="mcHedgeLine1">—</div>
+      <div class="mc-meta-row" id="mcHedgeLine2">—</div>
+    </div>
+
+    <div class="mc-card" id="mc-fleet">
+      <div class="mc-label">FLEET</div>
+      <div class="mc-fleet-primary">
+        <span id="mcFleetCount" class="mc-num">—</span>
+        <span id="mcFleetLevel" class="mc-level"></span>
+      </div>
+      <div id="mcFleetDots" class="mc-fleet-dots"></div>
+      <div class="mc-meta-row" id="mcFleetMode">—</div>
+    </div>
+
+    <div class="mc-card mc-card-wide" id="mc-cycle">
+      <div class="mc-label">NEXT CYCLE</div>
+      <div class="mc-cycle-grid">
+        <div><span class="mc-dim">Pool</span> <span id="mcCyclePool" class="mc-num">—</span></div>
+        <div><span class="mc-dim">Share</span> <span id="mcCycleShare" class="mc-num">—</span></div>
+        <div><span class="mc-dim">Est</span> <span id="mcCycleEst" class="mc-num">—</span></div>
+        <div><span class="mc-dim">in</span> <span id="mcCycleEndsIn" class="mc-num">—</span></div>
+        <div class="mc-cycle-wide"><span class="mc-dim">Avg next pool (last 3 stable)</span> <span id="mcCycleNext" class="mc-num">—</span></div>
+      </div>
+    </div>
+
+    <div class="mc-card mc-card-wide" id="mc-alerts">
+      <div class="mc-label">ALERTS</div>
+      <div id="mcAlertsList" class="mc-alerts-list">
+        <div class="mc-alert mc-alert-dim">—</div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- Schedule Evidence — 7d rolling network stats per HKT hour. Operator-only. -->
 <div style="padding: 0 24px 8px;" data-pane="ops">
@@ -5242,6 +5463,305 @@ function fmtCooldown(secRemain) {
   return `${m}m ${s.toString().padStart(2,'0')}s`;
 }
 
+// ============================================================
+// MISSION CONTROL — sticky OPS-tab summary strip
+// Real-time updates from the existing WS push; polled aggregator
+// at /api/mission-control on a 30s timer for heavier rollups.
+// ============================================================
+const __MC = {
+  pol: null,            // last response from /api/mission-control
+  polFetchAt: 0,
+  polInFlight: false,
+};
+
+function mcFmtUsd(v, dp = 0) {
+  if (v == null || !Number.isFinite(v)) return '—';
+  const sign = v < 0 ? '-' : '';
+  const abs = Math.abs(v);
+  if (abs >= 1e6) return sign + '$' + (abs/1e6).toFixed(2) + 'M';
+  if (abs >= 1e3) return sign + '$' + (abs/1e3).toFixed(1) + 'K';
+  return sign + '$' + abs.toFixed(dp);
+}
+function mcFmtNum(v, dp = 2) {
+  if (v == null || !Number.isFinite(v)) return '—';
+  return v.toFixed(dp);
+}
+function mcFmtPct(v, dp = 1) {
+  if (v == null || !Number.isFinite(v)) return '—';
+  return (v * 100).toFixed(dp) + '%';
+}
+function mcFmtDuration(sec) {
+  if (sec == null || !Number.isFinite(sec) || sec <= 0) return '—';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (h >= 1) return h + 'h ' + m + 'min';
+  return m + 'min';
+}
+
+function renderDangerBar(score) {
+  const filled = Math.max(0, Math.min(10, Math.round((score ?? 0) / 10)));
+  let html = '';
+  for (let i = 0; i < 10; i++) {
+    const color = i < 4 ? 'var(--green)' :
+                  i < 6 ? 'var(--yellow)' :
+                  i < 8 ? 'var(--orange)' : 'var(--red)';
+    const opacity = i < filled ? 1 : 0.15;
+    html += `<span class="mc-danger-seg" style="background:${color};opacity:${opacity}"></span>`;
+  }
+  return html;
+}
+
+function renderMissionControl_realtime(s) {
+  // ── DANGER card (always from WS state) ───────────────────
+  const danger = s.scores?.dangerScore ?? null;
+  const dEl = document.getElementById('mcDangerScore');
+  if (dEl) {
+    dEl.textContent = danger != null ? String(danger) : '—';
+    dEl.style.color = danger == null ? 'var(--dim)'
+      : danger >= 75 ? 'var(--red)'
+      : danger >= 60 ? 'var(--orange)'
+      : danger >= 40 ? 'var(--yellow)'
+      : 'var(--green)';
+  }
+  const barEl = document.getElementById('mcDangerBar');
+  if (barEl) barEl.innerHTML = renderDangerBar(danger ?? 0);
+
+  // NH chip — show 'TRIPPED Xmin ago' if the penalty path is active.
+  // Otherwise 'clear'.
+  const nh = s.nhPenalty || {};
+  const nhPen = nh.penalty ?? 0;
+  const nhEl = document.getElementById('mcDangerNh');
+  if (nhEl) {
+    if (nhPen > 0) {
+      nhEl.textContent = `+${nhPen} (eff ${nh.effectiveDanger ?? '?'})`;
+      nhEl.style.color = 'var(--yellow)';
+    } else {
+      nhEl.textContent = 'clear';
+      nhEl.style.color = 'var(--dim)';
+    }
+  }
+  // Cliff chip — show 'ACTIVE (pFail X%)' if Layer 2 has blocked.
+  const cliff = s.thresholdCliffGate || {};
+  const cliffEl = document.getElementById('mcDangerCliff');
+  if (cliffEl) {
+    if (cliff && cliff.gateActive) {
+      const pf = cliff.lastProbFail != null ? `${(cliff.lastProbFail*100).toFixed(0)}%` : '?';
+      cliffEl.textContent = `ACTIVE (pFail ${pf})`;
+      cliffEl.style.color = 'var(--red)';
+    } else {
+      cliffEl.textContent = '—';
+      cliffEl.style.color = 'var(--dim)';
+    }
+  }
+  // Graduated level label under the bar
+  const gr = s.graduated || {};
+  const lvlEl = document.getElementById('mcDangerLevel');
+  if (lvlEl) {
+    if (gr.enabled && gr.currentLevel && gr.currentLevel !== 'normal' && gr.currentLevel !== 'disabled') {
+      lvlEl.textContent = `${gr.currentLevel.toUpperCase()} → ${gr.currentTarget}/${gr.totalCorps} corps`;
+      lvlEl.className = 'mc-level-label ' + gr.currentLevel;
+    } else {
+      lvlEl.textContent = '';
+      lvlEl.className = 'mc-level-label';
+    }
+  }
+
+  // ── HEDGE card ────────────────────────────────────────────
+  const h = s.hedge || {};
+  const hd = s.hedgeDecision || {};
+  const icon = document.getElementById('mcHedgeIcon');
+  const stat = document.getElementById('mcHedgeStatus');
+  const l1 = document.getElementById('mcHedgeLine1');
+  const l2 = document.getElementById('mcHedgeLine2');
+  if (icon && stat) {
+    let iconChar = '◇', iconCls = 'dim', statTxt = 'DISABLED', statCls = 'dim';
+    let line1 = '', line2 = '';
+    if (h.disabled || !h.enabled) {
+      statTxt = 'DISABLED'; line1 = '/bot hedge on'; line2 = '';
+    } else if (h.mode === 'live' && h.activeHedge) {
+      iconChar = '●'; iconCls = 'live'; statTxt = 'HEDGED'; statCls = 'live';
+      line1 = `short ${mcFmtUsd(h.activeHedge.notional)}`;
+      line2 = `TP $${(h.activeHedge.takeProfitPrice ?? 0).toFixed(2)}`;
+    } else if (h.mode === 'live') {
+      iconChar = '○'; iconCls = 'armed'; statTxt = 'ARMED'; statCls = 'armed';
+      line1 = `policy: ${hd.policy ?? '?'} · min ${hd.minDanger ?? '?'}`;
+      line2 = hd.activate ? '↗ would arm' : (hd.reason ?? '');
+    } else if (h.mode === 'shadow' && hd.activate) {
+      iconChar = '◆'; iconCls = 'warn'; statTxt = 'SHADOW TRIGGER'; statCls = 'warn';
+      const last = h.lastSizing;
+      line1 = `danger ${hd.dangerScore ?? '?'} ≥ ${hd.minDanger ?? '?'}`;
+      line2 = last ? `would hedge ${mcFmtUsd(last.notional)}` : '';
+    } else {
+      iconChar = '◆'; iconCls = 'dim'; statTxt = 'STANDBY'; statCls = 'dim';
+      line1 = `trigger: ${hd.minDanger ?? '?'} (${hd.policy ?? 'danger-only'})`;
+      line2 = `mode: ${h.mode ?? 'shadow'}`;
+    }
+    icon.textContent = iconChar;
+    icon.className = 'mc-icon ' + iconCls;
+    stat.textContent = statTxt;
+    stat.className = 'mc-status ' + statCls;
+    if (l1) l1.textContent = line1;
+    if (l2) l2.textContent = line2;
+  }
+
+  // ── FLEET card ────────────────────────────────────────────
+  const corps = s.corpState?.corps || [];
+  const fleetCount = document.getElementById('mcFleetCount');
+  const fleetLevel = document.getElementById('mcFleetLevel');
+  const fleetDots  = document.getElementById('mcFleetDots');
+  const fleetMode  = document.getElementById('mcFleetMode');
+  const target = gr.currentTarget ?? corps.length;
+  const total  = gr.totalCorps ?? corps.length;
+  if (fleetCount) fleetCount.textContent = `${target}/${total}`;
+  if (fleetLevel) {
+    if (gr.currentLevel && gr.currentLevel !== 'normal' && gr.currentLevel !== 'disabled') {
+      fleetLevel.textContent = '(' + gr.currentLevel + ')';
+      fleetLevel.className = 'mc-level ' + gr.currentLevel;
+    } else {
+      fleetLevel.textContent = '';
+      fleetLevel.className = 'mc-level';
+    }
+  }
+  if (fleetDots) {
+    // Group corps into L1/L2/L3 (3-3-3 layout, fewer groups if N<9)
+    const groups = [];
+    for (let i = 0; i < corps.length; i += 3) groups.push(corps.slice(i, i + 3));
+    const pausedSet = new Set((gr.pausedCorps || []).map(a => (a || '').toLowerCase()));
+    fleetDots.innerHTML = groups.map((grp, gi) => {
+      const dots = grp.map(c => {
+        const addr = (c.address || '').toLowerCase();
+        let cls = 'idle';
+        if (c.locked) cls = 'locked';
+        else if (pausedSet.has(addr)) cls = 'paused';
+        else if (c.tradeInfo?.active && c.tradeInfo?.endTs) {
+          // Completable when endTs has passed
+          const nowSec = Math.floor(Date.now() / 1000);
+          cls = (c.tradeInfo.endTs > 0 && c.tradeInfo.endTs < nowSec) ? 'completing' : 'running';
+        } else if (c.autoTradeEnabled) cls = 'idle';
+        else cls = 'paused';
+        return `<span class="mc-fleet-dot ${cls}" title="${addr.slice(0,10)}.."></span>`;
+      }).join('');
+      const labels = ['L1', 'L2', 'L3'];
+      const label = labels[gi] ?? `G${gi+1}`;
+      return `<div class="mc-fleet-group"><div class="row">${dots}</div><div class="label">${label}</div></div>`;
+    }).join('');
+  }
+  if (fleetMode) {
+    // Bootstrap mode comes from the same logic the bot's tick uses;
+    // we don't have a direct field for it on state, so derive from the
+    // hedge decision: 'batch' iff hedge is LIVE + would activate.
+    const batch = h.mode === 'live' && hd.activate;
+    fleetMode.textContent = batch ? 'batch+hedge' : 'stagger';
+  }
+
+  // ── P&L card (real-time slice) ────────────────────────────
+  // The bulk of P&L comes from the polled /api/mission-control fetch,
+  // but the cycle line updates whenever the loadout-scanner refreshes
+  // the cycle metadata (1Hz from WS).
+  if (__MC.pol) renderMissionControl_polled(__MC.pol);
+  // ── CYCLE card real-time bit: countdown only ─────────────
+  const cycle = s.loadouts?.cycle ?? null;
+  if (cycle) {
+    document.getElementById('mcCycleEndsIn').textContent = mcFmtDuration(cycle.secondsRemaining);
+  }
+}
+
+function renderMissionControl_polled(d) {
+  if (!d) return;
+  // ── P&L card ─────────────────────────────────────────────
+  const today = d.pnl?.today ?? {};
+  const avg7d = d.pnl?.avg7d ?? {};
+  const lastC = d.pnl?.lastCycle ?? null;
+  const netEl = document.getElementById('mcPnlNet');
+  if (netEl) {
+    const net = today.netUsdm;
+    const cls = net == null ? '' : net >= 0 ? 'pos' : 'neg';
+    netEl.innerHTML = net == null ? '—'
+      : `<span class="${cls}">${net >= 0 ? '+' : ''}${mcFmtUsd(net)}</span>`;
+  }
+  const dpiEl = document.getElementById('mcPnlDpi');
+  if (dpiEl) {
+    const v = today.dirtyPerInfLost;
+    dpiEl.textContent = (v == null) ? '—'
+      : (v === 'Infinity' || !Number.isFinite(v)) ? '∞'
+      : v.toFixed(2);
+    const v7 = avg7d.dirtyPerInfLost;
+    let cls = 'ok';
+    if (typeof v === 'number' && Number.isFinite(v) && typeof v7 === 'number' && Number.isFinite(v7) && v7 > 0) {
+      if (v >= v7) cls = 'ok';
+      else if (v >= v7 * 0.9) cls = '';
+      else cls = 'bad';
+    }
+    dpiEl.className = 'mc-num ' + cls;
+  }
+  const dpiTrend = document.getElementById('mcPnlDpiTrend');
+  if (dpiTrend) {
+    const a = today.dirtyPerInfLost, b = avg7d.dirtyPerInfLost;
+    if (typeof a === 'number' && Number.isFinite(a) && typeof b === 'number' && Number.isFinite(b) && b > 0) {
+      const pct = ((a - b) / b) * 100;
+      const arrow = Math.abs(pct) < 1 ? '·' : pct > 0 ? '▲' : '▼';
+      const cls = Math.abs(pct) < 1 ? 'flat' : pct > 0 ? 'up' : 'down';
+      const sign = pct >= 0 ? '+' : '';
+      dpiTrend.textContent = `${arrow} ${sign}${pct.toFixed(0)}% vs 7d`;
+      dpiTrend.className = 'mc-trend ' + cls;
+    } else {
+      dpiTrend.textContent = '';
+    }
+  }
+  const cycEl = document.getElementById('mcPnlCycle');
+  if (cycEl) {
+    cycEl.textContent = lastC ? `+${mcFmtUsd(lastC.claim)}` : '—';
+    cycEl.className = 'mc-num ok';
+  }
+
+  // ── NEXT CYCLE card ──────────────────────────────────────
+  const cyc = d.nextCycle ?? null;
+  if (cyc) {
+    document.getElementById('mcCyclePool').textContent = mcFmtUsd(cyc.poolSize);
+    document.getElementById('mcCycleShare').textContent = cyc.estShare != null ? mcFmtPct(cyc.estShare, 2) : '—';
+    document.getElementById('mcCycleEst').textContent = cyc.estClaim != null ? '~' + mcFmtUsd(cyc.estClaim, 0) : '—';
+    document.getElementById('mcCycleEndsIn').textContent = mcFmtDuration(cyc.endsInSec);
+    document.getElementById('mcCycleNext').textContent = cyc.prevCyclesAvg != null ? mcFmtUsd(cyc.prevCyclesAvg) : '—';
+  }
+
+  // ── ALERTS card ──────────────────────────────────────────
+  const list = document.getElementById('mcAlertsList');
+  if (list) {
+    const alerts = d.alerts ?? [];
+    if (alerts.length === 0) {
+      list.innerHTML = '<div class="mc-alert mc-alert-dim">All systems nominal.</div>';
+    } else {
+      list.innerHTML = alerts.map(a => {
+        const cls = a.icon === '✅' ? 'ok'
+                  : a.icon === '❌' ? 'bad'
+                  : a.icon === '🛡' ? 'info'
+                  :                    'warn';
+        return `<div class="mc-alert ${cls}">${a.icon}  ${escapeHtml(a.text)}</div>`;
+      }).join('');
+    }
+  }
+}
+
+async function refreshMissionControl_polled(force = false) {
+  if (__MC.polInFlight) return;
+  if (!force && Date.now() - __MC.polFetchAt < 25_000) return;
+  __MC.polInFlight = true;
+  try {
+    const r = await fetch('/api/mission-control');
+    if (!r.ok) return;
+    const d = restoreInfinity(await r.json());
+    __MC.pol = d;
+    __MC.polFetchAt = Date.now();
+    renderMissionControl_polled(d);
+  } catch { /* keep last */ }
+  finally { __MC.polInFlight = false; }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  refreshMissionControl_polled(true);
+  setInterval(() => refreshMissionControl_polled(false), 30_000);
+});
+
 // Graduated scaling indicator. Shows the current "N/M active" + level
 // label only when scaling is enabled AND the level is non-default
 // (i.e. fleet is actually contracted). Stays hidden in the common
@@ -5659,6 +6179,7 @@ function render(s) {
   if (s.walletBalances) renderWallet(s.walletBalances, s.ammRate);
   if (s.corpState) renderCorps(s.corpState);
   renderGraduatedBanner(s);
+  renderMissionControl_realtime(s);
   if (s.activity) renderActivity(s.activity);
 
   // Op outcome stats (empirical failure fractions)

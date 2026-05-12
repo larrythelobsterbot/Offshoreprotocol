@@ -1194,6 +1194,213 @@ export class ApiServer {
       }),
     );
 
+    // ── MISSION CONTROL ────────────────────────────────────────
+    // Aggregator endpoint feeding the sticky OPS-tab Mission Control
+    // strip. Combines what the dashboard would otherwise pull from
+    // four separate endpoints (efficiency / burn-vs-claim / schedule /
+    // copy stats) into one polled response. The 1Hz real-time slice
+    // (danger / corps / hedge / NH) stays on the WS push.
+    //
+    // Polled at 30s on the client. Heavy enough that we cache via
+    // 30s s-maxage so repeat hits within the window are cheap.
+    this.app.get('/api/mission-control', publicGate(async (_req: any, reply: any) => {
+      const state = this.getState() as any;
+      const eff24h = computeEfficiency(this.storage, { windowHours: 24 });
+      const eff7d  = computeEfficiency(this.storage, { windowHours: 168 });
+      const bvc = this.storage.getOperatorBurnVsClaim({
+        operator: config.walletAddress,
+        days: 7,
+      });
+
+      // Pull strategy slices so we can show "copy vs auto" SR delta.
+      const stratByName = new Map<string, any>(
+        eff24h.by_strategy.map((s: any) => [s.strategy, s]),
+      );
+      const copy = stratByName.get('manual:copy') ?? null;
+      const autoDrug = stratByName.get('auto:all-drug') ?? null;
+      // (auto-restart) ops have no strategy tag — back into them via
+      // overall − tagged strategies for a denser baseline comparator.
+      const taggedOps   = eff24h.by_strategy.reduce((s: number, r: any) => s + r.ops, 0);
+      const taggedWins  = eff24h.by_strategy.reduce((s: number, r: any) => s + r.wins, 0);
+      const untaggedOps   = Math.max(0, eff24h.overall.ops  - taggedOps);
+      const untaggedWins  = Math.max(0, eff24h.overall.wins - taggedWins);
+      const autoRestartSr = untaggedOps > 0 ? untaggedWins / untaggedOps : null;
+
+      // Operator's last cycle claim — pull from whaleClaims state if
+      // available (cheap; already maintained by the feed).
+      const ownLower = config.walletAddress.toLowerCase();
+      const recentOwn = ((state?.whaleClaims?.recent ?? []) as Array<any>)
+        .filter(c => (c.claimer ?? '').toLowerCase() === ownLower)
+        .sort((a, b) => b.ts - a.ts);
+      const lastClaim = recentOwn[0] ?? null;
+
+      // Pool / cycle data from the existing loadout-scanner snapshot.
+      const cycle = state?.loadouts?.cycle ?? null;
+      const cycleTotals = (state?.whaleClaims?.cycleTotals ?? []) as Array<{
+        cycle_id: number; total_usdm: number; n_claims: number;
+      }>;
+      const prevCycleTotal = cycleTotals[0] ?? null;
+
+      // Operator share estimate = last cycle claim / last cycle pool.
+      // Stable proxy until proper laundering-cash denominator wiring.
+      const opShare = (lastClaim && prevCycleTotal?.total_usdm)
+        ? lastClaim.usdm_amount / prevCycleTotal.total_usdm
+        : null;
+      // Estimated current-cycle claim = share × current netPool.
+      const estClaim = (cycle && opShare)
+        ? opShare * (cycle.netPool ?? cycle.pool ?? 0)
+        : null;
+
+      // ── Alerts (priority 0 = most urgent) ────────────────
+      type Alert = { icon: string; text: string; priority: number };
+      const alerts: Alert[] = [];
+      const hktHour = (new Date().getUTCHours() + 8) % 24;
+      // 1. Upcoming schedule pause
+      const sched = (state?.scheduleRegime === 'weekend'
+        ? state?.scheduleConfig?.weekend
+        : state?.scheduleConfig?.weekday)
+        ?? null;
+      // Schedule may live on corpBotStatus if not directly exposed
+      const schedFromStatus = state?.corpBotStatus?.schedule
+        ?? null;
+      const scheduleArr: string[] | null = sched ?? schedFromStatus;
+      if (Array.isArray(scheduleArr) && scheduleArr.length === 24) {
+        for (let h = 1; h <= 3; h++) {
+          const hr = (hktHour + h) % 24;
+          if (scheduleArr[hr] === 'paused') {
+            // Build a human-readable "in Xh Xmin" — use current minute
+            // for sub-hour precision.
+            const minsInHour = new Date(Date.now() + 8 * 3600_000).getUTCMinutes();
+            const totalMin = h * 60 - minsInHour;
+            const hh = Math.floor(totalMin / 60);
+            const mm = totalMin % 60;
+            const ago = hh > 0 ? `${hh}h ${mm}min` : `${mm}min`;
+            alerts.push({ icon: '⚠', text: `Schedule: ${String(hr).padStart(2,'0')}h pause in ${ago}`, priority: 1 });
+            break;
+          }
+        }
+      }
+      // 2. Copy mode performance
+      if (copy && copy.ops >= 5) {
+        if (autoRestartSr != null && copy.sr > autoRestartSr) {
+          alerts.push({
+            icon: '✅',
+            text: `Copy SR ${(copy.sr*100).toFixed(1)}% beating auto-restart ${(autoRestartSr*100).toFixed(0)}%`,
+            priority: 3,
+          });
+        } else if (autoRestartSr != null && copy.sr < autoRestartSr - 0.05) {
+          alerts.push({
+            icon: '⚠',
+            text: `Copy SR ${(copy.sr*100).toFixed(1)}% — underperforming auto`,
+            priority: 1,
+          });
+        }
+      }
+      // 3. NH penalty active
+      const nhPen = state?.nhPenalty?.penalty ?? 0;
+      if (nhPen > 0) {
+        const minSince = state?.networkHealth
+          ? Math.max(0, Math.round((Date.now() - (state.networkHealth.scannedAt ?? Date.now())) / 60_000))
+          : 0;
+        alerts.push({
+          icon: '⚠',
+          text: `NH penalty +${nhPen} (cascade ${minSince}min ago)`,
+          priority: 1,
+        });
+      }
+      // 4. Hedge margin warning (live mode only)
+      if (state?.hedge?.mode === 'live' && state?.hedge?.activeHedge) {
+        const ah = state.hedge.activeHedge;
+        // Margin check is a placeholder — live SDK integration not yet
+        // wired. Surface the active position as an info alert for now.
+        alerts.push({
+          icon: '🛡',
+          text: `Hedge active: $${ah.notional?.toFixed(0)} short, TP $${ah.takeProfitPrice?.toFixed(2)}`,
+          priority: 2,
+        });
+      }
+      // 5. DIRTY runway from wallet balance + 24h burn estimate.
+      const dirtyBal = state?.walletBalances?.dirty ?? 0;
+      const dailyDirtyBurn = eff24h.overall.ops > 0
+        ? eff24h.overall.ops * 200 / 24 * 24  // packs cost only; rough
+        : 0;
+      if (dirtyBal > 0 && dailyDirtyBurn > 0 && dirtyBal / dailyDirtyBurn < 2) {
+        alerts.push({
+          icon: '⚠',
+          text: `DIRTY runway ${(dirtyBal/dailyDirtyBurn).toFixed(1)}d at recent spend`,
+          priority: 2,
+        });
+      }
+      // 6. INF runway
+      const infBal = state?.walletBalances?.inf ?? 0;
+      const infBurnedPerHr = eff24h.overall.ops > 0
+        ? eff24h.overall.inf_spent / 24
+        : 0;
+      const infRunwayHrs = infBurnedPerHr > 0 ? infBal / infBurnedPerHr : Infinity;
+      if (Number.isFinite(infRunwayHrs) && infRunwayHrs < 24) {
+        alerts.push({
+          icon: '⚠',
+          text: `INF runway ${infRunwayHrs.toFixed(1)}h — top up before failure burn drains`,
+          priority: 1,
+        });
+      }
+      // Sort by priority, take top 3
+      const topAlerts = alerts.sort((a, b) => a.priority - b.priority).slice(0, 3);
+
+      reply.header('Cache-Control', 'public, max-age=15, s-maxage=30');
+      return jsonSafeInfinity({
+        generatedAt: Date.now(),
+        pnl: {
+          today: {
+            netUsdm: (lastClaim?.usdm_amount ?? 0) - eff24h.overall.inf_spent,
+            infBurned: eff24h.overall.inf_spent,
+            dirtyEarned: eff24h.overall.dirty_earned,
+            dirtyPerInfLost: eff24h.overall.dirty_per_inf,
+            srPct: eff24h.overall.sr * 100,
+            ops: eff24h.overall.ops,
+          },
+          lastCycle: lastClaim ? {
+            cycleId: lastClaim.cycle_id,
+            claim: lastClaim.usdm_amount,
+            ts: lastClaim.ts,
+          } : null,
+          avg7d: {
+            dirtyPerInfLost: eff7d.overall.dirty_per_inf,
+            netPerDay: bvc.aggregate.net_per_day,
+            srPct: eff7d.overall.sr * 100,
+          },
+        },
+        nextCycle: cycle ? {
+          cycleId:        cycle.cycleId,
+          poolSize:       cycle.netPool ?? cycle.pool ?? 0,
+          estShare:       opShare,
+          estClaim,
+          endsInSec:      cycle.secondsRemaining,
+          elapsedSec:     cycle.secondsElapsed,
+          // Best estimate of "next" cycle pool — use the median of the
+          // last 3 closed cycle totals (excluding genesis cycles where
+          // total ≈ 0). Filters cold-start outliers without needing
+          // chain-side reserve math.
+          prevCyclesAvg: (() => {
+            const stableTotals = cycleTotals
+              .filter(c => c.total_usdm > 5000)
+              .slice(0, 3)
+              .map(c => c.total_usdm);
+            if (stableTotals.length === 0) return null;
+            return stableTotals.reduce((a, b) => a + b, 0) / stableTotals.length;
+          })(),
+        } : null,
+        copyMode: copy ? {
+          enabled: state?.corpBotStatus?.copyMode?.enabled ?? false,
+          recentSR: copy.sr,
+          autoRestartSR: autoRestartSr,
+          opsLast24h: copy.ops,
+          dirtyPerInf: copy.dirty_per_inf,
+        } : null,
+        alerts: topAlerts,
+      });
+    }));
+
     // Health check
     this.app.get('/api/health', async () => {
       const state = this.getState();
