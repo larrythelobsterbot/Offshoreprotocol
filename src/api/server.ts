@@ -1262,27 +1262,27 @@ export class ApiServer {
       type Alert = { icon: string; text: string; priority: number };
       const alerts: Alert[] = [];
       const hktHour = (new Date().getUTCHours() + 8) % 24;
-      // 1. Upcoming schedule pause
-      const sched = (state?.scheduleRegime === 'weekend'
-        ? state?.scheduleConfig?.weekend
-        : state?.scheduleConfig?.weekday)
-        ?? null;
-      // Schedule may live on corpBotStatus if not directly exposed
-      const schedFromStatus = state?.corpBotStatus?.schedule
-        ?? null;
-      const scheduleArr: string[] | null = sched ?? schedFromStatus;
+      // 1. Upcoming schedule pause — pull from the live CorpBot schedule
+      // via the injected accessor. The previous version tried to read
+      // `state.scheduleConfig` which isn't on the decorated state (only
+      // `scheduleRegime` is), so the alert never fired. Codex audit
+      // 2026-05-12. The injected getter returns the CURRENT regime's
+      // array, which is what we want for proximate-hour lookahead.
+      const scheduleArr: string[] | null = this.getSchedule?.() ?? null;
       if (Array.isArray(scheduleArr) && scheduleArr.length === 24) {
         for (let h = 1; h <= 3; h++) {
           const hr = (hktHour + h) % 24;
           if (scheduleArr[hr] === 'paused') {
-            // Build a human-readable "in Xh Xmin" — use current minute
-            // for sub-hour precision.
             const minsInHour = new Date(Date.now() + 8 * 3600_000).getUTCMinutes();
             const totalMin = h * 60 - minsInHour;
             const hh = Math.floor(totalMin / 60);
             const mm = totalMin % 60;
             const ago = hh > 0 ? `${hh}h ${mm}min` : `${mm}min`;
-            alerts.push({ icon: '⚠', text: `Schedule: ${String(hr).padStart(2,'0')}h pause in ${ago}`, priority: 1 });
+            alerts.push({
+              icon: '⚠',
+              text: `${String(hr).padStart(2,'0')}:00 HKT pause in ${ago}`,
+              priority: 1,
+            });
             break;
           }
         }
@@ -1326,31 +1326,31 @@ export class ApiServer {
           priority: 2,
         });
       }
-      // 5. DIRTY runway from wallet balance + 24h burn estimate.
-      const dirtyBal = state?.walletBalances?.dirty ?? 0;
-      const dailyDirtyBurn = eff24h.overall.ops > 0
-        ? eff24h.overall.ops * 200 / 24 * 24  // packs cost only; rough
-        : 0;
-      if (dirtyBal > 0 && dailyDirtyBurn > 0 && dirtyBal / dailyDirtyBurn < 2) {
-        alerts.push({
-          icon: '⚠',
-          text: `DIRTY runway ${(dirtyBal/dailyDirtyBurn).toFixed(1)}d at recent spend`,
-          priority: 2,
-        });
-      }
-      // 6. INF runway
+      // 5. INF runway — uses the MORE PESSIMISTIC of a 24h-average burn
+      // and a recent-3h burn rate. INF failure burn is bursty (a cluster
+      // of liquidations can drain hours of runway in minutes), so the
+      // 24h smooth alone can lag a real squeeze. Codex audit 2026-05-12.
       const infBal = state?.walletBalances?.inf ?? 0;
-      const infBurnedPerHr = eff24h.overall.ops > 0
-        ? eff24h.overall.inf_spent / 24
-        : 0;
-      const infRunwayHrs = infBurnedPerHr > 0 ? infBal / infBurnedPerHr : Infinity;
+      const burn24hPerHr = eff24h.overall.inf_spent / 24;
+      const recent3h = this.storage.getOpOutcomesSince(Date.now() - 3 * 3600_000);
+      const burn3hSum = recent3h.reduce((s, o) => s + (o.infBurned ?? 0), 0);
+      const burn3hPerHr = recent3h.length > 0 ? burn3hSum / 3 : 0;
+      const burnPerHr = Math.max(burn24hPerHr, burn3hPerHr);
+      const infRunwayHrs = burnPerHr > 0 ? infBal / burnPerHr : Infinity;
       if (Number.isFinite(infRunwayHrs) && infRunwayHrs < 24) {
+        const note = burn3hPerHr > burn24hPerHr * 1.5 ? ' (3h burn rate elevated)' : '';
         alerts.push({
           icon: '⚠',
-          text: `INF runway ${infRunwayHrs.toFixed(1)}h — top up before failure burn drains`,
+          text: `INF runway ${infRunwayHrs.toFixed(1)}h${note} — top up before failure burn drains`,
           priority: 1,
         });
       }
+      // (Dropped the "DIRTY runway" alert from a previous iteration —
+      // it used ops × 200 as a stand-in for DIRTY burn, which double-
+      // counted pack costs that may not even be happening. DIRTY is
+      // earned by ops, not burned by them. The real DIRTY-spend
+      // signals are Status upgrades + Gacha pack purchases, which
+      // happen out-of-band on the operator's schedule. Codex audit #2.)
       // Sort by priority, take top 3
       const topAlerts = alerts.sort((a, b) => a.priority - b.priority).slice(0, 3);
 
