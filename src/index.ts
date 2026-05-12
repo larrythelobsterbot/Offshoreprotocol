@@ -878,10 +878,11 @@ async function main() {
     const rs = redstone.getPrice();
     void hedgeBot.onDrugBatchStart({
       corpAddresses,
-      infCostPerOp:   opSnap?.infCostPerOp   ?? 0,
-      drugThreshold:  opSnap?.thresholds?.[2] ?? 0,
-      ethPrice:       rs?.price ?? 0,
-      redstoneStale:  rs?.stale ?? true,
+      infCostPerOp:    opSnap?.infCostPerOp   ?? 0,
+      infUsdEstimate:  config.hedgeInfUsdEstimate,
+      drugThreshold:   opSnap?.thresholds?.[2] ?? 0,
+      ethPrice:        rs?.price ?? 0,
+      redstoneStale:   rs?.stale ?? true,
     });
   };
   corpBot.setBootstrapHook((ev) => {

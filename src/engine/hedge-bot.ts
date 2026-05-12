@@ -62,13 +62,23 @@ export interface HedgeBotConfig {
 
 export interface HedgeSizing {
   corpsActive: number;
+  /** Per-op INF burn in INF token units (from OpParamsFeed). */
   infCostPerOp: number;
+  /** corpsActive × infCostPerOp — total INF tokens at risk this batch. */
   totalInfAtRisk: number;
+  /** USD-per-INF-token estimate fed into the sizing calc. Surfaced so
+   *  shadow logs + dashboard reveal the assumption that drove the
+   *  notional. */
+  infUsdEstimate: number;
+  /** USD value of the INF stake at risk (totalInfAtRisk × infUsdEstimate).
+   *  THIS is the dollar loss-on-full-liquidation the hedge needs to cover. */
+  totalInfAtRiskUsd: number;
   /** Drug threshold as a fraction (e.g. 0.00386 for 0.386%). */
   drugThreshold: number;
   /** RedStone ETH price at the moment of sizing. */
   ethPrice: number;
-  /** Short notional in USDM = totalInfAtRisk / drugThreshold. */
+  /** Short notional in USDM = totalInfAtRiskUsd / drugThreshold.
+   *  A drop of `drugThreshold` from `ethPrice` then profits ≈ totalInfAtRiskUsd. */
   notional: number;
   /** Margin required = notional / leverage. */
   margin: number;
@@ -112,18 +122,48 @@ export interface HedgeState {
 /**
  * Compute hedge sizing from current op-params + RedStone price.
  * Pure function — split out for /api state surfacing + unit testing.
+ *
+ * ## Sizing math (corrected 2026-05-12)
+ *
+ * Goal: short ETH such that if ALL corps liquidate (price drops by
+ * `drugThreshold`), the short's profit roughly offsets the lost INF.
+ *
+ * Loss on full-liquidation:
+ *   loss_usd = corpsActive × infCostPerOp × infUsdEstimate
+ *
+ * Short profit on threshold drop:
+ *   profit_usd = notional × drugThreshold
+ *
+ * Setting equal and solving:
+ *   notional = (corpsActive × infCostPerOp × infUsdEstimate) / drugThreshold
+ *
+ * ⚠ `infUsdEstimate` is the conversion from INF tokens → USD. There is
+ * no live INF/USDM price feed in the codebase (INF doesn't appear to
+ * have a tradeable DEX market), so this is an operator-tuned env
+ * estimate (HEDGE_INF_USD_ESTIMATE, default $1.00). Previously the
+ * formula treated `infCostPerOp` (INF tokens) as USD directly, which
+ * SCALED the notional by 1/infUsdEstimate — under-hedged when INF was
+ * worth >$1, over-hedged when <$1. The bug was latent because the
+ * hedge ran in shadow mode the entire time.
+ *
+ * Once INF has a price feed (e.g. via a future DEX pool or auction
+ * contract), `infUsdEstimate` should be replaced with a live read.
  */
 export function computeHedgeSizing(params: {
   corpAddresses: string[];
+  /** INF tokens burned per failed op (from OpParamsFeed.infCostPerOp). */
   infCostPerOp: number;
+  /** USD per INF token (operator-tuned via HEDGE_INF_USD_ESTIMATE). */
+  infUsdEstimate: number;
   drugThreshold: number;
   ethPrice: number;
   leverage: number;
 }): HedgeSizing {
   const corpsActive = params.corpAddresses.length;
   const totalInfAtRisk = corpsActive * params.infCostPerOp;
+  const totalInfAtRiskUsd = totalInfAtRisk * params.infUsdEstimate;
   const notional = params.drugThreshold > 0
-    ? totalInfAtRisk / params.drugThreshold
+    ? totalInfAtRiskUsd / params.drugThreshold
     : 0;
   const margin = params.leverage > 0 ? notional / params.leverage : 0;
   const takeProfitPrice = params.ethPrice * (1 - params.drugThreshold);
@@ -131,6 +171,8 @@ export function computeHedgeSizing(params: {
     corpsActive,
     infCostPerOp: params.infCostPerOp,
     totalInfAtRisk,
+    infUsdEstimate: params.infUsdEstimate,
+    totalInfAtRiskUsd,
     drugThreshold: params.drugThreshold,
     ethPrice: params.ethPrice,
     notional,
@@ -270,6 +312,8 @@ export class HedgeBot extends EventEmitter {
   async onDrugBatchStart(params: {
     corpAddresses: string[];
     infCostPerOp: number;
+    /** USD per INF token. Caller plumbs from config.hedgeInfUsdEstimate. */
+    infUsdEstimate: number;
     drugThreshold: number;
     ethPrice: number;
     /** Optional: RedStone staleness flag — skip the hedge if stale. */
@@ -295,10 +339,15 @@ export class HedgeBot extends EventEmitter {
       logger.warn({ infCostPerOp: params.infCostPerOp }, '[HedgeBot] no INF cost sample — skipping');
       return;
     }
+    if (params.infUsdEstimate <= 0) {
+      logger.warn({ infUsdEstimate: params.infUsdEstimate }, '[HedgeBot] no INF USD estimate — skipping (set HEDGE_INF_USD_ESTIMATE)');
+      return;
+    }
 
     const sizing = computeHedgeSizing({
       corpAddresses: params.corpAddresses,
       infCostPerOp: params.infCostPerOp,
+      infUsdEstimate: params.infUsdEstimate,
       drugThreshold: params.drugThreshold,
       ethPrice: params.ethPrice,
       leverage: this.cfg.leverage,
@@ -402,10 +451,13 @@ export class HedgeBot extends EventEmitter {
     logger.info({
       shadow: true,
       corps: sizing.corpsActive,
-      notional: sizing.notional.toFixed(2),
-      margin: sizing.margin.toFixed(2),
-      ethEntry: sizing.ethPrice.toFixed(2),
-      tp: sizing.takeProfitPrice.toFixed(2),
+      infAtRisk:      sizing.totalInfAtRisk.toFixed(2) + ' INF',
+      infUsdEstimate: '$' + sizing.infUsdEstimate.toFixed(3),
+      infAtRiskUsd:   '$' + sizing.totalInfAtRiskUsd.toFixed(2),
+      notional: '$' + sizing.notional.toFixed(2),
+      margin:   '$' + sizing.margin.toFixed(2),
+      ethEntry: '$' + sizing.ethPrice.toFixed(2),
+      tp:       '$' + sizing.takeProfitPrice.toFixed(2),
     }, '[HedgeBot] SHADOW: would open short');
   }
 

@@ -141,6 +141,16 @@ export const config = {
   hedgeMinCorps:         parseInt(process.env.HEDGE_MIN_CORPS  ?? '6'),
   hedgeRequireRedstone:  (process.env.HEDGE_REQUIRE_REDSTONE ?? 'true').toLowerCase() !== 'false',
   hedgeMaxMargin:        parseFloat(process.env.HEDGE_MAX_MARGIN ?? '3000'),
+  // USD per INF token — fed into computeHedgeSizing to convert the INF
+  // stake at risk into a dollar notional. There is no live INF/USDM
+  // price feed (INF lacks a tradeable DEX market in this codebase), so
+  // this is an operator-tuned estimate. Default 1.0 is intentionally
+  // conservative — the operator should override to whatever empirical
+  // value matches the network economics. Previously the hedge math
+  // implicitly assumed infCostPerOp WAS in USD, which silently scaled
+  // the notional by 1/infUsdEstimate — latent because the hedge runs
+  // in shadow mode. Codex audit fix 2026-05-12.
+  hedgeInfUsdEstimate:   parseFloat(process.env.HEDGE_INF_USD_ESTIMATE ?? '1.0'),
   // 'contract' reads liqPrice from the corp after startTrade() confirms
   // (guaranteed-aligned TP). 'computed' falls back to RedStone × (1-threshold).
   hedgeTpSource:        (process.env.HEDGE_TP_SOURCE ?? 'contract').toLowerCase() as 'contract' | 'computed',

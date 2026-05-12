@@ -1357,7 +1357,7 @@ Subcommands:
             if (last) {
               lines.push('');
               lines.push(`Last sizing computation:`);
-              lines.push(`  corps: ${last.corpsActive}  ·  INF at risk: \`${last.totalInfAtRisk.toFixed(1)}\``);
+              lines.push(`  corps: ${last.corpsActive}  ·  INF at risk: \`${last.totalInfAtRisk.toFixed(1)} INF\` (≈ \`$${last.totalInfAtRiskUsd.toFixed(0)}\` @ \`$${last.infUsdEstimate.toFixed(3)}/INF\`)`);
               lines.push(`  drug threshold: \`${(last.drugThreshold * 100).toFixed(4)}%\`  ·  ETH: \`$${last.ethPrice.toFixed(2)}\``);
               lines.push(`  → notional \`$${last.notional.toFixed(0)}\`  ·  margin \`$${last.margin.toFixed(0)}\`  ·  TP \`$${last.takeProfitPrice.toFixed(2)}\``);
             }
