@@ -105,6 +105,12 @@ export interface WhaleConfidence {
   hasSignal: boolean;
   trackedWallets: number;
   trackedCorps: number;
+  /** Threshold for `hasSignal` — surfaced so the UI doesn't hardcode a value. */
+  minOps: number;
+  /** Corps the tracker WANTED to read but couldn't fit in this tick's
+   *  Multicall3 batch. 0 in normal operation; >0 indicates pool overflow
+   *  the batcher should have split (Codex audit #3). */
+  droppedCorps: number;
   lastUpdate: number;
 }
 
@@ -124,6 +130,12 @@ export interface WhaleOutcomeTrackerConfig {
   pollMs: number;
   poolSize: number;
   minPoolOps: number;
+  /** Optional enrichment hook — when wired, the tracker writes
+   *  effective_danger + target_corps onto each whale_confidence_log row
+   *  so the offline counterfactual analysis can join the signal to what
+   *  graduated actually decided. Wired from index.ts where the corp-bot
+   *  accessors are in scope. Codex audit fix #7. */
+  getEnrichment?: () => { effectiveDanger: number; targetCorps: number } | null;
 }
 
 interface WhaleCorpSnapshot {
@@ -166,8 +178,42 @@ export class WhaleOutcomeTracker extends EventEmitter {
   private outcomes: WhaleOutcome[] = [];
   private readonly MAX_OUTCOMES = 1000;
 
+  /** Pending transitions awaiting event-backed classification from
+   *  op_outcomes. Codex audit fix #1: the isCompletable heuristic can
+   *  misclassify when the whale's bot completes between polls. We defer
+   *  classification, retry next tick, and fall back to the heuristic
+   *  only when op-scraper hasn't caught up after CLASSIFY_TIMEOUT_MS. */
+  private pendingTransitions: Array<{
+    wallet: string;
+    corp: string;
+    prevMode: number;
+    detectedAt: number;
+    /** From the snapshot AT the moment we detected the transition. */
+    fallbackSuccess: boolean;
+  }> = [];
+  private readonly CLASSIFY_TIMEOUT_MS = 4 * 60_000;
+  /** How far back to look in op_outcomes when matching a transition. We
+   *  give the scraper plenty of slack — TC and TL fire on chain at op
+   *  completion, scraper polls every block, so it's usually within seconds
+   *  but can lag during heavy network activity. */
+  private readonly CLASSIFY_LOOKBACK_MS = 10 * 60_000;
+  /** Multicall3 has a soft cap around 120-150 calls depending on weight.
+   *  We split into batches of this many corps (×3 reads = 60 calls) so
+   *  even a large pool of PL3 whales (9 corps each) fits comfortably. */
+  private readonly MC3_CORPS_PER_BATCH = 20;
+
   private confidence: WhaleConfidence | null = null;
-  private lastSignal: WhaleSignal | null = null;
+  /** Most recently EMITTED signal — only updated after dwell-time
+   *  confirmation. lastObservedSignal is the per-tick raw value.
+   *  Codex audit fix #6. */
+  private lastEmittedSignal: WhaleSignal | null = null;
+  private lastObservedSignal: WhaleSignal | null = null;
+  private pendingSignal: WhaleSignal | null = null;
+  private pendingSignalSince: number = 0;
+  /** Minimum dwell — the new signal must persist this long before we
+   *  emit signal-change. With 60s polls + 90s dwell, a fresh signal
+   *  fires after the 2nd consecutive poll at the new level (no flap). */
+  private readonly SIGNAL_DWELL_MS = 90_000;
   private lastConfidenceLogAt = 0;
 
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -331,87 +377,89 @@ export class WhaleOutcomeTracker extends EventEmitter {
     }
 
     const corps = this.pool.flatMap(p => p.corps.map(c => ({ wallet: p.wallet, corp: c })));
-    if (corps.length === 0) return;
-
-    // 3 reads per corp: isTradeActive, isCompletable, autoTradeMode.
-    // For the default 5 wallets × ~8 corps = 40 corps × 3 = 120 calls.
-    // Equal to the Multicall3 ceiling per CLAUDE.md lesson #17; if we
-    // overflow we silently truncate to stay safe.
-    const MAX_CALLS = 120;
-    const maxCorps = Math.floor(MAX_CALLS / 3);
-    const truncatedCorps = corps.length > maxCorps ? corps.slice(0, maxCorps) : corps;
-    if (corps.length > maxCorps) {
-      logger.warn({ have: corps.length, kept: maxCorps },
-        '[WhaleOutcome] truncating corp batch to fit Multicall3 limit');
-    }
-
-    const calls: any[] = [];
-    for (const { corp } of truncatedCorps) {
-      calls.push({ target: corp, allowFailure: true, callData: this.corpIface.encodeFunctionData('isTradeActive',  []) });
-      calls.push({ target: corp, allowFailure: true, callData: this.corpIface.encodeFunctionData('isCompletable', []) });
-      calls.push({ target: corp, allowFailure: true, callData: this.corpIface.encodeFunctionData('autoTradeMode', []) });
-    }
-
-    let res: { success: boolean; returnData: string }[];
-    try {
-      res = await this.mc3.aggregate3.staticCall(calls);
-    } catch (err: any) {
-      logger.warn({ err: err.message, calls: calls.length },
-        '[WhaleOutcome] multicall failed');
+    if (corps.length === 0) {
+      // Codex audit fix #4: still update confidence so warmed-from-DB
+      // outcomes get a fresh snapshot + log entry, otherwise the signal
+      // sits stale until a corp refresh succeeds.
+      this.tryResolvePendingTransitions();
+      const cutoff0 = Date.now() - this.cfg.windowMs;
+      while (this.outcomes.length > 0 && this.outcomes[0].detectedAt < cutoff0) this.outcomes.shift();
+      this.computeConfidence(0, 0);
+      this.maybeLogConfidence();
       return;
     }
 
-    const now = Date.now();
-    for (let i = 0; i < truncatedCorps.length; i++) {
-      const { wallet, corp } = truncatedCorps[i];
-      const aRes = res[i * 3 + 0];
-      const cRes = res[i * 3 + 1];
-      const mRes = res[i * 3 + 2];
-      if (!aRes?.success || !cRes?.success || !mRes?.success) continue;
-
-      let isActive: boolean;
-      let isCompletable: boolean;
-      let mode: number;
-      try {
-        isActive       = this.corpIface.decodeFunctionResult('isTradeActive',  aRes.returnData)[0] as boolean;
-        isCompletable  = this.corpIface.decodeFunctionResult('isCompletable',  cRes.returnData)[0] as boolean;
-        mode           = Number(this.corpIface.decodeFunctionResult('autoTradeMode', mRes.returnData)[0]);
-      } catch { continue; }
-
-      const prev = this.corpStates.get(corp);
-      const nextSnap: WhaleCorpSnapshot = { corp, wallet, isActive, isCompletable, mode };
-
-      // Transition: was active, now not active. Classify as success vs liq.
-      if (prev && prev.isActive && !isActive) {
-        // SUCCESS path: contract flips isActive→false and (briefly, until
-        // completeTrade()) isCompletable→true. The whale's bot will call
-        // completeTrade soon, after which both go false. So we treat
-        // isCompletable=true as definite success; isCompletable=false
-        // with isActive=false as liquidation (or already-completed-and-
-        // cleared from a slow poll — rare at 60s cadence). We err on
-        // the side of "success" only when we see isCompletable=true on
-        // this poll OR the previous poll said isCompletable=true.
-        const success = isCompletable || prev.isCompletable === true;
-        const opMode = modeToString(prev.mode); // mode the corp was running while active
-        const outcome: WhaleOutcome = { wallet, corp, mode: opMode, success, detectedAt: now };
-        this.outcomes.push(outcome);
-        if (this.outcomes.length > this.MAX_OUTCOMES) this.outcomes.shift();
-        try {
-          this.cfg.storage.insertWhaleOutcome({
-            ts: now,
-            wallet,
-            corp,
-            mode: opMode,
-            success: success ? 1 : 0,
-          });
-        } catch (err: any) {
-          logger.warn({ err: err.message }, '[WhaleOutcome] insertWhaleOutcome failed (non-fatal)');
-        }
-        this.emit('whale-outcome', outcome);
+    // Codex audit fix #3: split corps into batches of MC3_CORPS_PER_BATCH
+    // (×3 reads = 60 calls/batch, well under Multicall3's ~120 ceiling).
+    // No truncation — every corp in the pool gets read every tick.
+    type CorpReadResult = {
+      wallet: string;
+      corp: string;
+      isActive: boolean;
+      isCompletable: boolean;
+      mode: number;
+    };
+    const readings: CorpReadResult[] = [];
+    let droppedCorps = 0;
+    for (let b = 0; b < corps.length; b += this.MC3_CORPS_PER_BATCH) {
+      const batch = corps.slice(b, b + this.MC3_CORPS_PER_BATCH);
+      const calls: any[] = [];
+      for (const { corp } of batch) {
+        calls.push({ target: corp, allowFailure: true, callData: this.corpIface.encodeFunctionData('isTradeActive',  []) });
+        calls.push({ target: corp, allowFailure: true, callData: this.corpIface.encodeFunctionData('isCompletable', []) });
+        calls.push({ target: corp, allowFailure: true, callData: this.corpIface.encodeFunctionData('autoTradeMode', []) });
       }
-
-      this.corpStates.set(corp, nextSnap);
+      let res: { success: boolean; returnData: string }[];
+      try {
+        res = await this.mc3.aggregate3.staticCall(calls);
+      } catch (err: any) {
+        logger.warn({ err: err.message, batchSize: batch.length, batchStart: b },
+          '[WhaleOutcome] multicall batch failed; skipping this batch');
+        droppedCorps += batch.length;
+        continue;
+      }
+      for (let i = 0; i < batch.length; i++) {
+        const { wallet, corp } = batch[i];
+        const aRes = res[i * 3 + 0];
+        const cRes = res[i * 3 + 1];
+        const mRes = res[i * 3 + 2];
+        if (!aRes?.success || !cRes?.success || !mRes?.success) { droppedCorps += 1; continue; }
+        try {
+          const isActive      = this.corpIface.decodeFunctionResult('isTradeActive',  aRes.returnData)[0] as boolean;
+          const isCompletable = this.corpIface.decodeFunctionResult('isCompletable',  cRes.returnData)[0] as boolean;
+          const mode          = Number(this.corpIface.decodeFunctionResult('autoTradeMode', mRes.returnData)[0]);
+          readings.push({ wallet, corp, isActive, isCompletable, mode });
+        } catch { droppedCorps += 1; }
+      }
     }
+
+    const now = Date.now();
+    for (const r of readings) {
+      const prev = this.corpStates.get(r.corp);
+      const nextSnap: WhaleCorpSnapshot = {
+        corp: r.corp, wallet: r.wallet, isActive: r.isActive,
+        isCompletable: r.isCompletable, mode: r.mode,
+      };
+      // Transition: was active, now not active. Defer classification
+      // until op-scraper publishes the TC/TL row (Codex audit fix #1):
+      // queue here, resolve below from op_outcomes.
+      if (prev && prev.isActive && !r.isActive) {
+        this.pendingTransitions.push({
+          wallet: r.wallet,
+          corp: r.corp,
+          prevMode: prev.mode,
+          detectedAt: now,
+          // Snapshot the heuristic at transition time, used as a
+          // fallback when the scraper times out.
+          fallbackSuccess: r.isCompletable || prev.isCompletable === true,
+        });
+      }
+      this.corpStates.set(r.corp, nextSnap);
+    }
+
+    // Resolve pending transitions against op_outcomes — every tick — so
+    // late-arriving rows still get accurate classification.
+    this.tryResolvePendingTransitions();
 
     // Drop stale outcomes outside the rolling window before computing.
     const cutoff = now - this.cfg.windowMs;
@@ -419,14 +467,91 @@ export class WhaleOutcomeTracker extends EventEmitter {
       this.outcomes.shift();
     }
 
-    this.computeConfidence(truncatedCorps.length);
+    this.computeConfidence(readings.length, droppedCorps);
     this.maybeLogConfidence();
   }
 
-  private computeConfidence(trackedCorps: number): void {
+  /**
+   * For every pending transition, try to find the matching TC/TL row in
+   * `op_outcomes` and emit the classified outcome. Falls back to the
+   * heuristic-at-transition-time snapshot after CLASSIFY_TIMEOUT_MS so a
+   * permanently-missing scraper row doesn't leak the pending list.
+   * Codex audit fix #1 + #5 (event-backed op_type wins over racy
+   * autoTradeMode snapshot).
+   */
+  private tryResolvePendingTransitions(): void {
+    if (this.pendingTransitions.length === 0) return;
+    const now = Date.now();
+    const stillPending: typeof this.pendingTransitions = [];
+    for (const p of this.pendingTransitions) {
+      const row = this.cfg.storage.getRecentOutcomeForCorp(p.corp, this.CLASSIFY_LOOKBACK_MS);
+      // We only accept a row that's NEWER than the previous-corp-poll
+      // baseline (op-scraper.ts cursor lag means a row from before the
+      // transition could leak in if the corp ran two ops in a row).
+      // p.detectedAt is the tick when we saw active→inactive; the TC/TL
+      // event is committed before that, so we require:
+      //   row.ts >= p.detectedAt - 2 * pollMs (a small slack window)
+      const slackMs = 2 * this.cfg.pollMs;
+      if (row && row.ts >= p.detectedAt - slackMs) {
+        const success = row.succeeded === 1;
+        const opMode: WhaleOutcomeMode = row.opType;
+        this.appendOutcome({
+          wallet: p.wallet, corp: p.corp,
+          mode: opMode, success, detectedAt: p.detectedAt,
+        });
+        continue;
+      }
+      // No event row yet — wait, unless we've waited too long.
+      if (now - p.detectedAt < this.CLASSIFY_TIMEOUT_MS) {
+        stillPending.push(p);
+        continue;
+      }
+      // Fallback: scraper didn't catch the event in time, use the
+      // heuristic snapshot we took at transition time + best-guess mode
+      // (whale's autoTradeMode at the moment they went inactive).
+      this.appendOutcome({
+        wallet: p.wallet, corp: p.corp,
+        mode: modeToString(p.prevMode),
+        success: p.fallbackSuccess,
+        detectedAt: p.detectedAt,
+      });
+      logger.warn({
+        corp: p.corp.slice(0, 10),
+        ageS: Math.round((now - p.detectedAt) / 1000),
+        fallback: p.fallbackSuccess,
+      }, '[WhaleOutcome] classify timeout — using heuristic fallback');
+    }
+    this.pendingTransitions = stillPending;
+  }
+
+  /** Common append path for both event-backed and fallback outcomes. */
+  private appendOutcome(o: WhaleOutcome): void {
+    this.outcomes.push(o);
+    if (this.outcomes.length > this.MAX_OUTCOMES) this.outcomes.shift();
+    try {
+      this.cfg.storage.insertWhaleOutcome({
+        ts: o.detectedAt,
+        wallet: o.wallet,
+        corp: o.corp,
+        mode: o.mode,
+        success: o.success ? 1 : 0,
+      });
+    } catch (err: any) {
+      logger.warn({ err: err.message }, '[WhaleOutcome] insertWhaleOutcome failed (non-fatal)');
+    }
+    this.emit('whale-outcome', o);
+  }
+
+  private computeConfidence(trackedCorps: number, droppedCorps: number): void {
     const wallets = this.pool.map(p => p.wallet);
+    // Codex audit fix #2: aggregate is scoped to the CURRENT pool so a
+    // wallet that fell out of the top stops polluting the signal. Both
+    // the per-wallet rows and the aggregate denominator use the same
+    // set. Outcomes from dropped wallets stay in the rolling buffer
+    // (they'll age out at windowMs) but are excluded from the signal.
+    const poolSet = new Set(wallets);
     const cutoff = Date.now() - this.cfg.windowMs;
-    const windowOutcomes = this.outcomes.filter(o => o.detectedAt > cutoff);
+    const windowOutcomes = this.outcomes.filter(o => o.detectedAt > cutoff && poolSet.has(o.wallet));
 
     const perWallet: WhaleConfidenceWallet[] = wallets.map(wallet => {
       const wOutcomes = windowOutcomes.filter(o => o.wallet === wallet);
@@ -486,21 +611,49 @@ export class WhaleOutcomeTracker extends EventEmitter {
       hasSignal,
       trackedWallets: this.pool.length,
       trackedCorps,
+      minOps: this.cfg.minOps,   // Codex audit fix #8 (surface threshold to UI)
+      droppedCorps,              // Codex audit fix #3 (observability)
       lastUpdate: Date.now(),
     };
 
-    if (this.lastSignal !== null && this.lastSignal !== signal) {
-      this.emit('signal-change', {
-        from: this.lastSignal,
-        to: signal,
-        sr,
-        totalOps,
-        shadow: this.cfg.shadow,
-      });
-      // Persist transitions immediately (not only on the 5min timer).
-      this.persistConfidence(/*forcedTransition=*/true);
+    // Dwell-time gate (Codex audit fix #6): only emit signal-change once
+    // the new signal has persisted across at least one full poll cycle.
+    // Mechanism:
+    //   - First time we see a new signal, mark it pending + start timer.
+    //   - If the next observation matches AND dwell elapsed, emit.
+    //   - If observation flips again before dwell elapses, reset.
+    // Initial signal (no prior emitted) emits immediately so the first
+    // boot-up DM isn't artificially delayed.
+    const now = Date.now();
+    if (this.lastEmittedSignal === null) {
+      // Fresh start — set the baseline without emitting.
+      this.lastEmittedSignal = signal;
+    } else if (signal !== this.lastEmittedSignal) {
+      if (this.pendingSignal === signal) {
+        if (now - this.pendingSignalSince >= this.SIGNAL_DWELL_MS) {
+          this.emit('signal-change', {
+            from: this.lastEmittedSignal,
+            to: signal,
+            sr,
+            totalOps,
+            shadow: this.cfg.shadow,
+          });
+          this.persistConfidence(/*forcedTransition=*/true);
+          this.lastEmittedSignal = signal;
+          this.pendingSignal = null;
+          this.pendingSignalSince = 0;
+        }
+      } else {
+        // New pending direction — start the dwell clock.
+        this.pendingSignal = signal;
+        this.pendingSignalSince = now;
+      }
+    } else {
+      // Observation matches emitted signal — clear any in-flight pending.
+      this.pendingSignal = null;
+      this.pendingSignalSince = 0;
     }
-    this.lastSignal = signal;
+    this.lastObservedSignal = signal;
     this.emit('confidence', this.confidence);
   }
 
@@ -516,6 +669,13 @@ export class WhaleOutcomeTracker extends EventEmitter {
 
   private persistConfidence(_forcedTransition: boolean): void {
     if (!this.confidence) return;
+    let enrichment: { effectiveDanger: number; targetCorps: number } | null = null;
+    if (this.cfg.getEnrichment) {
+      try { enrichment = this.cfg.getEnrichment(); }
+      catch (err: any) {
+        logger.debug({ err: err.message }, '[WhaleOutcome] enrichment hook threw');
+      }
+    }
     try {
       this.cfg.storage.insertWhaleConfidence({
         ts: this.confidence.lastUpdate,
@@ -528,8 +688,8 @@ export class WhaleOutcomeTracker extends EventEmitter {
         active_arms_ops: this.confidence.aggregate.activeArmsOps,
         signal: this.confidence.signal,
         danger_modifier: this.confidence.dangerModifier,
-        effective_danger: null,
-        target_corps: null,
+        effective_danger: enrichment?.effectiveDanger ?? null,
+        target_corps:     enrichment?.targetCorps     ?? null,
       });
       this.lastConfidenceLogAt = Date.now();
     } catch (err: any) {

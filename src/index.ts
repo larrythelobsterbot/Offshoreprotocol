@@ -415,6 +415,18 @@ async function main() {
     pollMs:    config.whaleConfidencePollMs,
     poolSize:  config.whaleConfidencePoolSize,
     minPoolOps: config.whaleConfidenceMinPoolOps,
+    // Enrichment hook: attach effective_danger + target_corps to every
+    // whale_confidence_log write so the offline correlation analysis
+    // can join the signal directly to what graduated decided. Codex
+    // audit fix #7.
+    getEnrichment: () => {
+      try {
+        return {
+          effectiveDanger: corpBot.getEffectiveDanger(),
+          targetCorps: corpBot.getGraduatedState().currentTarget,
+        };
+      } catch { return null; }
+    },
   });
 
   engine.setWhaleClaimsProvider(() => whaleClaims.getSnapshot());

@@ -2215,6 +2215,28 @@ export class Storage {
   // ────────────────────────────────────────────────────────────
 
   /**
+   * Most recent op_outcomes row for a corp within the last `windowMs`.
+   * Returns null when op-scraper hasn't yet ingested the TC/TL for the
+   * corp's most recent state transition. Used by WhaleOutcomeTracker to
+   * source ground-truth success/failure classification (and op type)
+   * from chain events rather than the racier isCompletable heuristic.
+   * Codex audit fix 2026-05-12 (whale-confidence findings #1 + #5).
+   */
+  getRecentOutcomeForCorp(corp: string, windowMs: number): OpOutcome | null {
+    const since = Date.now() - windowMs;
+    const r = this.db.prepare(`
+      SELECT id, ts, op_type AS opType, succeeded, dirty_earned AS dirtyEarned,
+             base_reward AS baseReward, note, strategy, corp,
+             inf_cost AS infCost, inf_burned AS infBurned
+        FROM op_outcomes
+       WHERE corp = ? AND ts >= ?
+       ORDER BY ts DESC
+       LIMIT 1
+    `).get(corp.toLowerCase(), since) as OpOutcome | undefined;
+    return r ?? null;
+  }
+
+  /**
    * Persist a single whale-corp outcome (success or liquidation).
    * Called by WhaleOutcomeTracker on every detected transition.
    */

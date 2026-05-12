@@ -5578,7 +5578,8 @@ function renderWhaleConfidence(s) {
   const aggEl = document.getElementById('wcAggregate');
   if (aggEl) {
     if (!wc.hasSignal) {
-      aggEl.innerHTML = `<span style="color:var(--dim);">Warming up: ${ag.totalOps2h} ops detected (need ≥15 for signal). Active now: <b>${ag.activeDrugOps}</b> Drug · <b>${ag.activeArmsOps}</b> Arms · <b>${ag.activeExtOps}</b> Ext</span>`;
+      const need = wc.minOps ?? 15;
+      aggEl.innerHTML = `<span style="color:var(--dim);">Warming up: ${ag.totalOps2h} ops detected (need ≥${need} for signal). Active now: <b>${ag.activeDrugOps}</b> Drug · <b>${ag.activeArmsOps}</b> Arms · <b>${ag.activeExtOps}</b> Ext</span>`;
     } else {
       aggEl.innerHTML =
         `AGGREGATE: <b style="color:${sigColor};">${(ag.sr2h * 100).toFixed(1)}%</b> SR ` +

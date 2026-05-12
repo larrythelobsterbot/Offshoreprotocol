@@ -1822,7 +1822,7 @@ Tracked: ${wc.trackedWallets} wallets · ${wc.trackedCorps} corps
 `*🐋 WHALES* ${emoji} ${(ag.sr2h * 100).toFixed(0)}% SR (${ag.totalOps2h} ops 2h)${modStr}${shadowTag}
   Active: ${ag.activeDrugOps} Drug · ${ag.activeArmsOps} Arms`;
       } else {
-        whaleBlock = `*🐋 WHALES* ⚪ warming up (${ag.totalOps2h}/${appConfig.whaleConfidenceMinOps} ops)${shadowTag}`;
+        whaleBlock = `*🐋 WHALES* ⚪ warming up (${ag.totalOps2h}/${wc.minOps ?? appConfig.whaleConfidenceMinOps} ops)${shadowTag}`;
       }
     }
 
