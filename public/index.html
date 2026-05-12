@@ -1770,108 +1770,6 @@
   </div>
 </div>
 
-<!-- Schedule Evidence — 7d rolling network stats per HKT hour. Operator-only. -->
-<div style="padding: 0 24px 8px;" data-pane="ops">
-  <div class="card" id="scheduleEvidenceCard" style="display:block;padding:12px 16px;border-color:#39ff14;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
-      <div>
-        <span class="card-title" style="margin:0;color:#39ff14">SCHEDULE EVIDENCE</span>
-        <span class="info-pill" title="Network-wide TC + TL events scanned daily, bucketed by HKT hour. 7-day rolling window. Best/worst hours per op type are scored on a composite of network success rate × that op type's share of liquidations. Used to evidence-base schedule edits, not vibes.">?</span>
-        <!-- Regime selector — split weekend vs weekday because the contract
-             applies different liquidation leverage on weekends (Fri-Sun HKT).
-             Mixing them under-models BOTH regimes. -->
-        <span style="margin-left:12px;display:inline-flex;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
-          <button class="regime-tab active" data-regime="all"
-                  onclick="setScheduleRegime('all')"
-                  style="background:transparent;border:1px solid #39ff14;color:#39ff14;padding:2px 8px;border-radius:3px;cursor:pointer;">ALL</button>
-          <button class="regime-tab" data-regime="weekday"
-                  onclick="setScheduleRegime('weekday')"
-                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">WEEKDAY</button>
-          <button class="regime-tab" data-regime="weekend"
-                  onclick="setScheduleRegime('weekend')"
-                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">WEEKEND</button>
-          <span id="scheduleRegimeNow" style="margin-left:8px;color:var(--dim);" title="Which regime the network is in right now (Fri-Sun HKT = weekend leverage)."></span>
-        </span>
-      </div>
-      <div id="scheduleEvidenceMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading...</div>
-    </div>
-    <!-- Best/Worst summary tiles -->
-    <div id="scheduleEvidenceSummary" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;">
-      <!-- 3 tiles injected: Drug, Arms, Ext (each with best + worst hours) -->
-    </div>
-    <!-- Per-hour table -->
-    <div style="overflow-x:auto;">
-      <table id="scheduleEvidenceTable" style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
-        <thead>
-          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
-            <th style="text-align:left;padding:4px 8px;">HKT</th>
-            <th style="text-align:right;padding:4px 8px;">net SR</th>
-            <th style="text-align:right;padding:4px 8px;">ops/d</th>
-            <th style="text-align:right;padding:4px 8px;color:#a855f7;">drug liq/d</th>
-            <th style="text-align:right;padding:4px 8px;color:#39ff14;">arms liq/d</th>
-            <th style="text-align:right;padding:4px 8px;color:#ff1744;">ext liq/d</th>
-            <th style="text-align:right;padding:4px 8px;">drug danger</th>
-            <th style="text-align:right;padding:4px 8px;">arms danger</th>
-            <th style="text-align:right;padding:4px 8px;">verdict</th>
-          </tr>
-        </thead>
-        <tbody id="scheduleEvidenceTbody"></tbody>
-      </table>
-    </div>
-    <div style="margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);line-height:1.5;">
-      <b>danger</b> = (1 − network SR) × that op type's share of liquidations. Lower is better.
-      Verdict suggests the safer op for that hour based on relative danger; ⏸ = pause (network SR &lt; 30%).
-    </div>
-  </div>
-</div>
-
-<!-- Strategy Attribution — per-decision-path SR + DIRTY/INF. Operator-only. -->
-<div style="padding: 0 24px 8px;" data-pane="ops">
-  <div class="card" id="strategyAttributionCard" style="display:block;padding:12px 16px;border-color:#00e0ff;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
-      <div>
-        <span class="card-title" style="margin:0;color:#00e0ff">STRATEGY ATTRIBUTION</span>
-        <span class="info-pill" title="Each op is tagged at bootstrap-time with the decision path that fired it (auto schedule, manual preset, copy-mode, danger override, breaker, fallback). This panel rolls up SR + DIRTY/INF per strategy so you can see which paths are actually paying off vs adding complexity for no edge. Legacy ops (pre-attribution) and contract auto-restarts show as untagged and are excluded from the breakdown.">?</span>
-        <!-- Window selector — start with 24h to surface drift quickly,
-             default to 7d for stable signal. -->
-        <span style="margin-left:12px;display:inline-flex;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
-          <button class="attr-tab" data-hours="24"
-                  onclick="setAttrWindow(24)"
-                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">24H</button>
-          <button class="attr-tab active" data-hours="168"
-                  onclick="setAttrWindow(168)"
-                  style="background:transparent;border:1px solid #00e0ff;color:#00e0ff;padding:2px 8px;border-radius:3px;cursor:pointer;">7D</button>
-          <button class="attr-tab" data-hours="720"
-                  onclick="setAttrWindow(720)"
-                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">30D</button>
-        </span>
-      </div>
-      <div id="strategyAttributionMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading...</div>
-    </div>
-    <div style="overflow-x:auto;">
-      <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
-        <thead>
-          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
-            <th style="text-align:left;padding:4px 8px;">strategy</th>
-            <th style="text-align:right;padding:4px 8px;">ops</th>
-            <th style="text-align:right;padding:4px 8px;">SR</th>
-            <th style="text-align:right;padding:4px 8px;">vs base</th>
-            <th style="text-align:right;padding:4px 8px;color:#a855f7;">DIRTY</th>
-            <th style="text-align:right;padding:4px 8px;color:#ff9100;">INF</th>
-            <th style="text-align:right;padding:4px 8px;color:#ffe600;">DIRTY/INF</th>
-          </tr>
-        </thead>
-        <tbody id="strategyAttributionTbody"></tbody>
-        <tfoot id="strategyAttributionTfoot"></tfoot>
-      </table>
-    </div>
-    <div style="margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);line-height:1.5;">
-      <b>vs base</b> = SR delta vs the all-strategy baseline. <b>DIRTY/INF</b> is the headline efficiency
-      number — higher is better. A strategy with high SR but low DIRTY/INF is winning safe ops at high cost.
-    </div>
-  </div>
-</div>
-
 <!-- THRESHOLD CLIFF — live gate state + shadow-mode calibration stats.
      Operator-facing: helps decide when to flip THRESHOLD_CLIFF_SHADOW=false.
      Shows current pFail / threshold / gate state + last-7d precision
@@ -2395,7 +2293,115 @@
   </div>
 </div>
 
-<!-- Calibration context bar -->
+<!-- ────────────────────────────────────────────────────────────
+     Calibration / evidence panels moved to the bottom of the OPS
+     tab on 2026-05-12 per operator request. These rollups inform
+     decisions but aren't real-time situational data; Mission Control
+     + the live cards above carry the at-a-glance state.
+     ──────────────────────────────────────────────────────────── -->
+
+<!-- Schedule Evidence — 7d rolling network stats per HKT hour. Operator-only. -->
+<div style="padding: 0 24px 8px;" data-pane="ops">
+  <div class="card" id="scheduleEvidenceCard" style="display:block;padding:12px 16px;border-color:#39ff14;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#39ff14">SCHEDULE EVIDENCE</span>
+        <span class="info-pill" title="Network-wide TC + TL events scanned daily, bucketed by HKT hour. 7-day rolling window. Best/worst hours per op type are scored on a composite of network success rate × that op type's share of liquidations. Used to evidence-base schedule edits, not vibes.">?</span>
+        <!-- Regime selector — split weekend vs weekday because the contract
+             applies different liquidation leverage on weekends (Fri-Sun HKT).
+             Mixing them under-models BOTH regimes. -->
+        <span style="margin-left:12px;display:inline-flex;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
+          <button class="regime-tab active" data-regime="all"
+                  onclick="setScheduleRegime('all')"
+                  style="background:transparent;border:1px solid #39ff14;color:#39ff14;padding:2px 8px;border-radius:3px;cursor:pointer;">ALL</button>
+          <button class="regime-tab" data-regime="weekday"
+                  onclick="setScheduleRegime('weekday')"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">WEEKDAY</button>
+          <button class="regime-tab" data-regime="weekend"
+                  onclick="setScheduleRegime('weekend')"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">WEEKEND</button>
+          <span id="scheduleRegimeNow" style="margin-left:8px;color:var(--dim);" title="Which regime the network is in right now (Fri-Sun HKT = weekend leverage)."></span>
+        </span>
+      </div>
+      <div id="scheduleEvidenceMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading...</div>
+    </div>
+    <!-- Best/Worst summary tiles -->
+    <div id="scheduleEvidenceSummary" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;">
+      <!-- 3 tiles injected: Drug, Arms, Ext (each with best + worst hours) -->
+    </div>
+    <!-- Per-hour table -->
+    <div style="overflow-x:auto;">
+      <table id="scheduleEvidenceTable" style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
+            <th style="text-align:left;padding:4px 8px;">HKT</th>
+            <th style="text-align:right;padding:4px 8px;">net SR</th>
+            <th style="text-align:right;padding:4px 8px;">ops/d</th>
+            <th style="text-align:right;padding:4px 8px;color:#a855f7;">drug liq/d</th>
+            <th style="text-align:right;padding:4px 8px;color:#39ff14;">arms liq/d</th>
+            <th style="text-align:right;padding:4px 8px;color:#ff1744;">ext liq/d</th>
+            <th style="text-align:right;padding:4px 8px;">drug danger</th>
+            <th style="text-align:right;padding:4px 8px;">arms danger</th>
+            <th style="text-align:right;padding:4px 8px;">verdict</th>
+          </tr>
+        </thead>
+        <tbody id="scheduleEvidenceTbody"></tbody>
+      </table>
+    </div>
+    <div style="margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);line-height:1.5;">
+      <b>danger</b> = (1 − network SR) × that op type's share of liquidations. Lower is better.
+      Verdict suggests the safer op for that hour based on relative danger; ⏸ = pause (network SR &lt; 30%).
+    </div>
+  </div>
+</div>
+
+<!-- Strategy Attribution — per-decision-path SR + DIRTY/INF. Operator-only. -->
+<div style="padding: 0 24px 8px;" data-pane="ops">
+  <div class="card" id="strategyAttributionCard" style="display:block;padding:12px 16px;border-color:#00e0ff;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;color:#00e0ff">STRATEGY ATTRIBUTION</span>
+        <span class="info-pill" title="Each op is tagged at bootstrap-time with the decision path that fired it (auto schedule, manual preset, copy-mode, danger override, breaker, fallback). This panel rolls up SR + DIRTY/INF per strategy so you can see which paths are actually paying off vs adding complexity for no edge. Legacy ops (pre-attribution) and contract auto-restarts show as untagged and are excluded from the breakdown.">?</span>
+        <!-- Window selector — start with 24h to surface drift quickly,
+             default to 7d for stable signal. -->
+        <span style="margin-left:12px;display:inline-flex;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
+          <button class="attr-tab" data-hours="24"
+                  onclick="setAttrWindow(24)"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">24H</button>
+          <button class="attr-tab active" data-hours="168"
+                  onclick="setAttrWindow(168)"
+                  style="background:transparent;border:1px solid #00e0ff;color:#00e0ff;padding:2px 8px;border-radius:3px;cursor:pointer;">7D</button>
+          <button class="attr-tab" data-hours="720"
+                  onclick="setAttrWindow(720)"
+                  style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:2px 8px;border-radius:3px;cursor:pointer;">30D</button>
+        </span>
+      </div>
+      <div id="strategyAttributionMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--dim);">loading...</div>
+    </div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--dim);">
+            <th style="text-align:left;padding:4px 8px;">strategy</th>
+            <th style="text-align:right;padding:4px 8px;">ops</th>
+            <th style="text-align:right;padding:4px 8px;">SR</th>
+            <th style="text-align:right;padding:4px 8px;">vs base</th>
+            <th style="text-align:right;padding:4px 8px;color:#a855f7;">DIRTY</th>
+            <th style="text-align:right;padding:4px 8px;color:#ff9100;">INF</th>
+            <th style="text-align:right;padding:4px 8px;color:#ffe600;">DIRTY/INF</th>
+          </tr>
+        </thead>
+        <tbody id="strategyAttributionTbody"></tbody>
+        <tfoot id="strategyAttributionTfoot"></tfoot>
+      </table>
+    </div>
+    <div style="margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);line-height:1.5;">
+      <b>vs base</b> = SR delta vs the all-strategy baseline. <b>DIRTY/INF</b> is the headline efficiency
+      number — higher is better. A strategy with high SR but low DIRTY/INF is winning safe ops at high cost.
+    </div>
+  </div>
+</div>
+
 <!-- Suggestion strip — HOUR RISK removed 2026-05-09 (redundant with the
      SCHEDULE EVIDENCE panel + Composite Danger). Kept the SUGGESTION
      and BEST EV/INF readouts which are still actionable. -->
