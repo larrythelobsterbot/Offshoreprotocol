@@ -104,6 +104,47 @@ export const config = {
   // most XP invested). 'oldest' reverses for testing / comparison.
   botGraduatedPriority: (process.env.BOT_GRADUATED_PRIORITY ?? 'newest').toLowerCase() as 'newest' | 'oldest',
 
+  // ── NetworkHealth → graduated penalty ──────────────────────────
+  // When the NH signal trips (cascade / drug / arms critical), bump
+  // the effective danger score that the graduated scaling layer reads.
+  // Penalty is FULL for 0-15min after trip then linearly fades to 0
+  // at 90min (matching the empirical fail-rate fade curve from the
+  // 24h shadow data: 67% in 0-15min → 0% past 90min).
+  //
+  // Rationale: NH is predictive (clean signal) but BLOCKING ops is
+  // net-negative (-$232/day per shadow counterfactual) because Drug
+  // partial payouts on failure offset the saved INF. Scaling DOWN
+  // captures most of the protection while keeping partials flowing.
+  //
+  // Default penalty 25 = "one graduated level":
+  //   normal (30) + 25 = 55 → elevated (6 corps from 9)
+  //   elevated (50) + 25 = 75 → critical (full pause)
+  botNhDangerPenalty:  parseInt(process.env.BOT_NH_DANGER_PENALTY ?? '25'),
+  botNhFullMinutes:    parseInt(process.env.BOT_NH_FULL_MINUTES   ?? '15'),
+  botNhFadeMinutes:    parseInt(process.env.BOT_NH_FADE_MINUTES   ?? '90'),
+  // Shadow first — log what the penalty WOULD do without applying.
+  // Flip to false after validating the counterfactual P&L over 24-48h.
+  botNhGraduatedShadow: (process.env.BOT_NH_GRADUATED_SHADOW ?? 'true').toLowerCase() !== 'false',
+
+  // ── Hedge activation policy (conditional opening) ──────────────
+  // Decides when HedgeBot should ATTEMPT to open a hedge. Independent
+  // of the shadow/live mode setting — the policy determines whether
+  // a hedge would fire at all, the mode decides whether the order is
+  // actually placed on World.
+  //
+  //   'danger-only' (default) — fire whenever effective danger ≥ minDanger
+  //   'us-hours'              — only during US market hours HKT 22-04
+  //   'always'                — every batch, regardless of conditions
+  //   'off'                   — never (equivalent to disabling hedge)
+  hedgeActivationPolicy: (process.env.HEDGE_ACTIVATION_POLICY ?? 'danger-only').toLowerCase(),
+  hedgeMinDanger:        parseInt(process.env.HEDGE_MIN_DANGER ?? '40'),
+  hedgeMinCorps:         parseInt(process.env.HEDGE_MIN_CORPS  ?? '6'),
+  hedgeRequireRedstone:  (process.env.HEDGE_REQUIRE_REDSTONE ?? 'true').toLowerCase() !== 'false',
+  hedgeMaxMargin:        parseFloat(process.env.HEDGE_MAX_MARGIN ?? '3000'),
+  // 'contract' reads liqPrice from the corp after startTrade() confirms
+  // (guaranteed-aligned TP). 'computed' falls back to RedStone × (1-threshold).
+  hedgeTpSource:        (process.env.HEDGE_TP_SOURCE ?? 'contract').toLowerCase() as 'contract' | 'computed',
+
   // Shadow-mode flags for danger-v2 signals. true = compute & log only,
   // do NOT actually pause the bot. Flip to false once precision/recall
   // looks good in defense_shadow_log.

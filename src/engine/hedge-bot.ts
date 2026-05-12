@@ -28,6 +28,16 @@ import type { Storage } from '../storage/db';
 
 export type HedgeMode = 'shadow' | 'live';
 
+/**
+ * Activation policies — when SHOULD the hedge attempt to open?
+ * Independent of the shadow/live mode (which decides whether the
+ * order is actually placed on World).
+ */
+export type HedgeActivationPolicy = 'danger-only' | 'us-hours' | 'always' | 'off';
+
+/** HKT hours considered "US market hours" — 22:00 HKT ≈ 14:00 UTC ≈ 09:00 ET. */
+const US_HOURS_HKT = [22, 23, 0, 1, 2, 3, 4];
+
 export interface HedgeBotConfig {
   storage: Storage;
   /** Default 10 (World's max leverage on ETH-perp at brief writing). */
@@ -42,6 +52,12 @@ export interface HedgeBotConfig {
   disabled: boolean;
   /** Operator-configurable estimate of per-trade fee for shadow accounting. */
   feeEstimateUsdmPerTrade: number;
+  /** Activation policy — when (under what conditions) does the hedge fire? */
+  activationPolicy?: HedgeActivationPolicy;
+  /** Minimum danger score for 'danger-only' / 'us-hours' policies. */
+  minDangerScore?: number;
+  /** Refuse to open if RedStone reports stale at decision time. */
+  requireRedstoneAlive?: boolean;
 }
 
 export interface HedgeSizing {
@@ -126,6 +142,9 @@ export function computeHedgeSizing(params: {
 export class HedgeBot extends EventEmitter {
   private cfg: Required<HedgeBotConfig>;
   private state: HedgeState;
+  private activationPolicy: HedgeActivationPolicy;
+  private minDangerScore: number;
+  private requireRedstoneAlive: boolean;
 
   constructor(cfg: HedgeBotConfig) {
     super();
@@ -137,7 +156,13 @@ export class HedgeBot extends EventEmitter {
       shadowMode: cfg.shadowMode,
       disabled: cfg.disabled,
       feeEstimateUsdmPerTrade: cfg.feeEstimateUsdmPerTrade,
+      activationPolicy:    cfg.activationPolicy    ?? 'danger-only',
+      minDangerScore:      cfg.minDangerScore      ?? 40,
+      requireRedstoneAlive: cfg.requireRedstoneAlive ?? true,
     };
+    this.activationPolicy    = this.cfg.activationPolicy;
+    this.minDangerScore      = this.cfg.minDangerScore;
+    this.requireRedstoneAlive = this.cfg.requireRedstoneAlive;
     this.state = {
       enabled: !cfg.disabled,
       mode: cfg.shadowMode ? 'shadow' : 'live',
@@ -162,6 +187,64 @@ export class HedgeBot extends EventEmitter {
 
   /** Snapshot for /api state + /bot hedge status. */
   getState(): HedgeState { return { ...this.state, stats: { ...this.state.stats } }; }
+
+  getActivationPolicy(): HedgeActivationPolicy { return this.activationPolicy; }
+  getMinDanger(): number { return this.minDangerScore; }
+
+  setActivationPolicy(p: HedgeActivationPolicy): void {
+    if (this.activationPolicy === p) return;
+    this.activationPolicy = p;
+    logger.info({ policy: p }, '[HedgeBot] activation policy');
+  }
+
+  setMinDanger(n: number): { ok: boolean; reason?: string } {
+    if (!Number.isFinite(n) || n < 0 || n > 100) {
+      return { ok: false, reason: 'minDanger must be 0..100' };
+    }
+    this.minDangerScore = Math.round(n);
+    logger.info({ minDanger: this.minDangerScore }, '[HedgeBot] minDanger updated');
+    return { ok: true };
+  }
+
+  /**
+   * Decision function — should the hedge fire under the current
+   * activation policy? Pure (no side effects), returns the reason so
+   * callers can log a precise "why-not" message. Independent of the
+   * shadow/live mode — that determines whether `open` actually happens.
+   */
+  shouldActivateHedge(params: {
+    dangerScore: number;
+    hktHour: number;
+    activeCorps: number;
+    redstoneAlive: boolean;
+  }): { activate: boolean; reason: string } {
+    if (this.cfg.disabled || !this.state.enabled) return { activate: false, reason: 'disabled' };
+    if (this.activationPolicy === 'off')           return { activate: false, reason: 'policy=off' };
+    if (this.requireRedstoneAlive && !params.redstoneAlive) {
+      return { activate: false, reason: 'redstone stale' };
+    }
+    if (params.activeCorps < this.cfg.minCorpsForHedge) {
+      return { activate: false, reason: `need ${this.cfg.minCorpsForHedge}+ corps (have ${params.activeCorps})` };
+    }
+    if (this.activationPolicy === 'always') return { activate: true, reason: 'policy=always' };
+    if (this.activationPolicy === 'danger-only') {
+      if (params.dangerScore < this.minDangerScore) {
+        return { activate: false, reason: `danger ${params.dangerScore} < ${this.minDangerScore}` };
+      }
+      return { activate: true, reason: `danger ${params.dangerScore} ≥ ${this.minDangerScore}` };
+    }
+    if (this.activationPolicy === 'us-hours') {
+      const inWindow = US_HOURS_HKT.includes(params.hktHour);
+      if (!inWindow) {
+        return { activate: false, reason: `HKT ${params.hktHour} outside US window` };
+      }
+      if (params.dangerScore < this.minDangerScore) {
+        return { activate: false, reason: `US-hours: danger ${params.dangerScore} < ${this.minDangerScore}` };
+      }
+      return { activate: true, reason: `US-hours + danger ${params.dangerScore} ≥ ${this.minDangerScore}` };
+    }
+    return { activate: false, reason: `unknown policy '${this.activationPolicy}'` };
+  }
 
   /** Operator toggles. Persisted via the caller (config files), not here. */
   setEnabled(on: boolean): void {

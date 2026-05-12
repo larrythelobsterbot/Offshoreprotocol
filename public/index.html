@@ -5280,9 +5280,24 @@ function renderGraduatedBanner(s) {
   const regimeChip = regime
     ? `  ·  <span style="color:#c084fc">${regime.toUpperCase()}</span>`
     : '';
+  // Compose the NH-penalty + hedge-activation chips inline so the
+  // operator can see them at a glance alongside the graduated state.
+  const nh = s.nhPenalty || null;
+  let nhChip = '';
+  if (nh && nh.penalty > 0) {
+    const tag = nh.shadow ? 'shadow' : 'live';
+    nhChip = `  ·  <span style="color:#00e0ff" title="raw danger ${nh.rawDanger} + NH penalty ${nh.penalty} → effective ${nh.effectiveDanger} (${tag})">NH+${nh.penalty}</span>`;
+  }
+  const hd = s.hedgeDecision || null;
+  let hedgeChip = '';
+  if (hd) {
+    const mark = hd.activate ? '🛡' : '○';
+    const color = hd.activate ? (hd.mode === 'live' ? '#39ff14' : '#ffe600') : '#5a6270';
+    hedgeChip = `  ·  <span style="color:${color}" title="${hd.reason} · policy=${hd.policy} mode=${hd.mode}">${mark} HEDGE ${hd.activate ? 'ARMED' : 'idle'}</span>`;
+  }
   banner.innerHTML =
     `CORPS: <b style="color:${tone.fg}">${g.currentTarget}/${g.totalCorps}</b> active ` +
-    `(<b>${g.currentLevel}</b>, danger ${s.scores?.dangerScore ?? '?'})${regimeChip}${pausedList}`;
+    `(<b>${g.currentLevel}</b>, danger ${s.scores?.dangerScore ?? '?'})${regimeChip}${nhChip}${hedgeChip}${pausedList}`;
 }
 
 function renderCorps(b) {

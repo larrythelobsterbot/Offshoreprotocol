@@ -230,8 +230,23 @@ export class CorpBot {
   // Initialized to a sentinel (-1) so the very first tick computes the
   // current level from scratch.
   private lastGraduatedTarget: number = -1;
-  // Last regime DM bucket — distinct from preset-change so a regime swap
-  // doesn't get swallowed by the preset cooldown.
+
+  // ── NetworkHealth → graduated-penalty fade ─────────────────────
+  // Records the wall-clock time of the most recent NH "would-pause"
+  // signal. The penalty applied to effective danger is FULL for
+  // [now - lastTripTs] < botNhFullMinutes, then fades linearly to 0
+  // at botNhFadeMinutes. After that the penalty is dropped entirely.
+  //
+  // This is NOT the same as reading `nhSnapshot.wouldPause` directly
+  // each tick — that flag clears as soon as the 5-min event count
+  // drops below threshold, but the empirical fail-rate fade extends
+  // out to 90min. We want the penalty to ride the fade, not the
+  // instantaneous trip state.
+  private lastNhTripTs: number = 0;
+  private lastNhTripFilter: 'drug' | 'arms' | 'extortion' | 'all' = 'all';
+  private getNetworkHealthSnap:
+    | (() => import('../feeds/network-health').NetworkHealthSnapshot | null)
+    | null = null;
 
   // Whether the schedule is active. When false, bot uses 'all-drug' as default
   // unless danger override or manual override kicks in.
@@ -498,14 +513,24 @@ export class CorpBot {
     //
     // Re-evaluate quarterly via the INF EFFICIENCY tile's schedule
     // auditor.
-    const DEFAULT_V4 = [
+    // Weekday default — v4.1 (2026-05-12). Added 15-16h HKT paused after
+    // the day's data showed 0% SR across 18 ops + 213 INF burned during
+    // that window. 21-22h paused stays from v3 (historical dead zone).
+    const DEFAULT_WEEKDAY = [
+      'all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug', //  0- 7
+      'all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','paused',   //  8-15
+      'paused',  'all-drug','all-drug','all-drug','all-drug','paused',  'paused',  'all-drug', // 16-23
+    ];
+    // Weekend default — keep all-drug except 21-22h. Insufficient weekend-
+    // specific data to extrapolate the 15-16h dead-zone there yet.
+    const DEFAULT_WEEKEND = [
       'all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug', //  0- 7
       'all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug', //  8-15
       'all-drug','all-drug','all-drug','all-drug','all-drug','paused',  'paused',  'all-drug', // 16-23
     ];
     this.scheduleConfig = {
-      weekday: [...DEFAULT_V4],
-      weekend: [...DEFAULT_V4],
+      weekday: [...DEFAULT_WEEKDAY],
+      weekend: [...DEFAULT_WEEKEND],
     };
 
     // Parse graduated-scaling thresholds from config. Levels are
@@ -555,6 +580,7 @@ export class CorpBot {
           weekday: [...this.scheduleConfig.weekday],
           weekend: [...this.scheduleConfig.weekend],
         },
+        scheduleSchemaVersion: 4.1,
         graduatedEnabled:  this.graduatedEnabled,
         graduatedLevels:   [...this.graduatedLevels],
         savedAt:           Date.now(),
@@ -610,6 +636,22 @@ export class CorpBot {
           && isValid24(state.scheduleConfig.weekend)) {
         this.scheduleConfig.weekday = [...state.scheduleConfig.weekday];
         this.scheduleConfig.weekend = [...state.scheduleConfig.weekend];
+        // v4.1 migration (2026-05-12): the 15-16h HKT weekday window was
+        // documented as a 0% SR dead zone after a full day's evidence
+        // (18 ops / 213 INF burned / 0 wins). If the saved state is
+        // pre-v4.1 AND still has the v4.0 default at those slots, ratify
+        // the new defaults so operators get the fix automatically.
+        // Skipped when the operator has explicitly tuned those slots
+        // (we only overwrite the EXACT v4.0 default — anything else is
+        // assumed intentional).
+        const savedVersion = typeof state.scheduleSchemaVersion === 'number'
+          ? state.scheduleSchemaVersion
+          : 4.0;
+        if (savedVersion < 4.1) {
+          if (this.scheduleConfig.weekday[15] === 'all-drug') this.scheduleConfig.weekday[15] = 'paused';
+          if (this.scheduleConfig.weekday[16] === 'all-drug') this.scheduleConfig.weekday[16] = 'paused';
+          this.record('info', '[CorpBot] schedule schema v4.0 → v4.1 — paused weekday 15-16h HKT (dead zone)');
+        }
       } else if (isValid24(state.schedule)) {
         // Migrate: copy the legacy single array into both regime slots.
         // Operator can then diverge them via /bot schedule weekend ....
@@ -1298,6 +1340,12 @@ export class CorpBot {
    * Set BOT_STAGGER_AUTO=false to revert to the static botStaggerMin.
    */
   getStaggerMinutes(): number {
+    // Hedge-driven batch mode bypasses the stagger gate. Used when
+    // HedgeBot is in LIVE mode AND has decided to open a hedge — all
+    // corps in the batch must share the same entryPrice so the hedge's
+    // TP aligns with the shared liq price. Returning 0 here lets the
+    // gate fire all eligible corps in a single tick.
+    if (this.getBootstrapMode && this.getBootstrapMode() === 'batch') return 0;
     if (!appConfig.botStaggerAuto) return appConfig.botStaggerMin;
     const n = this.getActiveCorpCount();
     if (n <= 3)  return 15;
@@ -1331,12 +1379,16 @@ export class CorpBot {
    * when scaling UP — see `lastGraduatedTarget`). Returns the full corp
    * count when graduated scaling is disabled or no level matches.
    */
-  getGraduatedTarget(): { target: number; level: string } {
+  getGraduatedTarget(dangerOverride?: number): { target: number; level: string } {
     const total = this.corps.length;
     if (!this.graduatedEnabled || this.graduatedLevels.length === 0) {
       return { target: total, level: 'disabled' };
     }
-    const danger = this.lastDanger ?? 0;
+    // Default: raw composite danger. Callers can pass an override
+    // (e.g. effective danger with NH penalty applied) to evaluate the
+    // graduated decision under different inputs. Both shadow and live
+    // paths use this single resolver so they stay consistent.
+    const danger = dangerOverride ?? this.lastDanger ?? 0;
     const hysteresis = appConfig.botGraduatedHysteresis;
 
     // Walk levels descending — pick the strictest level whose
@@ -1539,6 +1591,68 @@ export class CorpBot {
     ts: number;
   }) => void): void {
     this.bootstrapHook = fn;
+  }
+
+  /**
+   * Wire the NetworkHealthFeed snapshot into corp-bot so the graduated
+   * penalty fade can read trip state on every tick. Called once at
+   * startup from index.ts; no-op if the feed is disabled.
+   */
+  setNetworkHealthProvider(fn: () => import('../feeds/network-health').NetworkHealthSnapshot | null): void {
+    this.getNetworkHealthSnap = fn;
+  }
+
+  /**
+   * Hedge-driven bootstrap-mode hook. When wired, returns 'batch'
+   * (stagger=0, all corps fire same tick) or 'stagger' (normal gate).
+   * Used so the stagger gate respects the hedge's all-or-nothing
+   * batching when the hedge would actually fire LIVE. Always returns
+   * 'stagger' when unwired so the existing decorrelation behavior
+   * is preserved by default.
+   */
+  private getBootstrapMode: (() => 'batch' | 'stagger') | null = null;
+  setBootstrapModeProvider(fn: () => 'batch' | 'stagger'): void {
+    this.getBootstrapMode = fn;
+  }
+
+  /**
+   * Faded NH-penalty contribution to the effective danger score.
+   * Returns 0 when there has been no recent trip (or NH provider
+   * isn't wired). Full penalty for `botNhFullMinutes` after the last
+   * trip, then linear fade to zero at `botNhFadeMinutes`.
+   */
+  getNhPenalty(): number {
+    if (!this.getNetworkHealthSnap) return 0;
+    const nh = this.getNetworkHealthSnap();
+    if (nh && nh.wouldPause) {
+      // Refresh trip memory on every fresh signal so a continuing
+      // cascade keeps the penalty pinned at full.
+      this.lastNhTripTs = nh.scannedAt;
+      this.lastNhTripFilter = (nh.wouldPauseOpType ?? 'all') as 'drug' | 'arms' | 'extortion' | 'all';
+    }
+    if (this.lastNhTripTs === 0) return 0;
+    const ageMs = Date.now() - this.lastNhTripTs;
+    const fullMs = appConfig.botNhFullMinutes * 60_000;
+    const fadeMs = appConfig.botNhFadeMinutes * 60_000;
+    if (ageMs < fullMs)  return appConfig.botNhDangerPenalty;
+    if (ageMs >= fadeMs) return 0;
+    // Linear fade from full → 0 over [fullMs, fadeMs]
+    const fadeFrac = 1 - (ageMs - fullMs) / Math.max(1, fadeMs - fullMs);
+    return Math.round(appConfig.botNhDangerPenalty * fadeFrac);
+  }
+
+  /**
+   * Effective danger score read by getGraduatedTarget(). This is the
+   * raw composite danger from VolatilityEngine PLUS the NH-fade
+   * penalty, capped at 100. When BOT_NH_GRADUATED_SHADOW=true the
+   * shadow log records what graduated WOULD have done with the
+   * penalty applied, but the actual decision uses the raw danger so
+   * we can collect counterfactual data without changing behaviour.
+   */
+  getEffectiveDanger(): number {
+    const raw = this.lastDanger ?? 0;
+    const penalty = this.getNhPenalty();
+    return Math.max(0, Math.min(100, raw + penalty));
   }
 
   /**
@@ -2015,9 +2129,41 @@ export class CorpBot {
     let graduatedTarget = this.corps.length;
     let graduatedLevel = 'disabled';
     if (this.graduatedEnabled && !this.targetPaused) {
-      const g = this.getGraduatedTarget();
+      // Compute the NH-penalty-aware effective danger. When shadow=true,
+      // we ACT on raw danger but LOG the counterfactual decision with
+      // the penalty applied. When shadow=false, we act on effective.
+      const rawDanger = this.lastDanger ?? 0;
+      const effective = this.getEffectiveDanger();
+      const nhPenalty = effective - rawDanger;
+      const useEffective = !appConfig.botNhGraduatedShadow;
+      const g = this.getGraduatedTarget(useEffective ? effective : rawDanger);
       graduatedTarget = g.target;
       graduatedLevel = g.level;
+      // Shadow path: also compute what graduated WOULD have done under
+      // the effective-danger model, and log to defense_shadow_log when
+      // the decision differs from the raw-danger path.
+      if (appConfig.botNhGraduatedShadow && nhPenalty > 0) {
+        const shadowG = this.getGraduatedTarget(effective);
+        if (shadowG.target !== g.target) {
+          try {
+            this.storage?.insertShadowEvent({
+              ts: now,
+              signal: 'nh_graduated',
+              would_pause: shadowG.target < g.target,
+              reason: `nh penalty ${nhPenalty} (raw ${rawDanger} → effective ${effective}) ` +
+                      `would shift target ${g.target} → ${shadowG.target} (level ${shadowG.level})`,
+              op_type_filter: this.lastNhTripFilter === 'all' ? null : this.lastNhTripFilter,
+              context_json: {
+                rawDanger, effectiveDanger: effective, nhPenalty,
+                rawTarget: g.target, shadowTarget: shadowG.target,
+                shadowLevel: shadowG.level,
+                minutesSinceTrip: this.lastNhTripTs > 0
+                  ? Math.round((now - this.lastNhTripTs) / 60_000) : null,
+              },
+            });
+          } catch { /* non-fatal */ }
+        }
+      }
       // Pause priority: pause from the END of getCorpsByPriority() first
       // ('newest' default keeps L1 corps active longest). Locked corps
       // don't count toward the active budget — they're already manual.
@@ -2028,15 +2174,18 @@ export class CorpBot {
         pausedByGraduated.add(ordered[k].toLowerCase());
       }
       if (this.lastGraduatedTarget !== graduatedTarget) {
+        const dangerStr = useEffective && nhPenalty > 0
+          ? `${rawDanger}+nh${nhPenalty}=${effective}`
+          : `${rawDanger}`;
         this.record('info',
-          `[CorpBot] Graduated → ${graduatedLevel} (${graduatedTarget}/${ordered.length} active, danger=${this.lastDanger ?? '?'})`);
+          `[CorpBot] Graduated → ${graduatedLevel} (${graduatedTarget}/${ordered.length} active, danger=${dangerStr})`);
         // DM only on edge transitions — uses the per-kind cooldown so a
         // rapidly-fluctuating danger doesn't spam. Suppressed entirely
         // in quiet mode (notify() handles that).
         if (this.operatorChatId && this.lastGraduatedTarget !== -1) {
           void this.notify(
             `🪜 *Graduated scaling → ${graduatedLevel}*\n` +
-            `Active corps: *${graduatedTarget}/${ordered.length}*  ·  danger: *${this.lastDanger ?? '?'}*\n` +
+            `Active corps: *${graduatedTarget}/${ordered.length}*  ·  danger: *${dangerStr}*\n` +
             (pausedByGraduated.size > 0
               ? `Paused first: ${[...pausedByGraduated].map(a => '`'+a.slice(0,10)+'..`').join(', ')}\n`
               : '') +

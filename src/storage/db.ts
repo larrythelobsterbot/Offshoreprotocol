@@ -85,7 +85,7 @@ export interface SafetyGateRow {
 
 export interface ShadowEvent {
   ts: number;
-  signal: 'network_health' | 'eth_velocity' | 'threshold_cliff';
+  signal: 'network_health' | 'eth_velocity' | 'threshold_cliff' | 'nh_graduated';
   would_pause: boolean;
   reason: string;
   op_type_filter?: 'drug' | 'arms' | 'extortion' | null;

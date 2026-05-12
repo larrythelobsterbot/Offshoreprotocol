@@ -1434,6 +1434,37 @@ Subcommands:
               `Revert: \`/bot hedge shadow\``);
             return;
           }
+          if (sub2 === 'policy') {
+            const want = (parts[2] || '').toLowerCase();
+            const valid: ReadonlyArray<'danger-only' | 'us-hours' | 'always' | 'off'> =
+              ['danger-only', 'us-hours', 'always', 'off'] as const;
+            if (!want) {
+              await this.sendDm(chatId,
+                `Current policy: *${hedge.getActivationPolicy()}*  ·  minDanger: *${hedge.getMinDanger()}*\n\n` +
+                `Set: \`/bot hedge policy <danger-only|us-hours|always|off>\``);
+              return;
+            }
+            if (!valid.includes(want as any)) {
+              await this.sendDm(chatId, `❌ Unknown policy. Valid: ${valid.join(', ')}`);
+              return;
+            }
+            hedge.setActivationPolicy(want as 'danger-only' | 'us-hours' | 'always' | 'off');
+            await this.sendDm(chatId, `🛡 Activation policy → *${want}*.`);
+            return;
+          }
+          if (sub2 === 'danger') {
+            const n = parseInt(parts[2] ?? '', 10);
+            if (!Number.isFinite(n)) {
+              await this.sendDm(chatId,
+                `Current minDanger: *${hedge.getMinDanger()}*\n\n` +
+                `Set: \`/bot hedge danger <0-100>\``);
+              return;
+            }
+            const r = hedge.setMinDanger(n);
+            if (!r.ok) await this.sendDm(chatId, `❌ ${r.reason}`);
+            else      await this.sendDm(chatId, `🛡 minDanger → *${n}*.`);
+            return;
+          }
           if (sub2 === 'stats') {
             const s = hedge.getState();
             const st = s.stats;
@@ -1452,6 +1483,36 @@ Subcommands:
             return;
           }
           await this.sendDm(chatId, `Unknown hedge action: \`${sub2}\`. Try \`/bot hedge\`.`);
+          return;
+        }
+
+        case 'nh': {
+          // NetworkHealth → graduated-penalty controls. Reports current
+          // penalty + shadow flag; lets the operator toggle shadow-mode.
+          // The penalty value itself + fade window live in env / config
+          // (BOT_NH_DANGER_PENALTY etc) — no runtime mutability here yet
+          // to avoid making them drift between processes.
+          const sub2 = (parts[1] || 'status').toLowerCase();
+          const pen = corpBot.getNhPenalty();
+          const raw = corpBot.getStatus().lastDanger ?? 0;
+          const eff = corpBot.getEffectiveDanger();
+          const shadow = appConfig.botNhGraduatedShadow;
+          if (sub2 === 'status' || sub2 === '') {
+            await this.sendDm(chatId,
+              `*🌊 NetworkHealth → Graduated penalty*\n\n` +
+              `Mode: *${shadow ? 'SHADOW (log only)' : 'LIVE'}*\n` +
+              `Raw danger: *${raw}*  ·  NH penalty: *+${pen}*  →  effective: *${eff}*\n` +
+              `Penalty config: full ${appConfig.botNhDangerPenalty} for ${appConfig.botNhFullMinutes}min, fade to 0 at ${appConfig.botNhFadeMinutes}min.\n\n` +
+              `Toggle: \`/bot nh shadow\` or \`/bot nh live\` (env: BOT_NH_GRADUATED_SHADOW)`);
+            return;
+          }
+          if (sub2 === 'shadow' || sub2 === 'live') {
+            await this.sendDm(chatId,
+              `Setting BOT_NH_GRADUATED_SHADOW at runtime requires editing .env + pm2 restart.\n` +
+              `Current: ${shadow ? 'shadow' : 'live'}.`);
+            return;
+          }
+          await this.sendDm(chatId, 'Usage: `/bot nh [status]`');
           return;
         }
 

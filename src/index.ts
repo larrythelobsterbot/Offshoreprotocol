@@ -427,6 +427,32 @@ async function main() {
     // operator sees the current target/level at a glance instead of
     // counting per-corp dots.
     s.graduated = corpBot.getGraduatedState();
+    // Surface NH-penalty + hedge-activation state so the OPS-tab
+    // dashboard can show a one-line summary of both shadow signals.
+    const nhPenalty = corpBot.getNhPenalty();
+    const rawDanger = corpBot.getStatus().lastDanger ?? 0;
+    s.nhPenalty = {
+      penalty: nhPenalty,
+      rawDanger,
+      effectiveDanger: corpBot.getEffectiveDanger(),
+      shadow: config.botNhGraduatedShadow,
+      fullMinutes: config.botNhFullMinutes,
+      fadeMinutes: config.botNhFadeMinutes,
+    };
+    const rsForHedge = redstone.getPrice();
+    const hedgeDecision = hedgeBot.shouldActivateHedge({
+      dangerScore:  corpBot.getEffectiveDanger(),
+      hktHour:      (new Date().getUTCHours() + 8) % 24,
+      activeCorps:  corpBot.getGraduatedState().currentTarget,
+      redstoneAlive: !!(rsForHedge && !rsForHedge.stale),
+    });
+    s.hedgeDecision = {
+      activate: hedgeDecision.activate,
+      reason: hedgeDecision.reason,
+      policy: hedgeBot.getActivationPolicy(),
+      minDanger: hedgeBot.getMinDanger(),
+      mode: hedgeBot.getState().mode,
+    };
     // Active schedule regime (weekday vs weekend). The bot picks the
     // right array internally; we expose the label so the dashboard
     // shows "now: WEEKEND 14h" rather than just "14h".
@@ -713,6 +739,29 @@ async function main() {
   // Wire copy-mode hooks. Pool mean SR comes from WhaleCopyFeed; network
   // rolling SR is read from ScheduleEvidence's 7d rolling stats. Both
   // are getters so the bot picks up live values each tick.
+  // Wire NetworkHealth snapshot into corp-bot for the graduated-penalty
+  // fade. Corp-bot reads it each tick via getEffectiveDanger().
+  corpBot.setNetworkHealthProvider(() => networkHealth.getSnapshot());
+
+  // Wire HedgeBot's activation decision into corp-bot's bootstrap-mode
+  // selector. Returns 'batch' only when ALL of:
+  //   - hedge mode is LIVE (shadow returns 'stagger' so we keep the
+  //     normal decorrelation behavior while collecting shadow data)
+  //   - the activation policy says fire under current conditions
+  // Otherwise 'stagger' — preserves the existing variance-reducer gate.
+  corpBot.setBootstrapModeProvider(() => {
+    const hs = hedgeBot.getState();
+    if (hs.mode !== 'live') return 'stagger';
+    const rs = redstone.getPrice();
+    const decision = hedgeBot.shouldActivateHedge({
+      dangerScore:  corpBot.getEffectiveDanger(),
+      hktHour:      (new Date().getUTCHours() + 8) % 24,
+      activeCorps:  corpBot.getGraduatedState().currentTarget,
+      redstoneAlive: !!(rs && !rs.stale),
+    });
+    return decision.activate ? 'batch' : 'stagger';
+  });
+
   corpBot.setCopyHooks({
     drainQueue: () => whaleCopy.drainQueue(),
     getPoolMeanSr: () => whaleCopy.getPoolMeanSr(),
@@ -742,6 +791,9 @@ async function main() {
     shadowMode:         config.worldHedgeShadow,
     disabled:           config.worldHedgeDisabled,
     feeEstimateUsdmPerTrade: config.worldHedgeFeeEstimateUsdm,
+    activationPolicy:   config.hedgeActivationPolicy as any,
+    minDangerScore:     config.hedgeMinDanger,
+    requireRedstoneAlive: config.hedgeRequireRedstone,
   });
   bot.attachHedgeBot(hedgeBot);
 
