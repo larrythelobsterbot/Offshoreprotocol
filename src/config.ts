@@ -148,6 +148,36 @@ export const config = {
   // Shadow-mode flags for danger-v2 signals. true = compute & log only,
   // do NOT actually pause the bot. Flip to false once precision/recall
   // looks good in defense_shadow_log.
+  // ── Whale Confidence signal (rolling SR of top wallets) ───────
+  // Tracks the 2h rolling success rate of the top-N wallets by 28h SR
+  // and emits a green/yellow/orange/red signal. Green REDUCES our
+  // effective danger (smart money is winning, lean in); orange/red
+  // INCREASE it (smart money is failing, scale down). Shadow first —
+  // computes + logs but doesn't change behaviour until validated.
+  whaleConfidenceShadow:   (process.env.WHALE_CONFIDENCE_SHADOW ?? 'true').toLowerCase() !== 'false',
+  whaleConfidenceDisabled: process.env.WHALE_CONFIDENCE_DISABLED === '1',
+  // SR thresholds (sample fractions, not percent)
+  whaleConfidenceGreenSr:  parseFloat(process.env.WHALE_CONFIDENCE_GREEN_SR  ?? '0.65'),
+  whaleConfidenceYellowSr: parseFloat(process.env.WHALE_CONFIDENCE_YELLOW_SR ?? '0.50'),
+  whaleConfidenceOrangeSr: parseFloat(process.env.WHALE_CONFIDENCE_ORANGE_SR ?? '0.35'),
+  // Modifiers applied to base danger when the signal fires.
+  // Negative = lower danger (more permissive), positive = higher.
+  whaleConfidenceGreenMod:  parseInt(process.env.WHALE_CONFIDENCE_GREEN_MOD  ?? '-15'),
+  whaleConfidenceOrangeMod: parseInt(process.env.WHALE_CONFIDENCE_ORANGE_MOD ?? '15'),
+  whaleConfidenceRedMod:    parseInt(process.env.WHALE_CONFIDENCE_RED_MOD    ?? '30'),
+  // Below this many ops in window, signal stays yellow (insufficient data).
+  whaleConfidenceMinOps:    parseInt(process.env.WHALE_CONFIDENCE_MIN_OPS    ?? '15'),
+  // Rolling-window length in ms (default 2h).
+  whaleConfidenceWindowMs:  parseInt(process.env.WHALE_CONFIDENCE_WINDOW_MS  ?? String(2 * 3600_000)),
+  // Poll cadence — staggered against WhaleCopyFeed (which polls at :00/:30)
+  // by starting 15s after process start. Tracker re-polls every POLL_MS.
+  whaleConfidencePollMs:    parseInt(process.env.WHALE_CONFIDENCE_POLL_MS    ?? '60000'),
+  // How many top-SR wallets to track. Same source as WhaleCopyFeed (top by
+  // 28h SR from LoadoutScanner), but with lower min-ops since we want a
+  // denser signal (more data points = more reliable SR).
+  whaleConfidencePoolSize:  parseInt(process.env.WHALE_CONFIDENCE_POOL_SIZE  ?? '5'),
+  whaleConfidenceMinPoolOps: parseInt(process.env.WHALE_CONFIDENCE_MIN_POOL_OPS ?? '30'),
+
   networkHealthShadow: (process.env.NETWORK_HEALTH_SHADOW ?? 'true').toLowerCase() !== 'false',
   ethVelocityShadow:   (process.env.ETH_VELOCITY_SHADOW   ?? 'true').toLowerCase() !== 'false',
   // Hard kill switches (skip the signal entirely, even shadow logging).

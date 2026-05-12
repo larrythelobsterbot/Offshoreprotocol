@@ -1770,6 +1770,29 @@
   </div>
 </div>
 
+<!-- WHALE CONFIDENCE — rolling 2h SR of top-N tracked wallets. Feeds
+     getEffectiveDanger() (shadow first). Operator-facing: signal,
+     per-wallet breakdown, recent outcomes ticker, applied modifier. -->
+<div style="padding: 0 24px 8px;" data-pane="ops">
+  <div class="card" id="whaleConfidenceCard" style="display:none;padding:12px 16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <span class="card-title" style="margin:0;">🐋 WHALE CONFIDENCE</span>
+        <span class="info-pill" title="Rolling 2h success rate of the top-N wallets by 28h SR. Detects active→inactive transitions via Multicall3 (60s cadence) and classifies the aggregate as green / yellow / orange / red. Each band applies a danger modifier (green = -15, orange = +15, red = +30) that feeds into the graduated-scaling fleet target. Shadow mode logs the counterfactual to defense_shadow_log; flip WHALE_CONFIDENCE_SHADOW=false to apply.">?</span>
+        <span id="wcSignalBadge" style="margin-left:10px;font-family:'JetBrains Mono',monospace;font-size:11px;padding:2px 8px;border-radius:3px;border:1px solid var(--border);">—</span>
+        <span id="wcShadowTag" style="margin-left:6px;font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--dim);"></span>
+      </div>
+      <div id="wcUpdated" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--dim);"></div>
+    </div>
+    <div id="wcAggregate" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text);margin-bottom:8px;">_(warming up)_</div>
+    <div id="wcWallets" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text);line-height:1.6;"></div>
+    <div style="display:flex;justify-content:space-between;margin-top:10px;font-family:'JetBrains Mono',monospace;font-size:11px;flex-wrap:wrap;gap:8px;">
+      <div><span style="color:var(--dim);">Recent (last 10):</span> <span id="wcTicker" style="letter-spacing:2px;">—</span></div>
+      <div id="wcImpact" style="color:var(--dim);"></div>
+    </div>
+  </div>
+</div>
+
 <!-- THRESHOLD CLIFF — live gate state + shadow-mode calibration stats.
      Operator-facing: helps decide when to flip THRESHOLD_CLIFF_SHADOW=false.
      Shows current pFail / threshold / gate state + last-7d precision
@@ -5517,6 +5540,105 @@ function renderDangerBar(score) {
   return html;
 }
 
+// Whale Confidence panel — drives the OPS-tab card. Reads
+// state.whaleConfidence / state.whaleRecent (attached server-side from
+// WhaleOutcomeTracker). Hides the card when the tracker is disabled
+// or no snapshot is available yet.
+function renderWhaleConfidence(s) {
+  const card = document.getElementById('whaleConfidenceCard');
+  if (!card) return;
+  const wc = s.whaleConfidence;
+  if (!wc) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+
+  const SIGNAL_COLORS = {
+    green:  'var(--green)',
+    yellow: 'var(--yellow)',
+    orange: 'var(--orange)',
+    red:    'var(--red)',
+  };
+  const sigColor = SIGNAL_COLORS[wc.signal] || 'var(--dim)';
+  const badge = document.getElementById('wcSignalBadge');
+  if (badge) {
+    badge.textContent = wc.hasSignal
+      ? `${wc.signal.toUpperCase()} · ${(wc.aggregate.sr2h * 100).toFixed(0)}% SR · D${wc.dangerModifier >= 0 ? '+' : ''}${wc.dangerModifier}`
+      : 'WARMING UP';
+    badge.style.color = sigColor;
+    badge.style.borderColor = sigColor;
+  }
+  const shadow = document.getElementById('wcShadowTag');
+  if (shadow) shadow.textContent = wc.shadow ? '(shadow)' : '(live)';
+  const updEl = document.getElementById('wcUpdated');
+  if (updEl) {
+    const ago = wc.lastUpdate ? Math.round((Date.now() - wc.lastUpdate) / 1000) : null;
+    updEl.textContent = ago != null ? `updated ${ago}s ago` : '';
+  }
+
+  const ag = wc.aggregate;
+  const aggEl = document.getElementById('wcAggregate');
+  if (aggEl) {
+    if (!wc.hasSignal) {
+      aggEl.innerHTML = `<span style="color:var(--dim);">Warming up: ${ag.totalOps2h} ops detected (need ≥15 for signal). Active now: <b>${ag.activeDrugOps}</b> Drug · <b>${ag.activeArmsOps}</b> Arms · <b>${ag.activeExtOps}</b> Ext</span>`;
+    } else {
+      aggEl.innerHTML =
+        `AGGREGATE: <b style="color:${sigColor};">${(ag.sr2h * 100).toFixed(1)}%</b> SR ` +
+        `(${ag.totalSuccesses2h}/${ag.totalOps2h} ops, last 2h)<br>` +
+        `Active now: <b>${ag.activeDrugOps}</b> Drug · <b>${ag.activeArmsOps}</b> Arms · <b>${ag.activeExtOps}</b> Ext`;
+    }
+  }
+
+  const wlEl = document.getElementById('wcWallets');
+  if (wlEl) {
+    if (!wc.perWallet || wc.perWallet.length === 0) {
+      wlEl.innerHTML = '<span style="color:var(--dim);">_(pool empty)_</span>';
+    } else {
+      wlEl.innerHTML = wc.perWallet.map((w, i) => {
+        const sr = w.sr2h || 0;
+        const filled = Math.max(0, Math.min(10, Math.round(sr * 10)));
+        const bar = '█'.repeat(filled) + '░'.repeat(10 - filled);
+        const dotColor = sr >= 0.65 ? 'var(--green)'
+                       : sr >= 0.50 ? 'var(--yellow)'
+                       : sr > 0     ? 'var(--red)'
+                       : 'var(--dim)';
+        const addr = (w.wallet || '').slice(0, 10);
+        return `#${i+1} <span style="color:var(--dim);">${addr}..</span> ` +
+               `<b style="color:${dotColor};">${(sr * 100).toFixed(0)}%</b> SR ` +
+               `<span style="color:${dotColor};letter-spacing:1px;">${bar}</span> ` +
+               `<span style="color:var(--dim);">${w.ops2h} ops · ${w.currentActiveOps} active</span>`;
+      }).join('<br>');
+    }
+  }
+
+  const recent = (s.whaleRecent || []).slice(0, 10);
+  const tickerEl = document.getElementById('wcTicker');
+  if (tickerEl) {
+    if (recent.length === 0) {
+      tickerEl.textContent = '—';
+    } else {
+      // Reverse so oldest first, newest last (left-to-right time order).
+      tickerEl.innerHTML = recent.slice().reverse().map(o => {
+        return o.success
+          ? `<span style="color:var(--green);">✓</span>`
+          : `<span style="color:var(--red);">✗</span>`;
+      }).join('');
+      const wins = recent.filter(o => o.success).length;
+      tickerEl.innerHTML += ` <span style="color:var(--dim);">(${wins}/${recent.length})</span>`;
+    }
+  }
+
+  const impactEl = document.getElementById('wcImpact');
+  if (impactEl) {
+    if (!wc.hasSignal || wc.dangerModifier === 0) {
+      impactEl.innerHTML = `<span style="color:var(--dim);">No danger modifier applied${wc.shadow ? ' (shadow)' : ''}</span>`;
+    } else {
+      const modSign = wc.dangerModifier >= 0 ? '+' : '';
+      const modCol = wc.dangerModifier < 0 ? 'var(--green)' : 'var(--orange)';
+      const tag = wc.shadow ? ' <span style="color:var(--dim);">(shadow — not applied)</span>' : '';
+      impactEl.innerHTML = `Impact: danger <b style="color:${modCol};">${modSign}${wc.dangerModifier}</b>${tag}`;
+    }
+  }
+}
+
 function renderMissionControl_realtime(s) {
   // ── DANGER card (always from WS state) ───────────────────
   const danger = s.scores?.dangerScore ?? null;
@@ -6186,6 +6308,7 @@ function render(s) {
   if (s.corpState) renderCorps(s.corpState);
   renderGraduatedBanner(s);
   renderMissionControl_realtime(s);
+  renderWhaleConfidence(s);
   if (s.activity) renderActivity(s.activity);
 
   // Op outcome stats (empirical failure fractions)

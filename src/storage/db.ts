@@ -85,11 +85,44 @@ export interface SafetyGateRow {
 
 export interface ShadowEvent {
   ts: number;
-  signal: 'network_health' | 'eth_velocity' | 'threshold_cliff' | 'nh_graduated';
+  signal: 'network_health' | 'eth_velocity' | 'threshold_cliff' | 'nh_graduated' | 'whale_confidence';
   would_pause: boolean;
   reason: string;
   op_type_filter?: 'drug' | 'arms' | 'extortion' | null;
   context_json?: any;
+}
+
+/** A single whale-corp transition observation: when a tracked whale's
+ * corp went from active to inactive, did it complete (success) or get
+ * liquidated (failure)? Written by WhaleOutcomeTracker on every detected
+ * transition. */
+export interface WhaleOutcomeRow {
+  id: number;
+  ts: number;                                  // ms epoch when detected
+  wallet: string;
+  corp: string;
+  mode: 'drug' | 'arms' | 'extortion';
+  success: 0 | 1;
+}
+
+/** Periodic snapshot of the aggregate whale confidence signal. Written
+ * every 5min + on every signal transition by WhaleOutcomeTracker. Used
+ * for offline counterfactual analysis ("did our SR rise during green
+ * windows?"). */
+export interface WhaleConfidenceRow {
+  id: number;
+  ts: number;
+  tracked_wallets: number;
+  tracked_corps: number;
+  total_ops_2h: number;
+  total_successes_2h: number;
+  sr_2h: number;
+  active_drug_ops: number;
+  active_arms_ops: number;
+  signal: 'green' | 'yellow' | 'orange' | 'red';
+  danger_modifier: number;
+  effective_danger: number | null;
+  target_corps: number | null;
 }
 
 export interface ShadowEventRow {
@@ -432,6 +465,44 @@ export class Storage {
       );
       CREATE INDEX IF NOT EXISTS idx_shadow_ts     ON defense_shadow_log(ts);
       CREATE INDEX IF NOT EXISTS idx_shadow_signal ON defense_shadow_log(signal);
+
+      -- whale_outcomes: per-op outcome attribution for tracked-whale corps.
+      -- Populated by WhaleOutcomeTracker on every detected active→inactive
+      -- transition. Drives the rolling 2h SR signal that feeds graduated
+      -- scaling (shadow first). 14-day retention — older rows are only
+      -- useful for very deep counterfactual replays.
+      CREATE TABLE IF NOT EXISTS whale_outcomes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        wallet TEXT NOT NULL,
+        corp TEXT NOT NULL,
+        mode TEXT NOT NULL,             -- 'drug' | 'arms' | 'extortion'
+        success INTEGER NOT NULL        -- 0 | 1
+      );
+      CREATE INDEX IF NOT EXISTS idx_whale_outcomes_ts     ON whale_outcomes(ts);
+      CREATE INDEX IF NOT EXISTS idx_whale_outcomes_wallet ON whale_outcomes(wallet, ts);
+
+      -- whale_confidence_log: rolled-up 2h aggregate plus signal classification.
+      -- Written every 5min + on signal transitions. Used to verify the signal
+      -- actually predicts our own outcomes (green→better SR for us). 30-day
+      -- retention since this table is sparse.
+      CREATE TABLE IF NOT EXISTS whale_confidence_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        tracked_wallets INTEGER NOT NULL,
+        tracked_corps INTEGER NOT NULL,
+        total_ops_2h INTEGER NOT NULL,
+        total_successes_2h INTEGER NOT NULL,
+        sr_2h REAL NOT NULL,
+        active_drug_ops INTEGER NOT NULL,
+        active_arms_ops INTEGER NOT NULL,
+        signal TEXT NOT NULL,           -- 'green' | 'yellow' | 'orange' | 'red'
+        danger_modifier INTEGER NOT NULL,
+        effective_danger REAL,          -- snapshot of getEffectiveDanger() at log time
+        target_corps INTEGER            -- snapshot of getGraduatedState().currentTarget
+      );
+      CREATE INDEX IF NOT EXISTS idx_whale_confidence_ts ON whale_confidence_log(ts);
+      CREATE INDEX IF NOT EXISTS idx_whale_confidence_signal ON whale_confidence_log(signal, ts);
 
       -- Live-sampled op liquidation thresholds. The contract recalibrates
       -- these every ~48h based on network success rate, plus applies a
@@ -1419,6 +1490,13 @@ export class Storage {
       // a 90-min fade window. Codex audit fix 2026-05-12.
       this.db.prepare('DELETE FROM defense_shadow_log WHERE ts < ?').run(cutoff);
       this.db.prepare('DELETE FROM hedge_shadow_log    WHERE ts < ?').run(cutoff);
+      // whale_outcomes: 14-day retention (denser table, only used for
+      // recent counterfactual replays).
+      const whaleOutCutoff = Date.now() - 14 * 86400_000;
+      this.db.prepare('DELETE FROM whale_outcomes WHERE ts < ?').run(whaleOutCutoff);
+      // whale_confidence_log: same retention as other shadow tables (sparse;
+      // 5min cadence ⇒ ~288 rows/day).
+      this.db.prepare('DELETE FROM whale_confidence_log WHERE ts < ?').run(cutoff);
     });
     txn();
     this.db.pragma('optimize');
@@ -2130,6 +2208,64 @@ export class Storage {
       e.op_type_filter ?? null,
       e.context_json ? JSON.stringify(e.context_json) : null,
     );
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Whale outcomes + confidence log
+  // ────────────────────────────────────────────────────────────
+
+  /**
+   * Persist a single whale-corp outcome (success or liquidation).
+   * Called by WhaleOutcomeTracker on every detected transition.
+   */
+  insertWhaleOutcome(row: Omit<WhaleOutcomeRow, 'id'>): void {
+    this.db.prepare(`
+      INSERT INTO whale_outcomes (ts, wallet, corp, mode, success)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(row.ts, row.wallet.toLowerCase(), row.corp.toLowerCase(), row.mode, row.success);
+  }
+
+  /**
+   * Get whale outcomes within the last `windowMs` milliseconds. Used by
+   * the tracker on startup to warm the rolling buffer across restarts so
+   * a process bounce doesn't reset the 2h SR window.
+   */
+  getRecentWhaleOutcomes(windowMs: number, limit = 1000): WhaleOutcomeRow[] {
+    const since = Date.now() - windowMs;
+    return this.db.prepare(
+      `SELECT * FROM whale_outcomes WHERE ts >= ? ORDER BY ts DESC LIMIT ?`,
+    ).all(since, limit) as WhaleOutcomeRow[];
+  }
+
+  /**
+   * Append a confidence snapshot. Writer: WhaleOutcomeTracker. Cadence:
+   * every 5min + on every signal transition.
+   */
+  insertWhaleConfidence(row: Omit<WhaleConfidenceRow, 'id'>): void {
+    this.db.prepare(`
+      INSERT INTO whale_confidence_log
+        (ts, tracked_wallets, tracked_corps,
+         total_ops_2h, total_successes_2h, sr_2h,
+         active_drug_ops, active_arms_ops,
+         signal, danger_modifier, effective_danger, target_corps)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      row.ts, row.tracked_wallets, row.tracked_corps,
+      row.total_ops_2h, row.total_successes_2h, row.sr_2h,
+      row.active_drug_ops, row.active_arms_ops,
+      row.signal, row.danger_modifier,
+      row.effective_danger, row.target_corps,
+    );
+  }
+
+  /**
+   * Confidence-log rows newer than `sinceMs`. Used by the dashboard's
+   * historical signal chart + the go-live counterfactual analysis.
+   */
+  getWhaleConfidenceSince(sinceMs: number, limit = 1000): WhaleConfidenceRow[] {
+    return this.db.prepare(
+      `SELECT * FROM whale_confidence_log WHERE ts >= ? ORDER BY ts DESC LIMIT ?`,
+    ).all(sinceMs, limit) as WhaleConfidenceRow[];
   }
 
   /** Get all shadow events newer than `sinceMs`, ordered oldest→newest. */

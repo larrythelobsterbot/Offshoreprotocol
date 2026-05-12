@@ -236,6 +236,10 @@ export class CorpBot {
   // been live the whole time", not "effective danger evaluated against
   // raw-path hysteresis". Codex audit 2026-05-12.
   private lastNhShadowTarget: number = -1;
+  /** Hysteresis memo for the whale-confidence shadow path. Same pattern
+   *  as `lastNhShadowTarget` — its own memo so the shadow run doesn't
+   *  borrow the live path's prior target. */
+  private lastWhaleShadowTarget: number = -1;
 
   // ── NetworkHealth → graduated-penalty fade ─────────────────────
   // Records the wall-clock time of the most recent NH "would-pause"
@@ -252,6 +256,15 @@ export class CorpBot {
   private lastNhTripFilter: 'drug' | 'arms' | 'extortion' | 'all' = 'all';
   private getNetworkHealthSnap:
     | (() => import('../feeds/network-health').NetworkHealthSnapshot | null)
+    | null = null;
+  /**
+   * Whale-confidence signal provider. Shadow-mode-first: when the
+   * configured `whaleConfidenceShadow` is true, the modifier is logged
+   * to `defense_shadow_log` but NOT applied to `getEffectiveDanger()`.
+   * Wired from index.ts.
+   */
+  private getWhaleConfidenceSnap:
+    | (() => import('../feeds/whale-outcome-tracker').WhaleConfidence | null)
     | null = null;
 
   // Whether the schedule is active. When false, bot uses 'all-drug' as default
@@ -1622,6 +1635,17 @@ export class CorpBot {
   }
 
   /**
+   * Wire the WhaleOutcomeTracker into corp-bot. Returns the current
+   * confidence (signal + dangerModifier) on demand. Read each tick by
+   * getEffectiveDanger() to optionally apply the modifier. Shadow flag
+   * on the snapshot itself controls whether the modifier is applied
+   * vs logged-only.
+   */
+  setWhaleConfidenceProvider(fn: () => import('../feeds/whale-outcome-tracker').WhaleConfidence | null): void {
+    this.getWhaleConfidenceSnap = fn;
+  }
+
+  /**
    * Hedge-driven bootstrap-mode hook. When wired, returns 'batch'
    * (stagger=0, all corps fire same tick) or 'stagger' (normal gate).
    * Used so the stagger gate respects the hedge's all-or-nothing
@@ -1661,17 +1685,40 @@ export class CorpBot {
   }
 
   /**
-   * Effective danger score read by getGraduatedTarget(). This is the
-   * raw composite danger from VolatilityEngine PLUS the NH-fade
-   * penalty, capped at 100. When BOT_NH_GRADUATED_SHADOW=true the
-   * shadow log records what graduated WOULD have done with the
-   * penalty applied, but the actual decision uses the raw danger so
-   * we can collect counterfactual data without changing behaviour.
+   * Whale-confidence modifier — net delta on danger from the smart-money
+   * signal. Returns 0 when the tracker is unwired, has insufficient data
+   * (signal=yellow with hasSignal=false), OR shadow mode is on. Shadow
+   * shape means the modifier is COMPUTED upstream and logged, but here
+   * we return 0 so behaviour is unchanged until shadow is flipped off.
+   */
+  getWhaleModifier(): number {
+    if (!this.getWhaleConfidenceSnap) return 0;
+    const c = this.getWhaleConfidenceSnap();
+    if (!c || c.shadow || !c.hasSignal) return 0;
+    return c.dangerModifier;
+  }
+
+  /**
+   * Effective danger score read by getGraduatedTarget(). Composition:
+   *   raw composite danger (volatility engine)
+   * + NH-fade penalty                              (positive)
+   * + whale-confidence modifier                    (signed; negative when whales win)
+   * = effective, clamped [0, 100].
+   *
+   * Each contributor has its own shadow flag:
+   *   - NH:    BOT_NH_GRADUATED_SHADOW=true ⇒ NH penalty still applied here
+   *            (shadow toggle controls graduated logging, not the
+   *            penalty itself — historical choice predating whale signal).
+   *   - Whale: WHALE_CONFIDENCE_SHADOW=true ⇒ modifier returns 0 from
+   *            getWhaleModifier() so the danger stays unchanged.
+   * The whale shadow toggle is the cleaner one; NH shadow is preserved
+   * for backward compatibility with existing `defense_shadow_log` rows.
    */
   getEffectiveDanger(): number {
     const raw = this.lastDanger ?? 0;
     const penalty = this.getNhPenalty();
-    return Math.max(0, Math.min(100, raw + penalty));
+    const whaleMod = this.getWhaleModifier();
+    return Math.max(0, Math.min(100, raw + penalty + whaleMod));
   }
 
   /**
@@ -2092,6 +2139,42 @@ export class CorpBot {
       } else {
         // Pull this tick's batch of copy events (caller drains lazily).
         this.copyTickQueue = this.copyHooks.drainQueue();
+        // Whale-confidence gate: if smart money is failing (orange/red)
+        // and the signal is LIVE, drop incoming copy events. The whales
+        // are visibly running into bad conditions — copying their starts
+        // now would walk us into the same wall. In shadow mode this gate
+        // is observation-only (still drains the queue so downstream
+        // accounting stays consistent, but logs the would-block count).
+        if (this.copyTickQueue.length > 0 && this.getWhaleConfidenceSnap) {
+          const wc = this.getWhaleConfidenceSnap();
+          if (wc && wc.hasSignal && (wc.signal === 'orange' || wc.signal === 'red')) {
+            const blocked = this.copyTickQueue.length;
+            if (!wc.shadow) {
+              this.copyTickQueue = [];
+              this.record('info',
+                `[CorpBot] CopyGate: dropped ${blocked} copy event(s) — whale signal ${wc.signal} ` +
+                `(sr ${(wc.aggregate.sr2h*100).toFixed(0)}% over ${wc.aggregate.totalOps2h} ops)`);
+            } else {
+              try {
+                this.storage?.insertShadowEvent({
+                  ts: now,
+                  signal: 'whale_confidence',
+                  would_pause: true,
+                  reason: `copy gate would drop ${blocked} event(s) — whale signal ${wc.signal} ` +
+                          `(sr ${(wc.aggregate.sr2h*100).toFixed(0)}% over ${wc.aggregate.totalOps2h} ops)`,
+                  op_type_filter: null,
+                  context_json: {
+                    kind: 'copy_gate',
+                    blocked,
+                    signal: wc.signal,
+                    sr2h: wc.aggregate.sr2h,
+                    totalOps2h: wc.aggregate.totalOps2h,
+                  },
+                });
+              } catch { /* non-fatal */ }
+            }
+          }
+        }
         if (this.copyTickQueue.length > 0) {
           // Persist each event as 'queued' before we consume it, so we can
           // resolve outcomes later via fired_ts / our_corp join. Mutates
@@ -2190,6 +2273,52 @@ export class CorpBot {
         // LIVE mode: the live path IS the shadow path; keep the shadow
         // memo synced so a later flip back to shadow starts coherent.
         this.lastNhShadowTarget = g.target;
+      }
+
+      // ── Whale-confidence shadow logging ────────────────────────
+      // When the whale tracker is shadow-mode, getWhaleModifier()
+      // returns 0 so `g.target` is unchanged. Compute the counterfactual
+      // here so we can validate the signal against actual outcomes
+      // before flipping it live. Only log when the would-shift target
+      // differs from what we actually picked.
+      if (this.getWhaleConfidenceSnap) {
+        const wc = this.getWhaleConfidenceSnap();
+        if (wc && wc.shadow && wc.hasSignal && wc.dangerModifier !== 0) {
+          const baseDanger = useEffective ? effective : rawDanger;
+          const shiftedDanger = Math.max(0, Math.min(100, baseDanger + wc.dangerModifier));
+          const shadowG = this.getGraduatedTarget(shiftedDanger, this.lastWhaleShadowTarget);
+          this.lastWhaleShadowTarget = shadowG.target;
+          if (shadowG.target !== g.target) {
+            try {
+              this.storage?.insertShadowEvent({
+                ts: now,
+                signal: 'whale_confidence',
+                would_pause: shadowG.target < g.target,
+                reason: `whale ${wc.signal} (sr ${(wc.aggregate.sr2h*100).toFixed(0)}% over ` +
+                        `${wc.aggregate.totalOps2h} ops) mod=${wc.dangerModifier} → ` +
+                        `target ${g.target} → ${shadowG.target} (level ${shadowG.level})`,
+                op_type_filter: null,
+                context_json: {
+                  signal: wc.signal,
+                  sr2h: wc.aggregate.sr2h,
+                  totalOps2h: wc.aggregate.totalOps2h,
+                  dangerModifier: wc.dangerModifier,
+                  baseDanger,
+                  shiftedDanger,
+                  rawTarget: g.target,
+                  shadowTarget: shadowG.target,
+                  shadowLevel: shadowG.level,
+                  trackedWallets: wc.trackedWallets,
+                  trackedCorps: wc.trackedCorps,
+                },
+              });
+            } catch { /* non-fatal */ }
+          }
+        } else if (wc && !wc.shadow) {
+          // LIVE: live path includes the modifier already via effective danger;
+          // keep the shadow memo synced for a clean flip back to shadow.
+          this.lastWhaleShadowTarget = g.target;
+        }
       }
       // Pause priority: pause from the END of getCorpsByPriority() first
       // ('newest' default keeps L1 corps active longest). Locked corps

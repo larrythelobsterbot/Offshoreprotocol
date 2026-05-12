@@ -623,6 +623,9 @@ Both of us get a bonus when you join.`);
 \`/bot eff [hours]\` — on-demand INF efficiency DM (default 24h)
 \`/bot quiet on|off|status\` — mute low-signal DMs (claims, mode-switches, etc) keeping only critical alerts + daily digest
 \`/bot hedge [on|off|shadow|live|stats]\` — World Exchange hedge controls (shadow mode default; live requires confirm)
+\`/bot whales\` — whale confidence signal (aggregate SR, per-wallet, outcomes)
+   ↳ \`/bot whales outcomes\` — last 20 whale outcomes
+   ↳ \`/bot whales config\`   — show thresholds & shadow/live mode
 
 *Stop / start (most common):*
 \`/bot off\` — *full stop* (locks paused preset, calls disableAutoTrade on every corp)
@@ -1517,6 +1520,111 @@ Subcommands:
           return;
         }
 
+        case 'whales': {
+          // Whale confidence panel — aggregate SR, per-wallet breakdown,
+          // recent outcomes ticker. Two subcommands:
+          //   /bot whales            full panel
+          //   /bot whales outcomes   last 20 outcomes (wallet + mode + ✓/✗)
+          //   /bot whales config     show current thresholds
+          const sub2 = (parts[1] || '').toLowerCase();
+          const state = this.cfg.getState?.() as any;
+          const wc = state?.whaleConfidence;
+          if (sub2 === 'config') {
+            await this.sendDm(chatId,
+`*🐋 Whale confidence config*
+
+Thresholds (SR fractions):
+  green ≥ ${appConfig.whaleConfidenceGreenSr.toFixed(2)}
+  yellow ≥ ${appConfig.whaleConfidenceYellowSr.toFixed(2)}
+  orange ≥ ${appConfig.whaleConfidenceOrangeSr.toFixed(2)}
+  red < ${appConfig.whaleConfidenceOrangeSr.toFixed(2)}
+
+Modifiers (danger delta):
+  green = ${appConfig.whaleConfidenceGreenMod}
+  yellow = 0
+  orange = ${appConfig.whaleConfidenceOrangeMod}
+  red = ${appConfig.whaleConfidenceRedMod}
+
+Pool: top ${appConfig.whaleConfidencePoolSize} wallets · min ${appConfig.whaleConfidenceMinPoolOps} ops
+Window: ${(appConfig.whaleConfidenceWindowMs / 3600_000).toFixed(1)}h rolling
+Poll: ${(appConfig.whaleConfidencePollMs / 1000).toFixed(0)}s
+Min ops for signal: ${appConfig.whaleConfidenceMinOps}
+
+Mode: *${appConfig.whaleConfidenceShadow ? 'SHADOW (logged only)' : 'LIVE (applied to danger)'}*
+${appConfig.whaleConfidenceDisabled ? '\n⚠ Disabled via env (WHALE_CONFIDENCE_DISABLED=1)' : ''}
+
+Set via env vars in \`.env\` + restart:
+  \`WHALE_CONFIDENCE_SHADOW=false\` to go live`);
+            return;
+          }
+          if (sub2 === 'outcomes') {
+            const outcomes = (state?.whaleRecent ?? []) as Array<{
+              wallet: string; corp: string; mode: string; success: boolean; detectedAt: number;
+            }>;
+            if (outcomes.length === 0) {
+              await this.sendDm(chatId, '_No whale outcomes detected yet — tracker may still be warming up._');
+              return;
+            }
+            const lines = outcomes.slice(0, 20).map(o => {
+              const ago = Math.round((Date.now() - o.detectedAt) / 60_000);
+              const mark = o.success ? '✓' : '✗';
+              return `  ${mark} \`${o.wallet.slice(0,10)}..\` ${o.mode} _(${ago}m ago)_`;
+            }).join('\n');
+            await this.sendDm(chatId,
+`*🐋 Last ${outcomes.length} whale outcomes*
+
+${lines}`);
+            return;
+          }
+          // Default: full panel
+          if (!wc) {
+            await this.sendDm(chatId, '_Whale tracker not running or no data yet (warm-up takes ~15min)._');
+            return;
+          }
+          const signalEmoji: Record<string, string> = {
+            green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴',
+          };
+          const emoji = signalEmoji[wc.signal] ?? '⚪';
+          const fmtSr = (n: number) => `${(n * 100).toFixed(1)}%`;
+          const wallets = (wc.perWallet ?? []) as Array<{
+            wallet: string; ops2h: number; sr2h: number; currentActiveOps: number;
+          }>;
+          const walletLines = wallets.map((w, i) => {
+            const bar = (() => {
+              const n = Math.max(0, Math.min(8, Math.round(w.sr2h * 8)));
+              return '█'.repeat(n) + '░'.repeat(8 - n);
+            })();
+            const status = w.sr2h >= 0.65 ? '🟢' : w.sr2h >= 0.50 ? '🟡' : w.sr2h > 0 ? '🔴' : '⚪';
+            return `  #${i+1} \`${w.wallet.slice(0,10)}..\` ${fmtSr(w.sr2h)} ${bar} ${status} (${w.ops2h} ops, ${w.currentActiveOps} active)`;
+          }).join('\n');
+          const recent = (state?.whaleRecent ?? []).slice(0, 10) as Array<{ success: boolean }>;
+          const ticker = recent.length > 0
+            ? recent.map(o => o.success ? '✓' : '✗').reverse().join('')
+            : '—';
+          const recentSr = recent.length > 0
+            ? `${recent.filter(o => o.success).length}/${recent.length}`
+            : '—';
+          const shadowTag = wc.shadow ? '  _(SHADOW)_' : '';
+          const ag = wc.aggregate;
+          await this.sendDm(chatId,
+`*🐋 Whale Confidence* ${emoji} *${wc.signal.toUpperCase()}* · D${wc.dangerModifier >= 0 ? '+' : ''}${wc.dangerModifier}${shadowTag}
+
+*Aggregate:* ${fmtSr(ag.sr2h)} SR (${ag.totalSuccesses2h}/${ag.totalOps2h} ops, last 2h)
+*Active now:* ${ag.activeDrugOps} Drug · ${ag.activeArmsOps} Arms · ${ag.activeExtOps} Ext
+
+*Per-wallet (2h):*
+${walletLines || '  _(pool empty)_'}
+
+*Recent (last 10):*
+  ${ticker}  (${recentSr})
+
+Tracked: ${wc.trackedWallets} wallets · ${wc.trackedCorps} corps
+
+\`/bot whales outcomes\` — last 20 outcomes
+\`/bot whales config\`   — thresholds & mode`);
+          return;
+        }
+
         default:
           await this.sendDm(chatId, `Unknown subcommand: \`${sub}\`. Try \`/bot help\`.`);
       }
@@ -1696,7 +1804,29 @@ Subcommands:
       regime,
     });
 
-    const sections = [pnlBlock, fleetBlock, dangerBlock, opsBlock, cycleBlock, walletBlock]
+    // ── WHALE CONFIDENCE ─────────────────────────────────────
+    let whaleBlock = '';
+    const wc = state?.whaleConfidence;
+    if (wc) {
+      const signalEmoji: Record<string, string> = {
+        green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴',
+      };
+      const emoji = signalEmoji[wc.signal] ?? '⚪';
+      const shadowTag = wc.shadow ? ' _(shadow)_' : '';
+      const ag = wc.aggregate;
+      if (wc.hasSignal) {
+        const modStr = wc.dangerModifier === 0
+          ? ''
+          : ` · D${wc.dangerModifier > 0 ? '+' : ''}${wc.dangerModifier}`;
+        whaleBlock =
+`*🐋 WHALES* ${emoji} ${(ag.sr2h * 100).toFixed(0)}% SR (${ag.totalOps2h} ops 2h)${modStr}${shadowTag}
+  Active: ${ag.activeDrugOps} Drug · ${ag.activeArmsOps} Arms`;
+      } else {
+        whaleBlock = `*🐋 WHALES* ⚪ warming up (${ag.totalOps2h}/${appConfig.whaleConfidenceMinOps} ops)${shadowTag}`;
+      }
+    }
+
+    const sections = [pnlBlock, fleetBlock, dangerBlock, opsBlock, cycleBlock, whaleBlock, walletBlock]
       .filter(Boolean)
       .join('\n');
     const bannerBlock = banners.length > 0 ? banners.map(b => `_${b}_`).join('\n') + '\n\n' : '';

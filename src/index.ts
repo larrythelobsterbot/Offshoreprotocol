@@ -16,6 +16,7 @@ import { RedStonePriceFeed, type RedStonePrice } from './feeds/redstone-price';
 import { WhaleTradesFeed } from './feeds/whale-trades';
 import { WhaleClaimsFeed } from './feeds/whale-claims';
 import { WhaleCopyFeed } from './feeds/whale-copy';
+import { WhaleOutcomeTracker } from './feeds/whale-outcome-tracker';
 import { KumbayaLpFeed } from './feeds/kumbaya-lp';
 import { DirtyFlowFeed } from './feeds/dirty-flow';
 import { NetworkOpsFeed } from './feeds/network-ops';
@@ -392,6 +393,30 @@ async function main() {
   // CorpBot subscribes via setCopyHooks below.
   const whaleCopy = new WhaleCopyFeed({ loadoutScanner });
 
+  // WhaleOutcomeTracker — sibling to WhaleCopyFeed. Same top-N pool, but
+  // detects FINISH transitions (active→inactive, with success/liq
+  // classification) and rolls them up into a 2h confidence signal. The
+  // signal feeds getEffectiveDanger() (shadow-mode-first via the
+  // shadow flag on the snapshot itself). Staggers its first poll 15s
+  // into start to offset from WhaleCopyFeed's :00/:30 cadence.
+  const whaleOutcomeTracker = new WhaleOutcomeTracker({
+    loadoutScanner,
+    storage,
+    shadow:    config.whaleConfidenceShadow,
+    disabled:  config.whaleConfidenceDisabled,
+    greenSr:   config.whaleConfidenceGreenSr,
+    yellowSr:  config.whaleConfidenceYellowSr,
+    orangeSr:  config.whaleConfidenceOrangeSr,
+    greenMod:  config.whaleConfidenceGreenMod,
+    orangeMod: config.whaleConfidenceOrangeMod,
+    redMod:    config.whaleConfidenceRedMod,
+    minOps:    config.whaleConfidenceMinOps,
+    windowMs:  config.whaleConfidenceWindowMs,
+    pollMs:    config.whaleConfidencePollMs,
+    poolSize:  config.whaleConfidencePoolSize,
+    minPoolOps: config.whaleConfidenceMinPoolOps,
+  });
+
   engine.setWhaleClaimsProvider(() => whaleClaims.getSnapshot());
   engine.setKumbayaLpProvider(() => kumbayaLp.getSnapshot());
   engine.setStorageProvider(storage);
@@ -464,6 +489,15 @@ async function main() {
     // right array internally; we expose the label so the dashboard
     // shows "now: WEEKEND 14h" rather than just "14h".
     s.scheduleRegime = corpBot.getCurrentRegime();
+    // Whale-confidence signal — for OPS-tab panel + status-message line.
+    // Null until first poll completes (~15s startup stagger + first
+    // Multicall3). We attach the confidence object directly (it's small
+    // and the dashboard wants the per-wallet breakdown). The pool snapshot
+    // is included separately so the dashboard can render the wallet
+    // breakdown even before any outcomes have been detected.
+    s.whaleConfidence = whaleOutcomeTracker.getConfidence();
+    s.whalePool       = whaleOutcomeTracker.getPoolSnapshot();
+    s.whaleRecent     = whaleOutcomeTracker.getRecentOutcomes(20);
     // Hedge bot state — small object, cheap to attach every tick.
     // Same source-of-truth pattern as the other engine bolt-ons.
     s.hedge = hedgeBot?.getState() ?? null;
@@ -750,6 +784,11 @@ async function main() {
   // fade. Corp-bot reads it each tick via getEffectiveDanger().
   corpBot.setNetworkHealthProvider(() => networkHealth.getSnapshot());
 
+  // Whale-confidence signal — feeds into getEffectiveDanger() and
+  // the copy-event gate. Shadow flag on the snapshot itself decides
+  // whether the modifier is applied vs logged-only.
+  corpBot.setWhaleConfidenceProvider(() => whaleOutcomeTracker.getConfidence());
+
   // Wire HedgeBot's activation decision into corp-bot's bootstrap-mode
   // selector. Returns 'batch' only when ALL of:
   //   - hedge mode is LIVE (shadow returns 'stagger' so we keep the
@@ -1033,6 +1072,44 @@ async function main() {
   void dirtyFlow.start();
   void networkOps.start();
   void whaleCopy.start();
+  void whaleOutcomeTracker.start();
+
+  // Signal-change DMs — fire when the rolling-2h SR moves the bucket. We
+  // only DM on transitions involving green or orange/red (yellow→yellow
+  // would be no-op anyway since it doesn't apply a modifier). The graduated
+  // transition DM already fires when graduated reshapes the fleet, so this
+  // one focuses on the SIGNAL itself, with enough detail for the operator
+  // to decide whether to override (e.g. force pause vs trust the signal).
+  whaleOutcomeTracker.on('signal-change', (evt: {
+    from: 'green' | 'yellow' | 'orange' | 'red';
+    to: 'green' | 'yellow' | 'orange' | 'red';
+    sr: number;
+    totalOps: number;
+    shadow: boolean;
+  }) => {
+    if (!config.operatorChatId) return;
+    const emoji: Record<string, string> = { green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴' };
+    const direction = ['green', 'yellow', 'orange', 'red'];
+    const isWorsening = direction.indexOf(evt.to) > direction.indexOf(evt.from);
+    const headline = isWorsening
+      ? `🐋 *Whale signal: ${emoji[evt.from]} ${evt.from.toUpperCase()} → ${emoji[evt.to]} ${evt.to.toUpperCase()}*`
+      : `🐋 *Whale signal recovered: ${emoji[evt.from]} ${evt.from.toUpperCase()} → ${emoji[evt.to]} ${evt.to.toUpperCase()}*`;
+    const wc = whaleOutcomeTracker.getConfidence();
+    const modLine = wc && wc.dangerModifier !== 0
+      ? `Danger modifier: ${wc.dangerModifier >= 0 ? '+' : ''}${wc.dangerModifier}`
+      : 'Danger modifier: none';
+    const shadowLine = evt.shadow
+      ? '_Shadow mode — signal logged only, danger unaffected._'
+      : `Effective danger: ${corpBot.getEffectiveDanger()}/100 · graduated target: ${corpBot.getGraduatedState().currentTarget}/${corpBot.getGraduatedState().totalCorps}`;
+    const body =
+`${headline}
+Tracked whale SR: ${(evt.sr * 100).toFixed(1)}% over ${evt.totalOps} ops (last 2h)
+${modLine}
+${shadowLine}
+
+\`/bot whales\` — full panel`;
+    bot.sendDm(config.operatorChatId, body).catch(() => { /* tolerate transient send errors */ });
+  });
   if (!config.networkHealthDisabled) void networkHealth.start();
   if (!config.ethVelocityDisabled)   ethVelocity.start();
   poly.start();
@@ -1091,6 +1168,7 @@ async function main() {
     dirtyFlow.stop();
     networkOps.stop();
     whaleCopy.stop();
+    whaleOutcomeTracker.stop();
     networkHealth.stop();
     ethVelocity.stop();
     scraper.stop();
