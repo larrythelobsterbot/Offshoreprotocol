@@ -74,7 +74,35 @@ export const config = {
   // 0 = current behavior (all corps fire as soon as eligible — high
   // correlation). 15 = recommended (6 corps × 90min Drug ops perfectly
   // staggered). Variance reducer; EV-neutral.
-  botStaggerMin: parseInt(process.env.BOT_STAGGER_MIN || '15'),
+  botStaggerMin: parseInt(process.env.BOT_STAGGER_MIN || '10'),
+  // When true (default), the stagger interval adapts to the active corp
+  // count so the whole fleet bootstraps inside one Drug-deal duration
+  // (~90 min). See CorpBot.getStaggerMinutes for the bucket table. Set
+  // to false to pin the gate at botStaggerMin always.
+  botStaggerAuto: (process.env.BOT_STAGGER_AUTO ?? 'true').toLowerCase() !== 'false',
+
+  // ── Graduated corp scaling ──
+  // Instead of binary all-on / all-off based on the danger override,
+  // scale the number of active corps with the danger score so the
+  // fleet contracts BEFORE a full panic and expands once danger fades.
+  // Levels are parsed from BOT_GRADUATED_LEVELS as "danger:corps" pairs,
+  // comma-separated, ascending by danger threshold. Default:
+  //   <40   → all corps active
+  //   ≥40   → 6 corps   (Elevated)
+  //   ≥60   → 3 corps   (High)
+  //   ≥75   → 0 corps   (Critical — equivalent to the existing panic preset)
+  // The 0-corps level is functionally identical to panic/breaker pausing
+  // — graduated scaling is purely the IN-BETWEEN levels (40-75).
+  botGraduatedScaling: (process.env.BOT_GRADUATED_SCALING ?? 'true').toLowerCase() !== 'false',
+  botGraduatedLevels:  process.env.BOT_GRADUATED_LEVELS  ?? '40:6,60:3,75:0',
+  // Hysteresis (points) — once scaled DOWN to level N at danger threshold T,
+  // require danger to drop to T - hysteresis before scaling BACK UP. Prevents
+  // thrashing when danger hovers near a threshold.
+  botGraduatedHysteresis: parseInt(process.env.BOT_GRADUATED_HYSTERESIS ?? '5'),
+  // Which corps to pause first when scaling down. 'newest' pauses L3 corps
+  // first (operator preference — L1 has the longest track record and the
+  // most XP invested). 'oldest' reverses for testing / comparison.
+  botGraduatedPriority: (process.env.BOT_GRADUATED_PRIORITY ?? 'newest').toLowerCase() as 'newest' | 'oldest',
 
   // Shadow-mode flags for danger-v2 signals. true = compute & log only,
   // do NOT actually pause the bot. Flip to false once precision/recall

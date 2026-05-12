@@ -670,11 +670,19 @@ Subcommands: \`/bot help\``);
 \`/bot custom <m1> ... <mN>\` — quick custom, one mode per corp (1=Arms 2=Drug, no Ext)
 \`/bot drug\` / \`/bot arms\` — force uniform mode
 
-*Schedule (HKT-based):*
-\`/bot schedule\` — show 24h schedule
+*Schedule (HKT-based, regime-aware v4):*
+\`/bot schedule\` — show BOTH weekday + weekend arrays side by side
+\`/bot schedule weekday|weekend\` — show one regime
 \`/bot schedule on|off\` — toggle scheduling
    ↳ when OFF: bot stops trading (paused fallback). Use \`/bot drug\` etc. to manually run.
-\`/bot schedule <hour|range> <preset>\` — e.g. \`/bot schedule 21-22 paused\`
+\`/bot schedule <hour|range> <preset>\` — set BOTH regimes (e.g. \`/bot schedule 21-22 paused\`)
+\`/bot schedule weekday <hour|range> <preset>\` — weekday only
+\`/bot schedule weekend <hour|range> <preset>\` — weekend only
+
+*Graduated scaling (danger-driven corp count):*
+\`/bot graduated\` — show current level + thresholds
+\`/bot graduated on|off\` — toggle (default: on)
+\`/bot graduated levels 40:6,60:3,75:0\` — \`danger:corps\` thresholds
 
 *Thresholds:*
 \`/bot thresholds <high> <low>\` — danger band (default 65/45)
@@ -1075,56 +1083,84 @@ Op thresholds + leverage are live-sampled from chain (devs recalibrate every ~48
         }
 
         case 'schedule': {
-          const action = (parts[1] || 'show').toLowerCase();
+          // Subcommands:
+          //   /bot schedule                       — show BOTH regimes side-by-side
+          //   /bot schedule weekday               — show weekday only
+          //   /bot schedule weekend               — show weekend only
+          //   /bot schedule on|off                — toggle scheduler
+          //   /bot schedule <hour> <preset>       — set BOTH regimes
+          //   /bot schedule weekday <hour> <preset>
+          //   /bot schedule weekend <hour> <preset>
+          const a1 = (parts[1] || '').toLowerCase();
 
-          if (action === 'show' || !action) {
-            const s = corpBot.getStatus();
-            const sched = corpBot.getSchedule();
-            // Group consecutive identical hours into ranges for compact display
-            const ranges: { start: number; end: number; preset: string }[] = [];
-            for (let h = 0; h < 24; h++) {
-              const last = ranges[ranges.length - 1];
-              if (last && last.preset === sched[h] && last.end === h - 1) {
-                last.end = h;
-              } else {
-                ranges.push({ start: h, end: h, preset: sched[h] });
-              }
-            }
-            const lines = ranges.map(r => {
-              const range = r.start === r.end
-                ? `${r.start.toString().padStart(2,'0')}h     `
-                : `${r.start.toString().padStart(2,'0')}h-${r.end.toString().padStart(2,'0')}h`;
-              const cur = (r.start <= s.hktHour && s.hktHour <= r.end) ? ' ←' : '';
-              return `  ${range}  \`${r.preset}\`${cur}`;
-            }).join('\n');
-            await this.sendDm(chatId,
-              `*HKT Schedule* (${s.scheduleEnabled ? 'ENABLED' : 'DISABLED'}):\n\n${lines}\n\nNow: ${s.hktHour.toString().padStart(2,'0')}h HKT`);
-            return;
-          }
-
-          if (action === 'on') {
+          // Schedule on/off — apply to whole scheduler (unchanged)
+          if (a1 === 'on') {
             corpBot.setScheduleEnabled(true);
             await this.sendDm(chatId, `✅ Schedule ENABLED. Bot will follow HKT schedule.`);
             return;
           }
-          if (action === 'off') {
+          if (a1 === 'off') {
             corpBot.setScheduleEnabled(false);
             await this.sendDm(chatId,
               `⏸ Schedule DISABLED. Bot falls back to \`paused\` — auto-trade off on every corp on the next tick.\n\n` +
-              `Use \`/bot schedule on\` to resume the HKT schedule, or set a manual preset (\`/bot drug\`, \`/bot arms\`, etc.).`);
+              `Use \`/bot schedule on\` to resume the HKT schedule, or set a manual preset.`);
             return;
           }
 
-          // Otherwise: /bot schedule <hour|range> <preset>
-          // Hour can be "5" or "21-22"
-          const hourSpec = parts[1] || '';
-          const presetName = parts[2] || '';
+          // Regime selector for read OR write
+          const isRegime = a1 === 'weekday' || a1 === 'weekend';
+          const regime: 'weekday' | 'weekend' | null = isRegime ? (a1 as 'weekday' | 'weekend') : null;
+
+          // Build a compact "ranges" view for one or both arrays.
+          const cfg = corpBot.getScheduleConfig();
+          const cur = corpBot.getCurrentRegime();
+          const status = corpBot.getStatus();
+          const fmt = (label: 'weekday' | 'weekend') => {
+            const sched = cfg[label];
+            const ranges: { start: number; end: number; preset: string }[] = [];
+            for (let h = 0; h < 24; h++) {
+              const last = ranges[ranges.length - 1];
+              if (last && last.preset === sched[h] && last.end === h - 1) last.end = h;
+              else ranges.push({ start: h, end: h, preset: sched[h] });
+            }
+            return ranges.map(r => {
+              const range = r.start === r.end
+                ? `${String(r.start).padStart(2,'0')}h    `
+                : `${String(r.start).padStart(2,'0')}h-${String(r.end).padStart(2,'0')}h`;
+              const arrow = (cur === label && r.start <= status.hktHour && status.hktHour <= r.end) ? ' ←' : '';
+              return `  ${range}  \`${r.preset}\`${arrow}`;
+            }).join('\n');
+          };
+
+          // Show variants: nothing-or-show, weekday-only, weekend-only
+          const showOnly = !parts[1] || a1 === 'show'
+            || (isRegime && !parts[2]);
+          if (showOnly) {
+            if (!isRegime) {
+              await this.sendDm(chatId,
+                `*HKT Schedule* (${status.scheduleEnabled ? 'ENABLED' : 'DISABLED'})  ·  now: *${cur.toUpperCase()}* ${String(status.hktHour).padStart(2,'0')}h\n\n` +
+                `*Weekday:*\n${fmt('weekday')}\n\n*Weekend:*\n${fmt('weekend')}`);
+            } else {
+              await this.sendDm(chatId,
+                `*HKT Schedule — ${a1.toUpperCase()}* (${status.scheduleEnabled ? 'ENABLED' : 'DISABLED'})\n\n${fmt(regime!)}`);
+            }
+            return;
+          }
+
+          // Write paths:
+          //   /bot schedule weekday <hour> <preset>
+          //   /bot schedule <hour> <preset>
+          const hourSpec = isRegime ? (parts[2] || '') : (parts[1] || '');
+          const presetName = isRegime ? (parts[3] || '') : (parts[2] || '');
           if (!hourSpec || !presetName) {
             await this.sendDm(chatId,
-              'Usage: `/bot schedule <hour|range> <preset>`\n' +
+              'Usage:\n' +
+              '  `/bot schedule <hour|range> <preset>`               — both regimes\n' +
+              '  `/bot schedule weekday <hour|range> <preset>`       — weekday only\n' +
+              '  `/bot schedule weekend <hour|range> <preset>`       — weekend only\n' +
               'Examples:\n' +
               '  `/bot schedule 21-22 paused`\n' +
-              '  `/bot schedule 5 mix-arms`');
+              '  `/bot schedule weekend 14 all-arms`');
             return;
           }
           const hours: number[] = [];
@@ -1137,12 +1173,66 @@ Op thresholds + leverage are live-sampled from chain (devs recalibrate every ~48
           const h2 = m[2] !== undefined ? parseInt(m[2]) : h1;
           for (let h = h1; h <= h2; h++) hours.push(h);
 
-          const res = corpBot.setScheduleHours(hours, presetName);
+          const which: 'weekday' | 'weekend' | 'both' = regime ?? 'both';
+          const res = corpBot.setScheduleHours(hours, presetName, which);
           if (!res.ok) {
             await this.sendDm(chatId, `❌ ${res.reason}`);
           } else {
-            await this.sendDm(chatId, `✅ Schedule updated: hours \`${hourSpec}\` → \`${presetName}\``);
+            await this.sendDm(chatId,
+              `✅ Schedule updated (${which}): hours \`${hourSpec}\` → \`${presetName}\``);
           }
+          return;
+        }
+
+        case 'graduated':
+        case 'grad': {
+          const action = (parts[1] || 'status').toLowerCase();
+          const g = corpBot.getGraduatedState();
+
+          if (action === 'status' || action === 'show' || !action) {
+            const lvlStr = g.levels.map(l => `${l.danger}:${l.corps}`).join(',');
+            const paused = g.pausedCorps.length > 0
+              ? g.pausedCorps.map(a => '`'+a.slice(0,10)+'..`').join(', ')
+              : '_none_';
+            await this.sendDm(chatId,
+              `*Graduated scaling* — ${g.enabled ? '✅ ON' : '⏸ OFF'}\n\n` +
+              `Current level: *${g.currentLevel}*\n` +
+              `Active corps: *${g.currentTarget}/${g.totalCorps}*\n` +
+              `Thresholds: \`${lvlStr}\`  (hysteresis ${g.hysteresis}pp)\n` +
+              `Pause priority: ${g.priority} first\n` +
+              `Paused by graduated: ${paused}\n\n` +
+              `Commands:\n` +
+              `  \`/bot graduated on|off\`\n` +
+              `  \`/bot graduated levels 40:6,60:3,75:0\``);
+            return;
+          }
+          if (action === 'on') {
+            corpBot.setGraduatedEnabled(true);
+            await this.sendDm(chatId, `✅ Graduated scaling ENABLED.`);
+            return;
+          }
+          if (action === 'off') {
+            corpBot.setGraduatedEnabled(false);
+            await this.sendDm(chatId,
+              `⏸ Graduated scaling DISABLED. Bot reverts to binary all-on / panic-off behaviour.`);
+            return;
+          }
+          if (action === 'levels') {
+            const spec = parts.slice(2).join(' ').trim();
+            if (!spec) {
+              await this.sendDm(chatId, 'Usage: `/bot graduated levels 40:6,60:3,75:0`');
+              return;
+            }
+            const res = corpBot.setGraduatedLevels(spec);
+            if (!res.ok) {
+              await this.sendDm(chatId, `❌ ${res.reason}`);
+            } else {
+              await this.sendDm(chatId,
+                `✅ Levels updated: \`${(res.levels ?? []).map(l => l.danger+':'+l.corps).join(',')}\``);
+            }
+            return;
+          }
+          await this.sendDm(chatId, 'Usage: `/bot graduated [status|on|off|levels <spec>]`');
           return;
         }
 

@@ -423,6 +423,14 @@ async function main() {
   const getDecoratedState = () => {
     const s = engine.getState() as any;
     s.thresholdCliffGate = corpBot.getThresholdCliffState();
+    // Graduated scaling state — drives the dashboard CORPS line so the
+    // operator sees the current target/level at a glance instead of
+    // counting per-corp dots.
+    s.graduated = corpBot.getGraduatedState();
+    // Active schedule regime (weekday vs weekend). The bot picks the
+    // right array internally; we expose the label so the dashboard
+    // shows "now: WEEKEND 14h" rather than just "14h".
+    s.scheduleRegime = corpBot.getCurrentRegime();
     // Hedge bot state — small object, cheap to attach every tick.
     // Same source-of-truth pattern as the other engine bolt-ons.
     s.hedge = hedgeBot?.getState() ?? null;

@@ -16,6 +16,7 @@ import { logger } from '../logger';
 import { config as appConfig } from '../config';
 import type { TgBot } from './tgbot';
 import type { WalletBalances } from '../feeds/onchain-balances';
+import { isHktWeekend } from '../feeds/op-params';
 
 const RPC = 'https://mainnet.megaeth.com/rpc';
 
@@ -93,6 +94,7 @@ export interface CorpBotStatus {
   scheduleMode: 'auto' | 'manual';   // is bot following schedule, or locked?
   scheduleEnabled: boolean;
   hktHour: number;            // current HKT hour for context
+  scheduleRegime: 'weekday' | 'weekend';    // which array the scheduler is reading
   schedulePresetThisHour: string | null; // schedule-derived preset for current HKT hour
   dangerHigh: number;
   dangerLow: number;
@@ -201,7 +203,35 @@ export class CorpBot {
   private manualPresetName: string | null = null;
 
   // 24-element array indexed by HKT hour [0..23]. Each entry is a preset name.
-  private schedule: string[] = [];
+  // Schedule v4 — regime-aware. Two parallel 24-slot arrays so weekday
+  // and weekend can diverge. isHktWeekend() decides which array applies
+  // at tick time. The weekend cycle is Sat 17:00 → Mon 17:00 HKT — see
+  // feeds/op-params.ts::isHktWeekend for the canonical implementation.
+  //
+  // The arrays START identical (per CLAUDE.md lesson #27: Drug wins
+  // every hour in every regime under refund-aware DIRTY/INF accounting).
+  // Infrastructure exists so individual slots can diverge as the INF
+  // EFFICIENCY schedule-auditor accumulates per-regime evidence.
+  private scheduleConfig: { weekday: string[]; weekend: string[] } = {
+    weekday: [], weekend: [],
+  };
+  // Last regime we logged a transition for — drives the regime-transition
+  // record() line so we get exactly one log per Sat 17:00 / Mon 17:00 boundary.
+  private lastRegime: 'weekday' | 'weekend' | null = null;
+
+  // ── Graduated corp scaling (v4) ──
+  // Parsed from BOT_GRADUATED_LEVELS at startup; mutable via /bot graduated
+  // levels at runtime. Sorted ASCENDING by threshold so the lookup walks
+  // from low-danger to high-danger and picks the FIRST match.
+  private graduatedLevels: { danger: number; corps: number }[] = [];
+  private graduatedEnabled = true;
+  // Hysteretic level memory — remembers the last applied "active corps"
+  // count so scaling UP requires danger to drop below threshold − hysteresis.
+  // Initialized to a sentinel (-1) so the very first tick computes the
+  // current level from scratch.
+  private lastGraduatedTarget: number = -1;
+  // Last regime DM bucket — distinct from preset-change so a regime swap
+  // doesn't get swallowed by the preset cooldown.
 
   // Whether the schedule is active. When false, bot uses 'all-drug' as default
   // unless danger override or manual override kicks in.
@@ -468,11 +498,22 @@ export class CorpBot {
     //
     // Re-evaluate quarterly via the INF EFFICIENCY tile's schedule
     // auditor.
-    this.schedule = [
+    const DEFAULT_V4 = [
       'all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug', //  0- 7
       'all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug','all-drug', //  8-15
       'all-drug','all-drug','all-drug','all-drug','all-drug','paused',  'paused',  'all-drug', // 16-23
     ];
+    this.scheduleConfig = {
+      weekday: [...DEFAULT_V4],
+      weekend: [...DEFAULT_V4],
+    };
+
+    // Parse graduated-scaling thresholds from config. Levels are
+    // "danger:corps,..." sorted ascending by danger so the resolver
+    // walks low→high and stops at the FIRST threshold the current
+    // danger exceeds.
+    this.graduatedEnabled = appConfig.botGraduatedScaling;
+    this.graduatedLevels = this.parseGraduatedLevels(appConfig.botGraduatedLevels);
 
     // Load any persisted operator state — manualPresetName, locked corps,
     // burn-money state, schedule on/off, breaker tunables. Survives pm2
@@ -510,6 +551,12 @@ export class CorpBot {
         dangerLow:         this.dangerLow,
         panicThreshold:    this.panicThreshold,
         dmQuiet:           this.dmQuiet,
+        scheduleConfig:    {
+          weekday: [...this.scheduleConfig.weekday],
+          weekend: [...this.scheduleConfig.weekend],
+        },
+        graduatedEnabled:  this.graduatedEnabled,
+        graduatedLevels:   [...this.graduatedLevels],
         savedAt:           Date.now(),
       };
       const fs = require('fs');
@@ -553,6 +600,32 @@ export class CorpBot {
       if (typeof state.dangerLow     === 'number') this.dangerLow     = state.dangerLow;
       if (typeof state.panicThreshold === 'number') this.panicThreshold = state.panicThreshold;
       if (typeof state.dmQuiet === 'boolean') this.dmQuiet = state.dmQuiet;
+      // ── Schedule v4 (regime-aware) load + migration ──
+      // New format: { weekday: string[24], weekend: string[24] }
+      // Old format: schedule: string[24]  ← single array, both regimes
+      const isValid24 = (arr: any): arr is string[] =>
+        Array.isArray(arr) && arr.length === 24 && arr.every((s: any) => typeof s === 'string');
+      if (state.scheduleConfig
+          && isValid24(state.scheduleConfig.weekday)
+          && isValid24(state.scheduleConfig.weekend)) {
+        this.scheduleConfig.weekday = [...state.scheduleConfig.weekday];
+        this.scheduleConfig.weekend = [...state.scheduleConfig.weekend];
+      } else if (isValid24(state.schedule)) {
+        // Migrate: copy the legacy single array into both regime slots.
+        // Operator can then diverge them via /bot schedule weekend ....
+        this.scheduleConfig.weekday = [...state.schedule];
+        this.scheduleConfig.weekend = [...state.schedule];
+        this.record('info', '[CorpBot] migrated legacy single-array schedule → regime-aware config');
+      }
+      if (typeof state.graduatedEnabled === 'boolean') this.graduatedEnabled = state.graduatedEnabled;
+      if (Array.isArray(state.graduatedLevels)) {
+        const parsed = state.graduatedLevels
+          .filter((x: any) => Number.isFinite(x?.danger) && Number.isFinite(x?.corps))
+          .map((x: any) => ({ danger: x.danger, corps: x.corps }));
+        if (parsed.length > 0) {
+          this.graduatedLevels = parsed.sort((a: any, b: any) => a.danger - b.danger);
+        }
+      }
 
       logger.info({
         manualPresetName: this.manualPresetName,
@@ -691,10 +764,31 @@ export class CorpBot {
     if (this.inDangerState) {
       return { preset: this.presets['panic'], label: `danger:panic` };
     }
-    // 3. Schedule
+    // 3. Schedule — regime-aware (v4). Pick the weekday or weekend array
+    //    based on isHktWeekend(); the weekend cycle is Sat 17:00 → Mon
+    //    17:00 HKT per the canonical isHktWeekend() implementation.
     if (this.scheduleEnabled) {
       const hour = this.currentHKTHour();
-      const name = this.schedule[hour];
+      const regime: 'weekday' | 'weekend' = isHktWeekend(new Date()) ? 'weekend' : 'weekday';
+      // Log regime transitions exactly once each time the boundary is
+      // crossed (Sat 17:00 / Mon 17:00 HKT). Operators see this in
+      // /bot logs without needing a separate watcher.
+      if (this.lastRegime !== regime) {
+        this.record('info',
+          `[CorpBot] Schedule regime transition: ${this.lastRegime ?? 'init'} → ${regime}`);
+        // First-boot has lastRegime=null — don't DM, just sync the marker.
+        if (this.lastRegime !== null && this.operatorChatId) {
+          void this.notify(
+            `📅 *Schedule regime: ${regime.toUpperCase()}*\n` +
+            `Weekend cycle ${regime === 'weekend' ? 'started' : 'ended'} at HKT 17:00.\n` +
+            `Bot now uses the *${regime}* schedule array.`,
+            'regime-transition',
+          );
+        }
+        this.lastRegime = regime;
+      }
+      const arr = this.scheduleConfig[regime];
+      const name = arr[hour];
       // Hard guard: burn-money is operator-only and must NEVER fire from
       // the auto schedule even if a corrupt schedule entry tries to use it.
       if (name && name !== 'burn-money' && this.presets[name]) {
@@ -1096,7 +1190,10 @@ export class CorpBot {
     }
 
     const hktHour = this.currentHKTHour();
-    const schedulePreset = this.scheduleEnabled ? this.schedule[hktHour] : null;
+    const currentRegime: 'weekday' | 'weekend' = isHktWeekend(new Date()) ? 'weekend' : 'weekday';
+    const schedulePreset = this.scheduleEnabled
+      ? this.scheduleConfig[currentRegime][hktHour]
+      : null;
     const now = Date.now();
     const tripped = now < this.circuitBreakerUntil;
     // Recompute distinct-count for the current window so /bot status shows live pressure
@@ -1114,6 +1211,7 @@ export class CorpBot {
       scheduleMode:            this.manualPresetName ? 'manual' : 'auto',
       scheduleEnabled:         this.scheduleEnabled,
       hktHour,
+      scheduleRegime:          currentRegime,
       schedulePresetThisHour:  schedulePreset,
       dangerHigh:     this.dangerHigh,
       dangerLow:      this.dangerLow,
@@ -1146,7 +1244,204 @@ export class CorpBot {
   }
 
   /** Get the schedule (for /bot schedule). Returns 24-element array, HKT hour → preset name. */
-  getSchedule(): string[] { return [...this.schedule]; }
+  /**
+   * Backwards-compatible accessor — returns the CURRENT regime's array.
+   * Callers that need both regimes should use getScheduleConfig().
+   */
+  getSchedule(): string[] {
+    const regime: 'weekday' | 'weekend' = isHktWeekend(new Date()) ? 'weekend' : 'weekday';
+    return [...this.scheduleConfig[regime]];
+  }
+
+  /** Both regime arrays (weekday + weekend), each 24 slots. */
+  getScheduleConfig(): { weekday: string[]; weekend: string[] } {
+    return {
+      weekday: [...this.scheduleConfig.weekday],
+      weekend: [...this.scheduleConfig.weekend],
+    };
+  }
+
+  /** Active regime right now per HKT weekend cycle. */
+  getCurrentRegime(): 'weekday' | 'weekend' {
+    return isHktWeekend(new Date()) ? 'weekend' : 'weekday';
+  }
+
+  /**
+   * Count of corps that the bot will actively manage right now: the full
+   * corp list minus the operator-locked ones. Used by the dynamic-stagger
+   * sizing so adding/removing locks (or scaling-down via graduated mode)
+   * automatically retunes the gate window.
+   */
+  private getActiveCorpCount(): number {
+    let n = 0;
+    for (const c of this.corps) {
+      if (!this.lockedCorps.has(c.toLowerCase())) n++;
+    }
+    return n;
+  }
+
+  /**
+   * Dynamic stagger interval. The static `botStaggerMin` is a floor — auto
+   * mode (default) shrinks the interval as more corps come online so the
+   * whole fleet bootstraps inside one Drug-deal duration (~90 min) and the
+   * second wave starts with naturally decorrelated timing. With 9 corps at
+   * 8 min apart the last corp goes at t=64 min — comfortably inside a
+   * single Drug cycle.
+   *
+   * Buckets:
+   *   ≤3 corps → 15 min   (within 30 min total)
+   *   ≤6 corps → 10 min   (within 50 min)
+   *   ≤9 corps →  8 min   (within 64 min)
+   *   ≤12 corps→  6 min   (within 66 min)
+   *   else     →  5 min
+   *
+   * Set BOT_STAGGER_AUTO=false to revert to the static botStaggerMin.
+   */
+  getStaggerMinutes(): number {
+    if (!appConfig.botStaggerAuto) return appConfig.botStaggerMin;
+    const n = this.getActiveCorpCount();
+    if (n <= 3)  return 15;
+    if (n <= 6)  return 10;
+    if (n <= 9)  return 8;
+    if (n <= 12) return 6;
+    return 5;
+  }
+
+  /**
+   * Parse a "danger:corps,..." string into a sorted level table. Invalid
+   * entries are dropped silently — the caller falls back to the default
+   * levels when parsing yields fewer than one entry.
+   */
+  private parseGraduatedLevels(spec: string): { danger: number; corps: number }[] {
+    const out: { danger: number; corps: number }[] = [];
+    for (const part of spec.split(',')) {
+      const [d, c] = part.trim().split(':').map(s => parseInt(s, 10));
+      if (Number.isFinite(d) && Number.isFinite(c) && d >= 0 && d <= 100 && c >= 0) {
+        out.push({ danger: d, corps: c });
+      }
+    }
+    out.sort((a, b) => a.danger - b.danger);
+    return out;
+  }
+
+  /**
+   * How many corps should be active at the current danger score?
+   * Walks the level table ascending, returning the FIRST level whose
+   * threshold is exceeded by the danger score (with hysteresis applied
+   * when scaling UP — see `lastGraduatedTarget`). Returns the full corp
+   * count when graduated scaling is disabled or no level matches.
+   */
+  getGraduatedTarget(): { target: number; level: string } {
+    const total = this.corps.length;
+    if (!this.graduatedEnabled || this.graduatedLevels.length === 0) {
+      return { target: total, level: 'disabled' };
+    }
+    const danger = this.lastDanger ?? 0;
+    const hysteresis = appConfig.botGraduatedHysteresis;
+
+    // Walk levels descending — pick the strictest level whose
+    // (effective) threshold is met.
+    let picked: { danger: number; corps: number } | null = null;
+    for (let i = this.graduatedLevels.length - 1; i >= 0; i--) {
+      const lvl = this.graduatedLevels[i];
+      // If we're already AT or BELOW this corp count from a previous
+      // tick, require danger to drop by `hysteresis` before letting us
+      // climb back out. This is what stops the "danger hovers at 41"
+      // thrash that would otherwise toggle the level every tick.
+      const effectiveDanger = (this.lastGraduatedTarget >= 0
+        && this.lastGraduatedTarget <= lvl.corps)
+        ? Math.max(0, lvl.danger - hysteresis)
+        : lvl.danger;
+      if (danger >= effectiveDanger) {
+        picked = lvl;
+        break;
+      }
+    }
+    if (!picked) return { target: total, level: 'normal' };
+    // Label the level for log + dashboard output.
+    const idx = this.graduatedLevels.indexOf(picked);
+    const labels = ['elevated', 'high', 'critical'];
+    const label = picked.corps === 0
+      ? 'critical'
+      : (labels[idx] ?? `level-${idx}`);
+    return { target: Math.min(picked.corps, total), level: label };
+  }
+
+  /**
+   * Return corps ordered by pause-priority: corps that should be PAUSED
+   * FIRST come last in this list. We index by position in `this.corps`
+   * (which is L1→L2→L3 per the operator's CLAUDE.md corp table), so
+   * 'newest' means "pause the higher-indexed corps first" which matches
+   * the operator's preference of preserving L1 track record.
+   */
+  private getCorpsByPriority(): string[] {
+    const arr = [...this.corps];
+    if (appConfig.botGraduatedPriority === 'oldest') arr.reverse();
+    // For 'newest' (default), keep natural order — index 0..N is L1..L3.
+    return arr;
+  }
+
+  /** Operator-facing graduated-scaling state for /bot graduated + dashboard. */
+  getGraduatedState(): {
+    enabled: boolean;
+    levels: { danger: number; corps: number }[];
+    hysteresis: number;
+    priority: 'newest' | 'oldest';
+    currentTarget: number;
+    currentLevel: string;
+    totalCorps: number;
+    pausedCorps: string[];
+  } {
+    const total = this.corps.length;
+    let target = total;
+    let level = 'disabled';
+    let paused: string[] = [];
+    if (this.graduatedEnabled) {
+      const g = this.getGraduatedTarget();
+      target = g.target;
+      level = g.level;
+      const ordered = this.getCorpsByPriority()
+        .filter(c => !this.lockedCorps.has(c.toLowerCase()));
+      const nToPause = Math.max(0, ordered.length - target);
+      paused = ordered.slice(ordered.length - nToPause);
+    }
+    return {
+      enabled: this.graduatedEnabled,
+      levels: [...this.graduatedLevels],
+      hysteresis: appConfig.botGraduatedHysteresis,
+      priority: appConfig.botGraduatedPriority,
+      currentTarget: target,
+      currentLevel: level,
+      totalCorps: total,
+      pausedCorps: paused,
+    };
+  }
+
+  /** Enable / disable graduated scaling. Persisted. */
+  setGraduatedEnabled(enabled: boolean): void {
+    if (this.graduatedEnabled === enabled) return;
+    this.graduatedEnabled = enabled;
+    this.lastGraduatedTarget = -1;  // reset hysteresis memo
+    this.record('info', `[CorpBot] Graduated scaling ${enabled ? 'ENABLED' : 'disabled'}`);
+    this.saveState();
+  }
+
+  /**
+   * Parse + apply a new graduated-level spec ("danger:corps,...").
+   * Returns the parsed levels on success so callers can echo to the
+   * operator; returns ok:false with reason on a fully-invalid spec.
+   */
+  setGraduatedLevels(spec: string): { ok: boolean; reason?: string; levels?: { danger: number; corps: number }[] } {
+    const parsed = this.parseGraduatedLevels(spec);
+    if (parsed.length === 0) {
+      return { ok: false, reason: `no valid "danger:corps" pairs in '${spec}'` };
+    }
+    this.graduatedLevels = parsed;
+    this.lastGraduatedTarget = -1;
+    this.record('info', `[CorpBot] Graduated levels updated: ${parsed.map(l => l.danger+':'+l.corps).join(',')}`);
+    this.saveState();
+    return { ok: true, levels: parsed };
+  }
 
   /**
    * Lock the bot to a specific preset. Pass null/empty/'auto' to release back
@@ -1321,8 +1616,21 @@ export class CorpBot {
     return { ok: true };
   }
 
-  /** Set the schedule entry for one or more HKT hours. */
-  setScheduleHours(hours: number[], presetName: string): { ok: boolean; reason?: string } {
+  /**
+   * Set the schedule entry for one or more HKT hours.
+   *
+   * `regime`:
+   *   - omitted / 'both' → update BOTH weekday and weekend arrays
+   *     (backwards compatible with `/bot schedule <hour> <preset>`)
+   *   - 'weekday' / 'weekend' → only that regime's array
+   *
+   * Persisted to corp-bot-state.json so the edit survives pm2 restarts.
+   */
+  setScheduleHours(
+    hours: number[],
+    presetName: string,
+    regime: 'weekday' | 'weekend' | 'both' = 'both',
+  ): { ok: boolean; reason?: string } {
     const key = presetName.toLowerCase();
     if (!this.presets[key]) {
       return { ok: false, reason: `unknown preset '${presetName}'` };
@@ -1332,11 +1640,12 @@ export class CorpBot {
         return { ok: false, reason: `hour ${h} out of range (0-23)` };
       }
     }
-    for (const h of hours) this.schedule[h] = key;
-    this.record('info', `[CorpBot] Schedule updated: hours [${hours.join(',')}] → ${key}`);
-    // Note: schedule slots themselves aren't persisted (they live in code as
-    // the v2 default). If we ever expose runtime schedule editing as a
-    // persisted operator preference, save the schedule array too.
+    const apply = (arr: string[]) => { for (const h of hours) arr[h] = key; };
+    if (regime === 'weekday' || regime === 'both') apply(this.scheduleConfig.weekday);
+    if (regime === 'weekend' || regime === 'both') apply(this.scheduleConfig.weekend);
+    this.record('info',
+      `[CorpBot] Schedule updated (${regime}): hours [${hours.join(',')}] → ${key}`);
+    this.saveState();
     return { ok: true };
   }
 
@@ -1695,10 +2004,65 @@ export class CorpBot {
       );
     }
 
+    // ── Graduated scaling decision (Phase 3) ──────────────────
+    // Resolve which corps should be PAUSED-BY-GRADUATED this tick. The
+    // graduated layer sits BETWEEN the danger override (panic) and the
+    // schedule lookup in the priority chain (per the brief). Skip the
+    // decision entirely when the active preset is already paused
+    // (panic / breaker / manual paused / fallback) — graduated only
+    // matters when the bot would otherwise want corps active.
+    const pausedByGraduated = new Set<string>();
+    let graduatedTarget = this.corps.length;
+    let graduatedLevel = 'disabled';
+    if (this.graduatedEnabled && !this.targetPaused) {
+      const g = this.getGraduatedTarget();
+      graduatedTarget = g.target;
+      graduatedLevel = g.level;
+      // Pause priority: pause from the END of getCorpsByPriority() first
+      // ('newest' default keeps L1 corps active longest). Locked corps
+      // don't count toward the active budget — they're already manual.
+      const ordered = this.getCorpsByPriority()
+        .filter(c => !this.lockedCorps.has(c.toLowerCase()));
+      const nToPause = Math.max(0, ordered.length - graduatedTarget);
+      for (let k = ordered.length - nToPause; k < ordered.length; k++) {
+        pausedByGraduated.add(ordered[k].toLowerCase());
+      }
+      if (this.lastGraduatedTarget !== graduatedTarget) {
+        this.record('info',
+          `[CorpBot] Graduated → ${graduatedLevel} (${graduatedTarget}/${ordered.length} active, danger=${this.lastDanger ?? '?'})`);
+        // DM only on edge transitions — uses the per-kind cooldown so a
+        // rapidly-fluctuating danger doesn't spam. Suppressed entirely
+        // in quiet mode (notify() handles that).
+        if (this.operatorChatId && this.lastGraduatedTarget !== -1) {
+          void this.notify(
+            `🪜 *Graduated scaling → ${graduatedLevel}*\n` +
+            `Active corps: *${graduatedTarget}/${ordered.length}*  ·  danger: *${this.lastDanger ?? '?'}*\n` +
+            (pausedByGraduated.size > 0
+              ? `Paused first: ${[...pausedByGraduated].map(a => '`'+a.slice(0,10)+'..`').join(', ')}\n`
+              : '') +
+            `Threshold table: \`${this.graduatedLevels.map(l => l.danger+':'+l.corps).join(',')}\``,
+            'graduated-transition',
+          );
+        }
+        this.lastGraduatedTarget = graduatedTarget;
+      }
+    } else if (this.graduatedEnabled && this.targetPaused) {
+      // We're already paused upstream — clear the memo so the NEXT time
+      // upstream-pause lifts, the graduated layer starts fresh from
+      // "compute from scratch" rather than thinking we're mid-step-down.
+      this.lastGraduatedTarget = -1;
+      graduatedLevel = 'upstream-paused';
+      graduatedTarget = 0;
+    }
+
     for (let i = 0; i < this.contracts.length; i++) {
       const contract = this.contracts[i];
       const addr = this.corps[i];
       const label = addr.slice(0, 10);
+      // Graduated scaling can flip this corp into paused-mode for the
+      // current tick. Treated exactly like the targetPaused path below
+      // so the existing disable-auto-trade machinery handles it.
+      const corpPausedByGraduated = pausedByGraduated.has(addr.toLowerCase());
       // mutable so copy-mode can substitute the mode from a queued whale event
       let targetMode = this.targetModes[i] ?? MODE_DRUG;
       // The whale_copy_log row id assigned to this corp's bootstrap, if any.
@@ -1786,11 +2150,15 @@ export class CorpBot {
         }
 
         // --- Apply target state ---
-        if (this.targetPaused) {
-          // Paused preset — disable auto-trade if it's currently on. Saves INF
-          // in dead-zone hours where every op fails.
+        if (this.targetPaused || corpPausedByGraduated) {
+          // Paused preset OR graduated scaling paused THIS corp this tick.
+          // Disable auto-trade if it's currently on. Saves INF in dead-zone
+          // hours where every op fails, and during elevated/high danger
+          // scales back exposure on the newer (higher-index) corps first
+          // per the operator's L1>L2>L3 priority.
           if (autoOn && cooledDown) {
-            this.record('info', `[CorpBot] Disabling auto-trade ${label}.. (paused preset)`);
+            const reason = corpPausedByGraduated ? `graduated:${graduatedLevel}` : 'paused preset';
+            this.record('info', `[CorpBot] Disabling auto-trade ${label}.. (${reason})`);
             const tx = await contract.disableAutoTrade();
             await tx.wait();
             this.lastSwitch.set(addr, now);
@@ -1884,9 +2252,10 @@ export class CorpBot {
               `[CorpBot] copy-mode: ${label}.. → ${MODE_NAMES[targetMode]} (from whale ${ev.whale.slice(0,10)}..)`);
           }
           // Op-spacing gate: when multiple corps are eligible at once, only
-          // allow one bootstrap per `botStaggerMin` minutes. Waits decorrelate
-          // op exposure to ETH wicks. Skip when staggerMin=0 (disabled).
-          const staggerMs = appConfig.botStaggerMin * 60_000;
+          // allow one bootstrap per `getStaggerMinutes()` minutes (dynamic
+          // based on active corp count — see method comment). Waits
+          // decorrelate op exposure to ETH wicks. Skip when staggerMin=0.
+          const staggerMs = this.getStaggerMinutes() * 60_000;
           if (staggerMs > 0 && now < this.nextBootstrapAllowedTs) {
             const waitSec = Math.ceil((this.nextBootstrapAllowedTs - now) / 1000);
             this.record('info',

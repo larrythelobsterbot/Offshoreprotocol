@@ -2090,6 +2090,8 @@
         <span id="corpStatus" style="font-size:10px;color:var(--dim);">--</span>
       </div>
     </div>
+    <!-- Graduated scaling banner — drives the "N/M active (level)" line. -->
+    <div id="graduatedBanner" style="display:none;margin-top:6px;padding:6px 10px;border-radius:3px;font-family:'JetBrains Mono',monospace;font-size:11px;"></div>
     <div id="corpTable" class="corp-table">
       <div class="corp-row corp-row-header">
         <div>#</div>
@@ -5240,6 +5242,49 @@ function fmtCooldown(secRemain) {
   return `${m}m ${s.toString().padStart(2,'0')}s`;
 }
 
+// Graduated scaling indicator. Shows the current "N/M active" + level
+// label only when scaling is enabled AND the level is non-default
+// (i.e. fleet is actually contracted). Stays hidden in the common
+// "all active" case so it doesn't add noise to the OPS tab.
+function renderGraduatedBanner(s) {
+  const banner = document.getElementById('graduatedBanner');
+  if (!banner) return;
+  const g = s.graduated;
+  const regime = s.scheduleRegime;
+  if (!g || !g.enabled) {
+    // Still surface the regime label so the operator sees "WEEKEND"
+    // during the weekend cycle even if graduated is off.
+    if (regime) {
+      banner.style.display = '';
+      banner.style.background = 'rgba(168, 85, 247, 0.06)';
+      banner.style.borderLeft = '2px solid #a855f7';
+      banner.style.color = 'var(--text-mid)';
+      banner.innerHTML = `Regime: <b style="color:#c084fc">${regime.toUpperCase()}</b>`;
+    } else {
+      banner.style.display = 'none';
+    }
+    return;
+  }
+  const tone =
+    g.currentLevel === 'critical' ? { bg: 'rgba(255,23,68,0.10)', bd: '#ff1744', fg: '#ff6680' } :
+    g.currentLevel === 'high'     ? { bg: 'rgba(255,145,0,0.10)', bd: '#ff9100', fg: '#ffb74d' } :
+    g.currentLevel === 'elevated' ? { bg: 'rgba(255,230,0,0.10)', bd: '#ffe600', fg: '#fff176' } :
+                                    { bg: 'rgba(57,255,20,0.06)', bd: '#39ff14', fg: '#a3e635' };
+  banner.style.display = '';
+  banner.style.background = tone.bg;
+  banner.style.borderLeft = '3px solid ' + tone.bd;
+  banner.style.color = 'var(--text-mid)';
+  const pausedList = g.pausedCorps.length > 0
+    ? `  ·  paused: ${g.pausedCorps.map(a => `<code>${a.slice(0,10)}..</code>`).join(' ')}`
+    : '';
+  const regimeChip = regime
+    ? `  ·  <span style="color:#c084fc">${regime.toUpperCase()}</span>`
+    : '';
+  banner.innerHTML =
+    `CORPS: <b style="color:${tone.fg}">${g.currentTarget}/${g.totalCorps}</b> active ` +
+    `(<b>${g.currentLevel}</b>, danger ${s.scores?.dangerScore ?? '?'})${regimeChip}${pausedList}`;
+}
+
 function renderCorps(b) {
   const card = document.getElementById('corpCard');
   if (!b) { card.style.display = 'none'; return; }
@@ -5598,6 +5643,7 @@ function render(s) {
   // On-chain wallet + corp state + activity rollups
   if (s.walletBalances) renderWallet(s.walletBalances, s.ammRate);
   if (s.corpState) renderCorps(s.corpState);
+  renderGraduatedBanner(s);
   if (s.activity) renderActivity(s.activity);
 
   // Op outcome stats (empirical failure fractions)
