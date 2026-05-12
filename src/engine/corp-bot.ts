@@ -230,6 +230,12 @@ export class CorpBot {
   // Initialized to a sentinel (-1) so the very first tick computes the
   // current level from scratch.
   private lastGraduatedTarget: number = -1;
+  // Parallel hysteresis memory for the SHADOW (NH-effective-danger)
+  // counterfactual decision path. Tracked separately so the shadow
+  // counterfactual reflects "what live would have decided if NH had
+  // been live the whole time", not "effective danger evaluated against
+  // raw-path hysteresis". Codex audit 2026-05-12.
+  private lastNhShadowTarget: number = -1;
 
   // ── NetworkHealth → graduated-penalty fade ─────────────────────
   // Records the wall-clock time of the most recent NH "would-pause"
@@ -658,6 +664,11 @@ export class CorpBot {
         this.scheduleConfig.weekday = [...state.schedule];
         this.scheduleConfig.weekend = [...state.schedule];
         this.record('info', '[CorpBot] migrated legacy single-array schedule → regime-aware config');
+        // v4.1 weekday-15-16 migration also applies to the legacy path
+        // — older state files predate the dead-zone evidence. Same
+        // guard: only flip the exact v4.0 default. Codex audit fix #4.
+        if (this.scheduleConfig.weekday[15] === 'all-drug') this.scheduleConfig.weekday[15] = 'paused';
+        if (this.scheduleConfig.weekday[16] === 'all-drug') this.scheduleConfig.weekday[16] = 'paused';
       }
       if (typeof state.graduatedEnabled === 'boolean') this.graduatedEnabled = state.graduatedEnabled;
       if (Array.isArray(state.graduatedLevels)) {
@@ -1379,16 +1390,20 @@ export class CorpBot {
    * when scaling UP — see `lastGraduatedTarget`). Returns the full corp
    * count when graduated scaling is disabled or no level matches.
    */
-  getGraduatedTarget(dangerOverride?: number): { target: number; level: string } {
+  getGraduatedTarget(
+    dangerOverride?: number,
+    priorTarget?: number,
+  ): { target: number; level: string } {
     const total = this.corps.length;
     if (!this.graduatedEnabled || this.graduatedLevels.length === 0) {
       return { target: total, level: 'disabled' };
     }
-    // Default: raw composite danger. Callers can pass an override
-    // (e.g. effective danger with NH penalty applied) to evaluate the
-    // graduated decision under different inputs. Both shadow and live
-    // paths use this single resolver so they stay consistent.
+    // Default: raw composite danger + the live hysteresis memo. Shadow
+    // callers can pass an effective-danger override AND their own prior-
+    // target memo so they don't share hysteresis state with the live
+    // path (Codex audit #1).
     const danger = dangerOverride ?? this.lastDanger ?? 0;
+    const prior = priorTarget ?? this.lastGraduatedTarget;
     const hysteresis = appConfig.botGraduatedHysteresis;
 
     // Walk levels descending — pick the strictest level whose
@@ -1400,8 +1415,7 @@ export class CorpBot {
       // tick, require danger to drop by `hysteresis` before letting us
       // climb back out. This is what stops the "danger hovers at 41"
       // thrash that would otherwise toggle the level every tick.
-      const effectiveDanger = (this.lastGraduatedTarget >= 0
-        && this.lastGraduatedTarget <= lvl.corps)
+      const effectiveDanger = (prior >= 0 && prior <= lvl.corps)
         ? Math.max(0, lvl.danger - hysteresis)
         : lvl.danger;
       if (danger >= effectiveDanger) {
@@ -1433,8 +1447,13 @@ export class CorpBot {
     return arr;
   }
 
-  /** Operator-facing graduated-scaling state for /bot graduated + dashboard. */
-  getGraduatedState(): {
+  /**
+   * Operator-facing graduated-scaling state for /bot graduated + dashboard.
+   * `dangerOverride` lets callers (e.g. hedge activation, which must see
+   * what the bot is ACTUALLY doing with NH-live) evaluate at the effective
+   * danger rather than raw. Defaults to raw, matching pre-Codex behavior.
+   */
+  getGraduatedState(dangerOverride?: number): {
     enabled: boolean;
     levels: { danger: number; corps: number }[];
     hysteresis: number;
@@ -1449,7 +1468,7 @@ export class CorpBot {
     let level = 'disabled';
     let paused: string[] = [];
     if (this.graduatedEnabled) {
-      const g = this.getGraduatedTarget();
+      const g = this.getGraduatedTarget(dangerOverride);
       target = g.target;
       level = g.level;
       const ordered = this.getCorpsByPriority()
@@ -2139,11 +2158,15 @@ export class CorpBot {
       const g = this.getGraduatedTarget(useEffective ? effective : rawDanger);
       graduatedTarget = g.target;
       graduatedLevel = g.level;
-      // Shadow path: also compute what graduated WOULD have done under
-      // the effective-danger model, and log to defense_shadow_log when
-      // the decision differs from the raw-danger path.
+      // Shadow path: compute what graduated WOULD have done under the
+      // effective-danger model, using its OWN hysteresis memo so the
+      // counterfactual is "live-from-the-start" rather than "shadow
+      // borrowed live's stale memo". Update the shadow memo every tick
+      // (regardless of whether we log) so the next tick sees the
+      // shadow's prior target. Codex audit fix 2026-05-12.
       if (appConfig.botNhGraduatedShadow && nhPenalty > 0) {
-        const shadowG = this.getGraduatedTarget(effective);
+        const shadowG = this.getGraduatedTarget(effective, this.lastNhShadowTarget);
+        this.lastNhShadowTarget = shadowG.target;
         if (shadowG.target !== g.target) {
           try {
             this.storage?.insertShadowEvent({
@@ -2163,6 +2186,10 @@ export class CorpBot {
             });
           } catch { /* non-fatal */ }
         }
+      } else if (!appConfig.botNhGraduatedShadow) {
+        // LIVE mode: the live path IS the shadow path; keep the shadow
+        // memo synced so a later flip back to shadow starts coherent.
+        this.lastNhShadowTarget = g.target;
       }
       // Pause priority: pause from the END of getCorpsByPriority() first
       // ('newest' default keeps L1 corps active longest). Locked corps

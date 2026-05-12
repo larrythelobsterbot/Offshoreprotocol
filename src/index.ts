@@ -440,10 +440,17 @@ async function main() {
       fadeMinutes: config.botNhFadeMinutes,
     };
     const rsForHedge = redstone.getPrice();
+    const useEffectiveForHedge = !config.botNhGraduatedShadow;
+    const dangerForHedge = useEffectiveForHedge
+      ? corpBot.getEffectiveDanger()
+      : (corpBot.getStatus().lastDanger ?? 0);
+    const activeForHedge = corpBot.getGraduatedState(
+      useEffectiveForHedge ? dangerForHedge : undefined,
+    ).currentTarget;
     const hedgeDecision = hedgeBot.shouldActivateHedge({
-      dangerScore:  corpBot.getEffectiveDanger(),
+      dangerScore:  dangerForHedge,
       hktHour:      (new Date().getUTCHours() + 8) % 24,
-      activeCorps:  corpBot.getGraduatedState().currentTarget,
+      activeCorps:  activeForHedge,
       redstoneAlive: !!(rsForHedge && !rsForHedge.stale),
     });
     s.hedgeDecision = {
@@ -753,10 +760,18 @@ async function main() {
     const hs = hedgeBot.getState();
     if (hs.mode !== 'live') return 'stagger';
     const rs = redstone.getPrice();
+    // Match the danger lens to whichever NH mode is live: when the NH
+    // penalty IS applied to graduated decisions (botNhGraduatedShadow=false),
+    // both `dangerScore` and `activeCorps` must be derived from the
+    // effective-danger view so the hedge sees the same exposure the
+    // bot is actually running. Codex audit fix #2.
+    const useEffective = !config.botNhGraduatedShadow;
+    const dangerForHedge = useEffective ? corpBot.getEffectiveDanger() : (corpBot.getStatus().lastDanger ?? 0);
+    const activeForHedge = corpBot.getGraduatedState(useEffective ? dangerForHedge : undefined).currentTarget;
     const decision = hedgeBot.shouldActivateHedge({
-      dangerScore:  corpBot.getEffectiveDanger(),
+      dangerScore:  dangerForHedge,
       hktHour:      (new Date().getUTCHours() + 8) % 24,
-      activeCorps:  corpBot.getGraduatedState().currentTarget,
+      activeCorps:  activeForHedge,
       redstoneAlive: !!(rs && !rs.stale),
     });
     return decision.activate ? 'batch' : 'stagger';

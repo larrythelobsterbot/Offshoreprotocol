@@ -1414,6 +1414,10 @@ export class Storage {
       // oracle_divergence uses `ts` (ms epoch), not `timestamp`. Same
       // retention window applies.
       this.db.prepare('DELETE FROM oracle_divergence WHERE ts < ?').run(cutoff);
+      // defense_shadow_log: signal calibration data — same retention.
+      // Without this, nh_graduated rows accumulate at ~180/trip during
+      // a 90-min fade window. Codex audit fix 2026-05-12.
+      this.db.prepare('DELETE FROM defense_shadow_log WHERE ts < ?').run(cutoff);
       this.db.prepare('DELETE FROM hedge_shadow_log    WHERE ts < ?').run(cutoff);
     });
     txn();
