@@ -1226,13 +1226,20 @@ export class ApiServer {
       const untaggedWins  = Math.max(0, eff24h.overall.wins - taggedWins);
       const autoRestartSr = untaggedOps > 0 ? untaggedWins / untaggedOps : null;
 
-      // Operator's last cycle claim — pull from whaleClaims state if
-      // available (cheap; already maintained by the feed).
-      const ownLower = config.walletAddress.toLowerCase();
-      const recentOwn = ((state?.whaleClaims?.recent ?? []) as Array<any>)
-        .filter(c => (c.claimer ?? '').toLowerCase() === ownLower)
-        .sort((a, b) => b.ts - a.ts);
-      const lastClaim = recentOwn[0] ?? null;
+      // Pull operator claims from DB directly. The in-memory whaleClaims
+      // ring only holds the most recent N claims across ALL whales, so
+      // operator's claims get evicted under heavy network activity and
+      // we'd undercount today's revenue. DB join via cycleBurnVsClaim
+      // gives us the authoritative cycle-by-cycle list.
+      const bvc24h = this.storage.getOperatorBurnVsClaim({
+        operator: config.walletAddress,
+        days: 1,
+      });
+      const claims24h = bvc24h.cycles;
+      const sumClaims24h = claims24h.reduce((s, c) => s + c.claim_usdm, 0);
+      const lastClaim = claims24h.length > 0
+        ? claims24h.sort((a, b) => b.claim_ts - a.claim_ts)[0]
+        : null;
 
       // Pool / cycle data from the existing loadout-scanner snapshot.
       const cycle = state?.loadouts?.cycle ?? null;
@@ -1241,10 +1248,10 @@ export class ApiServer {
       }>;
       const prevCycleTotal = cycleTotals[0] ?? null;
 
-      // Operator share estimate = last cycle claim / last cycle pool.
+      // Operator share estimate = last cycle claim / last cycle total.
       // Stable proxy until proper laundering-cash denominator wiring.
       const opShare = (lastClaim && prevCycleTotal?.total_usdm)
-        ? lastClaim.usdm_amount / prevCycleTotal.total_usdm
+        ? lastClaim.claim_usdm / prevCycleTotal.total_usdm
         : null;
       // Estimated current-cycle claim = share × current netPool.
       const estClaim = (cycle && opShare)
@@ -1352,17 +1359,21 @@ export class ApiServer {
         generatedAt: Date.now(),
         pnl: {
           today: {
-            netUsdm: (lastClaim?.usdm_amount ?? 0) - eff24h.overall.inf_spent,
+            // Sum ALL operator claims in the last 24h (not just the latest)
+            // so the net P&L reflects total inflow vs total INF burned.
+            claims: sumClaims24h,
+            netUsdm: sumClaims24h - eff24h.overall.inf_spent,
             infBurned: eff24h.overall.inf_spent,
             dirtyEarned: eff24h.overall.dirty_earned,
             dirtyPerInfLost: eff24h.overall.dirty_per_inf,
             srPct: eff24h.overall.sr * 100,
             ops: eff24h.overall.ops,
+            claimCount: claims24h.length,
           },
           lastCycle: lastClaim ? {
             cycleId: lastClaim.cycle_id,
-            claim: lastClaim.usdm_amount,
-            ts: lastClaim.ts,
+            claim: lastClaim.claim_usdm,
+            ts: lastClaim.claim_ts,
           } : null,
           avg7d: {
             dirtyPerInfLost: eff7d.overall.dirty_per_inf,
