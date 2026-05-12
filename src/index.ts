@@ -700,10 +700,10 @@ async function main() {
       '0x103469af1609c2341ae313e6fbfaab56022faa1a',
       '0x35ebd95455aae47b66b4baf10654c34898aefa67',
       '0x67aee1ca6e9b37ccfcbb9d62efd8a6a3f32db49f',
-      // L3 region (locations 6-8) — locked behind PL3 (3,600 XP + $250 unlock)
-      // '0xf3bbfb854d57abf0cdda5b2a5219f5e2ca026c85',
-      // '0xd9552288607fec4c113372f38f78347a050b60de',
-      // '0x1e99791a6bd597ff892e0c6ae405b440aa582c7c',
+      // L3 region (locations 6-8) — wired 2026-05-12 after PL3 unlock
+      '0xf3bbfb854d57abf0cdda5b2a5219f5e2ca026c85',
+      '0xd9552288607fec4c113372f38f78347a050b60de',
+      '0x1e99791a6bd597ff892e0c6ae405b440aa582c7c',
     ],
     tgBot: bot,
     operatorChatId: config.operatorChatId,
