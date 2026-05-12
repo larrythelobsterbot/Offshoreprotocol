@@ -227,6 +227,96 @@ export class TgBot {
     }
   }
 
+  /**
+   * Full subsystem dump — per-corp on-chain state, locks, grace timers,
+   * SafetyGate, INF cost. Pre-revamp `/bot status` contents, now reachable
+   * via `/bot systems`. Pure-string output (no inline keyboard).
+   */
+  private composeSystemsDump(corpBot: CorpBot): string {
+    const s = corpBot.getStatus();
+    const fmt = (n: number, dec = 2) => n.toLocaleString('en-US', {
+      minimumFractionDigits: dec, maximumFractionDigits: dec,
+    });
+    const rate = (r: number | null, suffix: string) =>
+      r === null ? '' : ` _(${r >= 0 ? '+' : ''}${fmt(r, 1)}${suffix})_`;
+
+    const corps = s.perCorp.length === 0
+      ? '  _(no corp data yet)_'
+      : s.perCorp.map(c =>
+          `  \`${c.addr.slice(0, 10)}..\` ${c.auto ? '✅' : '❌'} ${c.modeName}`
+        ).join('\n');
+
+    const balancesBlock = s.balances
+      ? `*Wallet:*
+  INF:    \`${fmt(s.balances.inf)}\`${rate(s.balances.infPerHr,   '/hr')}
+  DIRTY:  \`${fmt(s.balances.dirty)}\`${rate(s.balances.dirtyPerHr, '/hr')}
+  USDM:   \`${fmt(s.balances.usdm)}\`${rate(s.balances.usdmPerHr,  '/hr')}`
+      : '_(wallet balances warming up)_';
+
+    const opParams = (this.cfg.getState?.() as any)?.opParams;
+    const infCostBlock = opParams?.infCostPerOp
+      ? `*INF cost/op:* \`${opParams.infCostPerOp.toFixed(2)}\` _(n=${opParams.infCostSampleCount ?? 0})_`
+      : '';
+
+    const locked = corpBot.getLockedCorps();
+    const overrides = corpBot.getOperatorOverrides();
+    const lockLines: string[] = [];
+    if (locked.length > 0) {
+      const labels = locked.map(addr => {
+        const idx = s.perCorp.findIndex(c => c.addr.toLowerCase() === addr) + 1;
+        return idx > 0 ? '#' + idx : addr.slice(0, 8);
+      }).join(', ');
+      lockLines.push(`*Locked corps:* 🔒 ${labels}`);
+    }
+    if (overrides.length > 0) {
+      const lines = overrides.map(o => {
+        const idx = s.perCorp.findIndex(c => c.addr.toLowerCase() === o.corp) + 1;
+        const m = Math.ceil(o.remainingMs / 60_000);
+        return `  ${idx > 0 ? '#' + idx : o.corp.slice(0,8)} (${m}m remaining)`;
+      }).join('\n');
+      lockLines.push(`*Operator grace:* ✋\n${lines}`);
+    }
+
+    const scores = (this.cfg.getState?.() as any)?.scores;
+    let gateBlock = '';
+    try {
+      if (!appConfig.safetyGateDisabled) {
+        const sinceMs = Date.now() - 24 * 3600_000;
+        const rollup = this.cfg.storage?.getSafetyGateRollup(sinceMs) ?? [];
+        const allow = rollup.find(r => r.decision === 'allow')?.n ?? 0;
+        const block = rollup.find(r => r.decision === 'block')?.n ?? 0;
+        const mode = appConfig.safetyGateShadow ? 'SHADOW' : 'LIVE';
+        const fmtScore = (n: number | null | undefined) => n == null ? '—' : n.toFixed(0);
+        gateBlock =
+          `*SafetyGate* \`${mode}\` · scores Ext=${fmtScore(scores?.extortion)} ` +
+          `Arms=${fmtScore(scores?.arms)} Drug=${fmtScore(scores?.drug)}\n` +
+          `  thresholds: Drug≥${appConfig.safetyGateDrugThreshold || 'OFF'} · ` +
+          `Arms≥${appConfig.safetyGateArmsThreshold || 'OFF'} · Ext≥${appConfig.safetyGateExtThreshold || 'OFF'}\n` +
+          `  24h: ${allow} allow · ${block} would-block`;
+      }
+    } catch { /* tolerate */ }
+
+    const breakerLine = s.circuitBreaker.tripped
+      ? `🚨 *Breaker TRIPPED* — clears in ${Math.floor(s.circuitBreaker.cooldownSecondsRemaining / 60)}m`
+      : s.circuitBreaker.recentLiquidationCount > 0
+        ? `Breaker pressure: ${s.circuitBreaker.recentLiquidationCount}/${s.circuitBreaker.threshold} in last ${(s.circuitBreaker.windowSeconds/60).toFixed(0)}m`
+        : '';
+
+    const parts = [
+      `*🔧 Systems dump*`,
+      `Signer: \`${s.signer ?? '(none)'}\``,
+      `Owns: ${s.ownedCorps}/${s.totalCorps} corps`,
+      breakerLine,
+      ...lockLines,
+      infCostBlock,
+      gateBlock,
+      balancesBlock,
+      `*Per-corp on-chain:*\n${corps}`,
+    ].filter(Boolean);
+
+    return parts.join('\n\n');
+  }
+
   /** Build inline keyboard markup from a 2D button grid. */
   private kb(rows: IKBtn[][]): any {
     return {
@@ -504,138 +594,20 @@ Both of us get a bonus when you join.`);
     try {
       switch (sub) {
         case 'status': {
-          const s = corpBot.getStatus();
-          const corps = s.perCorp.length === 0
-            ? '  _(no corp data yet — wait for first tick)_'
-            : s.perCorp.map(c =>
-                `  \`${c.addr.slice(0, 10)}..\` ${c.auto ? '✅' : '❌'} ${c.modeName}`
-              ).join('\n');
+          // Use the unified rich status view (same one served via the
+          // inline-keyboard menu) so the text command and the GUI never
+          // drift. Per-corp / SafetyGate / locked-corps detail moved to
+          // `/bot systems` for operators who want the full dump.
+          const { text, rows } = this.renderStatusMenu();
+          await this.sendDmKb(chatId, text, rows);
+          return;
+        }
 
-          // Balances block — only render when the OnchainBalancesFeed has data.
-          // Per-hour rates only show after the 60s baseline is established.
-          const fmt = (n: number, dec = 2) => n.toLocaleString('en-US', {
-            minimumFractionDigits: dec, maximumFractionDigits: dec,
-          });
-          const rate = (r: number | null, suffix: string) =>
-            r === null ? '' : ` _(${r >= 0 ? '+' : ''}${fmt(r, 1)}${suffix})_`;
-
-          const balancesBlock = s.balances ? `
-*Wallet:*
-  INF:    \`${fmt(s.balances.inf)}\`${rate(s.balances.infPerHr,   '/hr')}
-  DIRTY:  \`${fmt(s.balances.dirty)}\`${rate(s.balances.dirtyPerHr, '/hr')}
-  USDM:   \`${fmt(s.balances.usdm)}\`${rate(s.balances.usdmPerHr,  '/hr')}
-` : '\n_(wallet balances unavailable — feed warming up)_\n';
-
-          // Live INF cost per op (post-DIRTY-price-adjusted). Single global
-          // value across all modes per chain sampling 2026-05-09. Pulled from
-          // OpParamsFeed via the engine state getter.
-          const opParams = (this.cfg.getState?.() as any)?.opParams;
-          const infCostBlock = opParams?.infCostPerOp
-            ? `*INF cost/op:* \`${opParams.infCostPerOp.toFixed(2)}\` _(network-median, n=${opParams.infCostSampleCount ?? 0})_\n`
-            : '';
-
-          // Locked corps + operator-override grace state. Operator-only
-          // controls — surface so the operator can see what's currently
-          // outside the bot's reach.
-          const locked = corpBot.getLockedCorps();
-          const overrides = corpBot.getOperatorOverrides();
-          let lockBlock = '';
-          if (locked.length > 0) {
-            const labels = locked.map(addr => {
-              const idx = s.perCorp.findIndex(c => c.addr.toLowerCase() === addr) + 1;
-              return idx > 0 ? '#' + idx : addr.slice(0, 8);
-            }).join(', ');
-            lockBlock += `*Locked corps:* 🔒 ${labels}\n`;
-          }
-          if (overrides.length > 0) {
-            const lines = overrides.map(o => {
-              const idx = s.perCorp.findIndex(c => c.addr.toLowerCase() === o.corp) + 1;
-              const m = Math.ceil(o.remainingMs / 60_000);
-              return `  ${idx > 0 ? '#' + idx : o.corp.slice(0,8)} (${m}m remaining)`;
-            }).join('\n');
-            lockBlock += `*Operator grace:* ✋\n${lines}\n`;
-          }
-
-          // SafetyGate state — shadow vs live, current per-op safety scores,
-          // 24h decision rollup. The gate is shadow-by-default until we
-          // have ~5-7 days of decisions to validate against op_outcomes.
-          const scores = (this.cfg.getState?.() as any)?.scores;
-          let gateBlock = '';
-          try {
-            const config = require('../config').config;
-            if (!config.safetyGateDisabled) {
-              const sinceMs = Date.now() - 24 * 3600_000;
-              const rollup = this.cfg.storage?.getSafetyGateRollup(sinceMs) ?? [];
-              const allow = rollup.find(r => r.decision === 'allow')?.n ?? 0;
-              const block = rollup.find(r => r.decision === 'block')?.n ?? 0;
-              const mode = config.safetyGateShadow ? 'SHADOW' : 'LIVE';
-              const tDrug = config.safetyGateDrugThreshold;
-              const tArms = config.safetyGateArmsThreshold;
-              const tExt  = config.safetyGateExtThreshold;
-              const fmtScore = (n: number | null | undefined) => n == null ? '—' : n.toFixed(0);
-              gateBlock =
-                `*SafetyGate:* \`${mode}\` · live scores ` +
-                `Ext=${fmtScore(scores?.extortion)} ` +
-                `Arms=${fmtScore(scores?.arms)} ` +
-                `Drug=${fmtScore(scores?.drug)}\n` +
-                `   thresholds: Drug≥${tDrug || 'OFF'} · Arms≥${tArms || 'OFF'} · Ext≥${tExt || 'OFF'}\n` +
-                `   24h decisions: ${allow} allow · ${block} would-block\n`;
-            }
-          } catch { /* status renders without gate block on error */ }
-
-          // Format target modes per corp
-          const targetStr = s.targetModes.map((m, i) =>
-            `corp${i+1}=${['Ext','Arms','Drug'][m] ?? m}`
-          ).join(', ');
-
-          // Schedule line — also explain the FALLBACK so the operator
-          // understands what happens when both schedule + manual are off.
-          const scheduleLine = s.scheduleEnabled
-            ? `Schedule: ON · ${s.hktHour.toString().padStart(2,'0')}h HKT → \`${s.schedulePresetThisHour}\``
-            : `Schedule: OFF — fallback is *paused* (use \`/bot on\` to resume)`;
-          // Decode the activePresetName label into a readable "why":
-          //   manual:X            → "manual override → X"
-          //   auto:X              → "schedule slot → X"
-          //   breaker:paused      → "circuit breaker tripped"
-          //   danger:panic        → "danger override active"
-          //   fallback:X          → "fallback (no schedule, no manual) → X"
-          const presetSourceExplain = (label: string) => {
-            if (label.startsWith('manual:'))     return '🔒 manual lock';
-            if (label.startsWith('auto:'))       return '📅 schedule';
-            if (label.startsWith('breaker:'))    return '🚨 circuit breaker';
-            if (label.startsWith('danger:'))     return '⚠ danger override';
-            if (label.startsWith('fallback:'))   return '⤵ fallback';
-            return '?';
-          };
-          const sourceTag = presetSourceExplain(s.activePresetName);
-
-          // Circuit breaker line — only show when notable (tripped or pressure building)
-          const cb = s.circuitBreaker;
-          let breakerLine = '';
-          if (cb.tripped) {
-            const m = Math.floor(cb.cooldownSecondsRemaining / 60);
-            breakerLine = `\n🚨 *Breaker TRIPPED* — clears in ${m}m ${cb.cooldownSecondsRemaining % 60}s`;
-          } else if (cb.recentLiquidationCount > 0) {
-            breakerLine = `\nBreaker pressure: ${cb.recentLiquidationCount}/${cb.threshold} corps liquidated in last ${(cb.windowSeconds/60).toFixed(0)}m`;
-          }
-
-          await this.sendDm(chatId,
-`*🤖 Corp Bot Status*
-
-State: ${s.running ? (s.paused ? '⏸ *PAUSED*' : '▶️ Running') : '⛔ Stopped'}
-Signer: \`${s.signer ?? '(none)'}\`
-Owns:   ${s.ownedCorps}/${s.totalCorps} corps
-
-*Active preset:* \`${s.activePresetName}\`
-   *Source:* ${sourceTag}
-Targets: ${targetStr}
-${scheduleLine}
-Last danger: ${s.lastDanger ?? '_n/a_'} (panic at ≥${s.panicThreshold})${breakerLine}
-${lockBlock}${infCostBlock}${gateBlock}${balancesBlock}
-*Per-corp on-chain:*
-${corps}
-
-Subcommands: \`/bot help\``);
+        case 'systems': {
+          // Full subsystem dump — per-corp on-chain state, locked corps,
+          // grace timers, SafetyGate, INF cost. The pre-revamp /bot status
+          // contents, now opt-in via /bot systems.
+          await this.sendDm(chatId, this.composeSystemsDump(corpBot));
           return;
         }
 
@@ -644,7 +616,8 @@ Subcommands: \`/bot help\``);
 `*🤖 Corp Bot — admin commands*
 
 *State:*
-\`/bot\` — current state
+\`/bot\` — rich status (P&L · fleet · danger · cycle · wallet)
+\`/bot systems\` — full subsystem dump (per-corp · safety gate · locks)
 \`/bot logs\` — last 20 CorpBot log lines
 \`/bot claim\` — claim pending rewards on all corps now
 \`/bot eff [hours]\` — on-demand INF efficiency DM (default 24h)
@@ -1568,81 +1541,272 @@ Subcommands:
     await this.sendDmKb(chatId, text, rows);
   }
 
+  /**
+   * Main menu = the rich status view. Two-button "Status" surfaces both at
+   * the top (refresh / show again) and a normal main-menu nav below.
+   */
   private renderMainMenu(): { text: string; rows: IKBtn[][] } {
-    const cb = this.cfg.corpBot;
-    if (!cb) {
-      return {
-        text: '*🤖 Offshore Bot*\n\n_Trading bot disabled (no MAIN_KEY)._',
-        rows: [],
-      };
-    }
-    const s = cb.getStatus();
-    const stateEmoji = s.running
-      ? (s.paused ? '⏸ Paused' : '▶️ Running')
-      : '⛔ Stopped';
-    const breaker = s.circuitBreaker.tripped
-      ? `🚨 BREAKER TRIPPED — ${Math.floor(s.circuitBreaker.cooldownSecondsRemaining/60)}m left`
-      : '';
-    const danger = s.lastDanger ?? '?';
-    const targetStr = s.targetModes.map((m,i) =>
-      `c${i+1}=${['E','A','D'][m] ?? '?'}`
-    ).join(' ');
-
-    return {
-      text:
-`*🤖 Offshore Bot — Main Menu*
-
-State: ${stateEmoji}
-Active: \`${s.activePresetName}\` (${s.scheduleMode})
-Targets: ${targetStr}
-HKT: ${s.hktHour.toString().padStart(2,'0')}h → \`${s.schedulePresetThisHour ?? 'off'}\`
-Danger: ${danger}/100${breaker ? '\n\n' + breaker : ''}
-
-Tap a button:`,
-      rows: [
-        [{text:'📊 Full Status', data:'menu:status'}, {text:'💰 Wallet', data:'menu:wallet'}],
-        [{text:'🎯 Presets',     data:'menu:presets'}, {text:'📅 Schedule', data:'menu:schedule'}],
-        [{text:'🔌 Breaker',     data:'menu:breaker'}, {text:'⚙️ Config',  data:'menu:config'}],
-        [{text:'💸 Claim Now',   data:'action:claim'}, {text:s.paused ? '▶️ Resume' : '⏸ Pause', data:s.paused ? 'action:resume' : 'action:pause'}],
-        [{text:'📋 Recent Logs', data:'menu:logs'},    {text:'🔄 Refresh', data:'menu:main'}],
-      ],
-    };
+    return this.renderStatusMenu();
   }
 
+  /**
+   * Rich sectioned status. Sources:
+   *   - corpBot.getStatus()                  fleet/preset/balances/breaker
+   *   - corpBot.getGraduatedState()          live graduated target (with effective danger)
+   *   - corpBot.getNhPenalty()               NH cascade penalty (faded)
+   *   - corpBot.getEffectiveDanger()         danger + NH penalty
+   *   - getState() (decorated)               cycle pool / hedge / regime
+   *   - computeEfficiency(storage, 24h)      P&L / SR / D-per-INF
+   *   - storage.getOperatorBurnVsClaim(1d)   24h claim sum
+   *
+   * Keyboard is CONTEXTUAL — adapts to graduated active / breaker tripped /
+   * paused / hedge active. See buildContextualRows().
+   */
   private renderStatusMenu(): { text: string; rows: IKBtn[][] } {
     const cb = this.cfg.corpBot;
-    if (!cb) return { text: 'Trading bot disabled.', rows: [[{text:'← Back',data:'menu:main'}]] };
+    if (!cb) {
+      return { text: '*🤖 Offshore Bot*\n\n_Trading bot disabled (no MAIN_KEY)._', rows: [] };
+    }
     const s = cb.getStatus();
+    const state: any = this.cfg.getState?.() ?? {};
 
-    const fmt = (n: number, dec=2) => n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
-    const balLine = s.balances
-      ? `INF: \`${fmt(s.balances.inf, 0)}\` · DIRTY: \`${fmt(s.balances.dirty, 0)}\` · USDM: \`${fmt(s.balances.usdm, 0)}\``
-      : '_(balances warming up)_';
-    const corps = s.perCorp.length === 0
-      ? '  _(no data yet)_'
-      : s.perCorp.map(c => `  \`${c.addr.slice(0,10)}..\` ${c.auto ? '✅' : '❌'} ${c.modeName}`).join('\n');
+    const fmt = (n: number, dec = 0) =>
+      n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+    const fmtUsd = (n: number) => `$${fmt(Math.round(n))}`;
+    const fmtSigned = (n: number) => (n >= 0 ? '+' : '') + fmtUsd(n);
 
-    return {
-      text:
-`*📊 Full Status*
+    // ── P&L (24h) ────────────────────────────────────────────────
+    let pnlBlock = '_(P&L unavailable)_';
+    let srPct: number | null = null;
+    let dPerInf: number | null = null;
+    let infBurned24h = 0;
+    let claimSum24h = 0;
+    try {
+      const { computeEfficiency } = require('./efficiency') as typeof import('./efficiency');
+      const eff = computeEfficiency(this.cfg.storage, { windowHours: 24 });
+      const bvc = this.cfg.storage.getOperatorBurnVsClaim({
+        operator: appConfig.walletAddress,
+        days: 1,
+      });
+      claimSum24h = bvc.cycles.reduce((acc: number, c: any) => acc + c.claim_usdm, 0);
+      infBurned24h = eff.overall.inf_spent;
+      const net = claimSum24h - infBurned24h;
+      srPct = eff.overall.sr * 100;
+      dPerInf = eff.overall.dirty_per_inf;
+      const dpiStr = Number.isFinite(dPerInf as number)
+        ? (dPerInf as number).toFixed(2)
+        : '∞';
+      pnlBlock =
+`*💰 P&L (24h):*
+  Claims: ${fmtUsd(claimSum24h)} · Burned: ${fmt(infBurned24h)} INF
+  Net: ${fmtSigned(net)} USDm
+  SR: ${srPct.toFixed(1)}% · D/INF: ${dpiStr}`;
+    } catch (err: any) {
+      logger.warn({ err: err.message }, '[TgBot] status P&L block failed');
+    }
 
-State: ${s.running ? (s.paused ? '⏸ Paused' : '▶️ Running') : '⛔ Stopped'}
-Owns: ${s.ownedCorps}/${s.totalCorps} corps
-Active preset: \`${s.activePresetName}\` (${s.scheduleMode})
-
-Schedule: ${s.scheduleEnabled ? 'ON' : 'OFF'} · ${s.hktHour.toString().padStart(2,'0')}h HKT → \`${s.schedulePresetThisHour ?? '—'}\`
-Danger thresholds: panic ≥${s.panicThreshold} · band ${s.dangerLow}/${s.dangerHigh}
-Last danger: ${s.lastDanger ?? '—'}
-
-*Wallet:*
-${balLine}
-
-*Per-corp:*
-${corps}`,
-      rows: [
-        [{text:'🔄 Refresh', data:'menu:status'}, {text:'← Back', data:'menu:main'}],
-      ],
+    // ── FLEET ────────────────────────────────────────────────
+    const presetSourceTag = (label: string) => {
+      if (label.startsWith('manual:'))   return '🔒 manual';
+      if (label.startsWith('auto:'))     return '📅 schedule';
+      if (label.startsWith('breaker:'))  return '🚨 breaker';
+      if (label.startsWith('danger:'))   return '⚠ danger override';
+      if (label.startsWith('fallback:')) return '⤵ fallback';
+      return '?';
     };
+    const grad = cb.getGraduatedState(cb.getEffectiveDanger());
+    const activeCorps = s.perCorp.filter(c => c.auto).length;
+    const fleetCount = grad.enabled && grad.currentTarget < grad.totalCorps
+      ? `${grad.currentTarget}/${grad.totalCorps} (graduated: ${grad.currentLevel})`
+      : `${activeCorps}/${s.totalCorps}`;
+    let fleetBlock =
+`*🚢 FLEET:*
+  Active: ${fleetCount} corps · \`${s.activePresetName}\` ${presetSourceTag(s.activePresetName)}`;
+    if (grad.enabled && grad.pausedCorps.length > 0) {
+      fleetBlock += `\n  Paused (graduated): ${grad.pausedCorps.length} corp${grad.pausedCorps.length > 1 ? 's' : ''}`;
+    }
+
+    // ── DANGER ────────────────────────────────────────────────
+    const nhPen = cb.getNhPenalty();
+    const effDanger = cb.getEffectiveDanger();
+    const rawDanger = s.lastDanger ?? 0;
+    const nhStr = nhPen > 0 ? ` · NH +${nhPen}` : '';
+    let dangerStr = `${effDanger}/100`;
+    if (nhPen > 0) dangerStr = `${rawDanger}→${effDanger}/100${nhStr}`;
+    const dangerBlock =
+`*🌊 DANGER:* ${dangerStr} (band ${s.dangerLow}-${s.dangerHigh}, panic ≥${s.panicThreshold})`;
+
+    // ── OPS / SCHEDULE ────────────────────────────────────────
+    const regime = cb.getCurrentRegime();
+    const scheduleLine = s.scheduleEnabled
+      ? `${String(s.hktHour).padStart(2,'0')}h HKT → \`${s.schedulePresetThisHour ?? '—'}\` (${regime})`
+      : `OFF — fallback paused`;
+    const opsBlock = `*⏱ OPS:* ${scheduleLine}`;
+
+    // ── CYCLE ────────────────────────────────────────────────
+    let cycleBlock = '';
+    const cyc = state?.loadouts?.cycle;
+    if (cyc) {
+      const secs = cyc.secondsRemaining ?? 0;
+      const hrs = Math.floor(secs / 3600);
+      const mins = Math.floor((secs % 3600) / 60);
+      const remaining = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
+      const pool = cyc.netPool ?? cyc.pool ?? 0;
+      cycleBlock = `*🏦 CYCLE:* ends in ${remaining} · pool ${fmtUsd(pool)}`;
+    }
+
+    // ── WALLET ────────────────────────────────────────────────
+    const balRate = (r: number | null | undefined, suffix: string) =>
+      r == null ? '' : ` _(${r >= 0 ? '+' : ''}${r.toFixed(1)}${suffix})_`;
+    let walletBlock = '_(wallet warming up)_';
+    if (s.balances) {
+      walletBlock =
+`*💵 WALLET:*
+  INF: \`${fmt(s.balances.inf)}\`${balRate(s.balances.infPerHr, '/hr')}
+  DIRTY: \`${fmt(s.balances.dirty)}\` · USDM: \`${fmt(s.balances.usdm)}\``;
+    }
+
+    // ── HEDGE / BREAKER alerts (top-of-strip) ─────────────────
+    const banners: string[] = [];
+    if (s.circuitBreaker.tripped) {
+      const m = Math.floor(s.circuitBreaker.cooldownSecondsRemaining / 60);
+      banners.push(`🚨 BREAKER TRIPPED — clears in ${m}m`);
+    }
+    const hedge = state?.hedge;
+    if (hedge?.mode === 'live' && hedge?.activeHedge) {
+      const ah = hedge.activeHedge;
+      banners.push(`🛡 HEDGE active — short $${ah.notional?.toFixed(0)} · TP $${ah.takeProfitPrice?.toFixed(2)}`);
+    } else if (hedge?.enabled && hedge?.mode === 'shadow' && (hedge?.stats?.totalShadowOpens ?? 0) > 0) {
+      const st = hedge.stats;
+      banners.push(`🛡 Hedge SHADOW: ${st.totalShadowOpens} opens, would-profit ${st.wouldProfit}/${st.totalShadowCloses}`);
+    }
+
+    // ── COMMENTARY ────────────────────────────────────────────
+    const commentary = this.buildStatusCommentary({
+      paused: s.paused || !s.running,
+      activePreset: s.activePresetName,
+      effDanger,
+      nhPen,
+      grad,
+      srPct,
+      dPerInf,
+      claimSum24h,
+      infBurned24h,
+      cycleSecsRemaining: cyc?.secondsRemaining ?? null,
+      regime,
+    });
+
+    const sections = [pnlBlock, fleetBlock, dangerBlock, opsBlock, cycleBlock, walletBlock]
+      .filter(Boolean)
+      .join('\n');
+    const bannerBlock = banners.length > 0 ? banners.map(b => `_${b}_`).join('\n') + '\n\n' : '';
+    const text =
+`*🤖 Offshore Bot*
+
+${bannerBlock}${sections}${commentary ? `\n\n_💬 ${commentary}_` : ''}`;
+
+    return { text, rows: this.buildContextualRows(s, grad, hedge) };
+  }
+
+  /**
+   * Contextual keyboard. Surfaces the action the operator most likely wants
+   * given current state — not a static 5-row grid.
+   *
+   *   Stopped / Off     → ▶ Start Ops + base nav
+   *   Breaker tripped   → 🚨 Clear Breaker (prominent)
+   *   Graduated active  → 📈 Override Graduated row
+   *   Hedge active/shadow → 🛡 Hedge details
+   *   Otherwise         → Claim / Pause / standard nav
+   */
+  private buildContextualRows(
+    s: ReturnType<NonNullable<CorpBot['getStatus']>>,
+    grad: ReturnType<NonNullable<CorpBot['getGraduatedState']>>,
+    hedge: any,
+  ): IKBtn[][] {
+    const rows: IKBtn[][] = [];
+    const isStopped = !s.running || s.paused;
+    const breakerTripped = s.circuitBreaker.tripped;
+
+    // Priority action row
+    if (breakerTripped) {
+      rows.push([{ text: '🚨 Clear Breaker', data: 'breaker:clear' }]);
+    } else if (isStopped) {
+      rows.push([{ text: '▶️ Start Ops', data: 'action:resume' }, { text: '🔄 Refresh', data: 'menu:status' }]);
+    }
+
+    // Graduated override (only show if it actually paused corps)
+    if (grad.enabled && grad.pausedCorps.length > 0) {
+      rows.push([{ text: `📈 Resume full fleet (${grad.totalCorps})`, data: 'graduated:off' }]);
+    }
+
+    // Hedge surface (any time hedge is enabled)
+    if (hedge?.enabled) {
+      rows.push([{ text: `🛡 Hedge (${hedge.mode})`, data: 'menu:hedge' }]);
+    }
+
+    // Standard nav
+    rows.push([{ text: '🎯 Presets', data: 'menu:presets' }, { text: '📅 Schedule', data: 'menu:schedule' }]);
+    rows.push([{ text: '💰 Wallet',  data: 'menu:wallet' },  { text: '⚙️ Config',  data: 'menu:config' }]);
+
+    // Footer: claim + pause (replace pause with resume when paused)
+    if (!isStopped && !breakerTripped) {
+      rows.push([
+        { text: '💸 Claim Now', data: 'action:claim' },
+        { text: '⏸ Pause',     data: 'action:pause' },
+      ]);
+    }
+    rows.push([{ text: '📋 Logs', data: 'menu:logs' }, { text: '🔄 Refresh', data: 'menu:status' }]);
+
+    return rows;
+  }
+
+  /**
+   * One-line interpretive commentary on current state. Heuristics ranked
+   * by priority — only surface the most relevant. Conservative copy: a
+   * bad sentence is worse than no sentence.
+   */
+  private buildStatusCommentary(ctx: {
+    paused: boolean;
+    activePreset: string;
+    effDanger: number;
+    nhPen: number;
+    grad: ReturnType<NonNullable<CorpBot['getGraduatedState']>>;
+    srPct: number | null;
+    dPerInf: number | null;
+    claimSum24h: number;
+    infBurned24h: number;
+    cycleSecsRemaining: number | null;
+    regime: 'weekday' | 'weekend';
+  }): string | null {
+    // Highest priority: state-of-the-bot signals
+    if (ctx.paused) return 'Bot is paused. No new ops will start until you resume.';
+    if (ctx.activePreset.startsWith('breaker:')) {
+      return 'Circuit breaker tripped — multiple liquidations in the last 5m. Cooldown in effect.';
+    }
+    if (ctx.activePreset.startsWith('danger:')) {
+      return `Danger override active (${ctx.effDanger}/100). Bot will resume when conditions calm.`;
+    }
+    if (ctx.grad.enabled && ctx.grad.pausedCorps.length > 0) {
+      return `Graduated scaling reducing fleet to ${ctx.grad.currentTarget}/${ctx.grad.totalCorps} — ${ctx.grad.currentLevel}.`;
+    }
+    if (ctx.nhPen > 0) {
+      return `Network cascade detected — danger penalty +${ctx.nhPen}. Fading over the next ~90min.`;
+    }
+    if (ctx.cycleSecsRemaining != null && ctx.cycleSecsRemaining < 900 && ctx.cycleSecsRemaining > 0) {
+      const m = Math.ceil(ctx.cycleSecsRemaining / 60);
+      return `Cycle ends in ${m}m — claim window opens after.`;
+    }
+    // Performance heuristics
+    if (ctx.srPct != null && ctx.srPct < 50 && ctx.infBurned24h > 30) {
+      return `24h SR ${ctx.srPct.toFixed(0)}% is below network median. Worth checking strategy attribution.`;
+    }
+    if (ctx.srPct != null && ctx.srPct >= 70 && ctx.dPerInf != null && Number.isFinite(ctx.dPerInf) && ctx.dPerInf > 20) {
+      return `Strong session: ${ctx.srPct.toFixed(0)}% SR · ${(ctx.dPerInf as number).toFixed(1)} D/INF. Reinvest claims to compound.`;
+    }
+    if (ctx.regime === 'weekend' && ctx.effDanger < 40) {
+      return 'Weekend regime · calm danger. Drug ops are typically best here.';
+    }
+    return null;
   }
 
   private renderPresetsMenu(): { text: string; rows: IKBtn[][] } {
@@ -1812,6 +1976,48 @@ Type commands to change values:
     };
   }
 
+  private renderHedgeMenu(): { text: string; rows: IKBtn[][] } {
+    const hedge = this.cfg.hedgeBot;
+    if (!hedge) {
+      return {
+        text: '*🛡 Hedge*\n\n_Hedge bot not running on this deployment._',
+        rows: [[{ text: '← Back', data: 'menu:status' }]],
+      };
+    }
+    const st = hedge.getState();
+    const last = st.lastSizing;
+    const lines: string[] = [
+      `*🛡 Hedge*`,
+      ``,
+      `Enabled: *${st.enabled ? 'YES' : 'no'}*  ·  Mode: *${st.mode.toUpperCase()}*${st.disabled ? '  ·  ⚠ disabled' : ''}`,
+      `Policy: \`${hedge.getActivationPolicy()}\``,
+    ];
+    if (st.activeHedge) {
+      const a = st.activeHedge;
+      lines.push('');
+      lines.push(`*Active${st.mode === 'shadow' ? ' (shadow)' : ''}*:`);
+      lines.push(`  corps: ${a.corpsHedged.length} · notional \`$${a.notional.toFixed(0)}\``);
+      lines.push(`  margin: \`$${a.margin.toFixed(0)}\` · TP \`$${a.takeProfitPrice.toFixed(2)}\``);
+    } else {
+      lines.push('');
+      lines.push('  _(no active hedge)_');
+    }
+    if (st.stats.totalShadowOpens > 0) {
+      lines.push('');
+      lines.push(`*Shadow stats:* ${st.stats.totalShadowOpens} opens · ${st.stats.totalShadowCloses} closes`);
+      lines.push(`  would-profit: ${st.stats.wouldProfit}/${st.stats.totalShadowCloses}`);
+      lines.push(`  net P&L: $${st.stats.totalShadowPnl.toFixed(0)}`);
+    }
+    if (last) {
+      lines.push('');
+      lines.push(`*Last sizing:* ETH $${last.ethPrice.toFixed(2)} · TP $${last.takeProfitPrice.toFixed(2)}`);
+    }
+    return {
+      text: lines.join('\n'),
+      rows: [[{ text: '🔄 Refresh', data: 'menu:hedge' }, { text: '← Back', data: 'menu:status' }]],
+    };
+  }
+
   /** Route a callback_query click to the right handler and edit the message. */
   private async handleCallback(cq: TgCallbackQuery): Promise<void> {
     if (!cq.data || !cq.message) { await this.ackCallback(cq.id); return; }
@@ -1841,6 +2047,7 @@ Type commands to change values:
           case 'wallet':   view = this.renderWalletMenu(); break;
           case 'config':   view = this.renderConfigMenu(); break;
           case 'logs':     view = this.renderLogsMenu(); break;
+          case 'hedge':    view = this.renderHedgeMenu(); break;
           default:         view = this.renderMainMenu();
         }
         await this.editKb(chatId, messageId, view.text, view.rows);
@@ -1870,7 +2077,17 @@ Type commands to change values:
       if (type === 'breaker' && action === 'clear') {
         const r = cb.clearCircuitBreaker();
         await this.ackCallback(cq.id, r.wasTripped ? 'Cleared' : 'Was not tripped');
-        const view = this.renderBreakerMenu();
+        // Refresh main status (not the deep breaker menu) since the
+        // breaker:clear button now appears on the top-level status.
+        const view = this.renderStatusMenu();
+        await this.editKb(chatId, messageId, view.text, view.rows);
+        return;
+      }
+
+      if (type === 'graduated' && action === 'off') {
+        cb.setGraduatedEnabled(false);
+        await this.ackCallback(cq.id, 'Graduated scaling OFF');
+        const view = this.renderStatusMenu();
         await this.editKb(chatId, messageId, view.text, view.rows);
         return;
       }
